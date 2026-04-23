@@ -1,0 +1,22 @@
+    location /sub/ {
+        if ($http_user_agent ~* "(Mozilla|Chrome|Safari|Firefox|Edge|Opera)") {
+            return 302 /sub-browser;
+        }
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /sub-admin/ {
+        proxy_pass http://127.0.0.1:8001/sub-admin/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /sub-admin-api/ {
+        proxy_pass http://127.0.0.1:8001/admin/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
