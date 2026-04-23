@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/mgboost-panel
-ExecStart=/usr/bin/python3 /opt/mgboost-panel/main.py
-EnvironmentFile=/opt/mgboost-panel/.env
+WorkingDirectory=/opt/MGBoost_Panel
+ExecStart=/usr/bin/python3 /opt/MGBoost_Panel/main.py
+EnvironmentFile=/opt/MGBoost_Panel/.env
 Restart=on-failure
 RestartSec=5
 
