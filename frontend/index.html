@@ -186,6 +186,9 @@ tr:hover td{background:var(--bg3)}
     <div class="nav-item" onclick="showPage('configs')" data-page="configs">
       <span class="nav-icon">⊕</span> Extra конфиги
     </div>
+    <div class="nav-item" onclick="showPage('settings')" data-page="settings">
+      <span class="nav-icon">⚙</span> Настройки
+    </div>
     <div style="flex:1"></div>
     <div class="nav-item" onclick="doLogout()" style="margin-top:auto">
       <span class="nav-icon">←</span> Выйти
@@ -318,6 +321,27 @@ tr:hover td{background:var(--bg3)}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="page-header">
+        <span class="page-title">Настройки</span>
+        <button onclick="saveSettings()">Сохранить</button>
+      </div>
+      <div class="card">
+        <div class="card-title">Автообновление подписки</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+          Интервал (в часах), через который клиент должен обновлять подписку. Переопределяет значение из Marzban (текущее: 12 ч).
+          Оставьте пустым — будет использоваться значение Marzban.
+        </p>
+        <label>Интервал обновления (часов)</label>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+          <input type="number" id="set-sub-interval" min="1" max="168" placeholder="например: 24" style="width:160px" />
+          <span style="font-size:13px;color:var(--text3)">часов (1–168)</span>
+        </div>
+        <div id="settings-status" style="margin-top:10px;font-size:13px;color:var(--text3)"></div>
       </div>
     </div>
 
@@ -477,6 +501,7 @@ function showPage(name){
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
   if(name==='nodes')loadNodes();
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();}
+  if(name==='settings')loadSettings();
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -1024,6 +1049,40 @@ async function bootstrap(){
     nodeFilters=fR.ok?await fR.json():{};
     allInbounds=await iR.json();
   }catch(e){console.warn('bootstrap',e)}
+}
+
+// SETTINGS
+async function loadSettings(){
+  const status=document.getElementById('settings-status');
+  status.textContent='Загрузка...';
+  try{
+    const r=await proxyApi('/admin/settings');
+    const data=await r.json();
+    const inp=document.getElementById('set-sub-interval');
+    inp.value=data.sub_update_interval!=null?data.sub_update_interval:'';
+    status.textContent='';
+  }catch(e){
+    status.textContent='Ошибка загрузки настроек';
+  }
+}
+async function saveSettings(){
+  const status=document.getElementById('settings-status');
+  const raw=document.getElementById('set-sub-interval').value.trim();
+  const val=raw===''?null:parseInt(raw);
+  if(val!==null&&(isNaN(val)||val<1||val>168)){
+    status.textContent='Введите число от 1 до 168';
+    return;
+  }
+  status.textContent='Сохранение...';
+  try{
+    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({sub_update_interval:val})});
+    status.style.color='#6f6';
+    status.textContent='Сохранено';
+    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+  }catch(e){
+    status.style.color='';
+    status.textContent='Ошибка сохранения';
+  }
 }
 
 // INIT

@@ -128,6 +128,8 @@ def process_subscription(body, marzban_headers, token, username, db):
     lines = add_extra_configs(lines, username, db)
     new_body = base64.b64encode("\n".join(lines).encode("utf-8"))
 
+    custom_interval = db.get_setting("sub_update_interval")
+
     out_headers = {}
     for key, val in marzban_headers.items():
         key_lower = key.lower()
@@ -135,6 +137,8 @@ def process_subscription(body, marzban_headers, token, username, db):
             continue
         if key_lower == "subscription-userinfo":
             out_headers[key] = patch_userinfo_header(val, token, db)
+        elif key_lower == "profile-update-interval":
+            out_headers[key] = custom_interval if custom_interval else val
         elif key_lower in FORWARD_HEADERS:
             out_headers[key] = val
 

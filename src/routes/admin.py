@@ -119,3 +119,28 @@ def handle_node_filters_save(handler):
         return
     handler.server.db.save_node_filters(data)
     _json_response(handler, 200, {"ok": True})
+
+
+def handle_settings_get(handler):
+    db = handler.server.db
+    interval = db.get_setting("sub_update_interval")
+    _json_response(handler, 200, {
+        "sub_update_interval": int(interval) if interval is not None else None,
+    })
+
+
+def handle_settings_save(handler):
+    db = handler.server.db
+    try:
+        data = json.loads(_read_body(handler))
+    except Exception:
+        handler.send_response(400)
+        handler.end_headers()
+        return
+    if "sub_update_interval" in data:
+        val = data["sub_update_interval"]
+        if val is None:
+            db.set_setting("sub_update_interval", "")
+        else:
+            db.set_setting("sub_update_interval", str(int(val)))
+    _json_response(handler, 200, {"ok": True})

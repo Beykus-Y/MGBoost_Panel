@@ -10,6 +10,8 @@ from .routes.admin import (
     handle_node_filters_save,
     handle_per_user_list,
     handle_per_user_save,
+    handle_settings_get,
+    handle_settings_save,
     handle_stats_get,
     handle_stats_update,
 )
@@ -34,6 +36,8 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/per-user-configs$"),        lambda h: handle_per_user_save(h)),
     ("GET",    re.compile(r"^/admin/node-filters$"),            lambda h: handle_node_filters_list(h)),
     ("POST",   re.compile(r"^/admin/node-filters$"),            lambda h: handle_node_filters_save(h)),
+    ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h)),
+    ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h)),
     # SPA catch-all: serve frontend for any path not matched above
     ("GET",    re.compile(r"^/.*$"),                            lambda h: handle_panel(h)),
 ]

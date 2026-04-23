@@ -30,6 +30,11 @@ class Database:
                 timestamp INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS extra_configs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -286,10 +291,20 @@ class Database:
     # --- sub_requests ---
 
     def log_request(self, token, username, user_agent, ip):
-        self._conn.execute(
-            "INSERT INTO sub_requests (token, username, user_agent, ip, timestamp) VALUES (?,?,?,?,?)",
-            (token, username, user_agent, ip, int(time.time())),
-        )
+        existing = self._conn.execute(
+            "SELECT id FROM sub_requests WHERE token=? AND user_agent=?",
+            (token, user_agent),
+        ).fetchone()
+        if existing:
+            self._conn.execute(
+                "UPDATE sub_requests SET timestamp=?, ip=?, username=? WHERE id=?",
+                (int(time.time()), ip, username, existing["id"]),
+            )
+        else:
+            self._conn.execute(
+                "INSERT INTO sub_requests (token, username, user_agent, ip, timestamp) VALUES (?,?,?,?,?)",
+                (token, username, user_agent, ip, int(time.time())),
+            )
         self._conn.commit()
 
     def get_device_history(self, token: str, limit: int = 10) -> list:
@@ -298,3 +313,18 @@ class Database:
             (token, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- settings ---
+
+    def get_setting(self, key: str, default=None):
+        row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        return row["value"]
+
+    def set_setting(self, key: str, value: str):
+        self._conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+            (key, value),
+        )
+        self._conn.commit()
