@@ -291,3 +291,10 @@ class Database:
             (token, username, user_agent, ip, int(time.time())),
         )
         self._conn.commit()
+
+    def get_device_history(self, token: str, limit: int = 10) -> list:
+        rows = self._conn.execute(
+            "SELECT user_agent, ip, timestamp FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
+            (token, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]

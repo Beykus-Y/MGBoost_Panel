@@ -13,11 +13,16 @@ from .routes.admin import (
     handle_stats_get,
     handle_stats_update,
 )
+from .routes.lk import handle_lk_devices, handle_lk_info, handle_lk_page, handle_lk_usage
 from .routes.panel import handle_panel
 from .routes.sub import handle_sub
 
 # (method, regex_pattern) -> handler(request_handler, **groups)
 _ROUTES = [
+    ("GET",    re.compile(r"^/lk/$"),                            lambda h: handle_lk_page(h)),
+    ("GET",    re.compile(r"^/lk/api/info$"),                   lambda h: handle_lk_info(h)),
+    ("GET",    re.compile(r"^/lk/api/usage$"),                  lambda h: handle_lk_usage(h)),
+    ("GET",    re.compile(r"^/lk/api/devices$"),                lambda h: handle_lk_devices(h)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
     ("GET",    re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_list(h)),
     ("POST",   re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_add(h)),

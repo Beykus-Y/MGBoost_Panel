@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MGBoost VPN — Личный кабинет</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3350;
+    --accent: #5b8cff;
+    --accent-dim: #3a5cbf;
+    --green: #3ecf8e;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+    --radius: 14px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 0 0 60px;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+
+  header span {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .container {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 14px;
+  }
+
+  /* Status card */
+  .user-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .username {
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  .badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .badge-active { background: rgba(62, 207, 142, 0.15); color: var(--green); }
+  .badge-expired { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+  .badge-disabled { background: rgba(139, 146, 164, 0.15); color: var(--muted); }
+  .badge-unknown { background: rgba(139, 146, 164, 0.15); color: var(--muted); }
+
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+
+  .info-row:last-child { border-bottom: none; }
+  .info-label { color: var(--muted); }
+  .info-value { font-weight: 500; }
+
+  /* Traffic bar */
+  .progress-wrap { margin-top: 4px; }
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .progress-bar {
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), #a78bfa);
+    border-radius: 10px;
+    transition: width 0.4s ease;
+  }
+
+  /* Node rows */
+  .node-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .node-row:last-child { border-bottom: none; }
+
+  .node-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 14px;
+  }
+
+  .node-name { font-weight: 500; }
+  .node-traffic { color: var(--muted); font-size: 13px; }
+
+  .node-bar {
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .node-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 10px;
+  }
+
+  /* Buttons */
+  .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 13px 16px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  .btn:active { transform: scale(0.98); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .btn-secondary:hover { background: var(--border); }
+
+  .btn-copied {
+    background: var(--green) !important;
+    color: #fff;
+  }
+
+  .btn-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* Instructions collapsible */
+  .collapsible-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 0;
+  }
+
+  .collapsible-header h3 {
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chevron {
+    color: var(--muted);
+    transition: transform 0.2s;
+    font-size: 12px;
+  }
+
+  .chevron.open { transform: rotate(180deg); }
+
+  .collapsible-body {
+    display: none;
+    margin-top: 14px;
+  }
+
+  .collapsible-body.open { display: block; }
+
+  .app-list { display: flex; flex-direction: column; gap: 12px; }
+
+  .app-item { }
+
+  .app-name {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+
+  .app-steps {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* Device history */
+  .device-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    gap: 8px;
+  }
+
+  .device-row:last-child { border-bottom: none; }
+
+  .device-ua {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+
+  .device-time {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Alert */
+  .alert {
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    color: var(--red);
+    font-size: 14px;
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  /* Token form */
+  .token-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .token-form p {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .token-input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 14px;
+    padding: 12px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .token-input:focus { border-color: var(--accent); }
+
+  /* Loading skeleton */
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface2) 25%, var(--border) 50%, var(--surface2) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 6px;
+    height: 16px;
+    margin: 6px 0;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .empty-state {
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    padding: 12px 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-icon">🛡️</div>
+  <div>
+    <h1>MGBoost VPN</h1>
+    <span>Личный кабинет</span>
+  </div>
+</header>
+
+<div class="container" id="app">
+  <!-- content rendered by JS -->
+</div>
+
+<script>
+const app = document.getElementById('app');
+
+function getToken() {
+  return new URLSearchParams(location.search).get('token') || '';
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+  return bytes.toFixed(i >= 2 ? 2 : 0) + ' ' + units[i];
+}
+
+function formatExpire(ts) {
+  if (!ts) return 'Бессрочно';
+  const d = new Date(ts * 1000);
+  const now = Date.now();
+  const diff = d - now;
+  const days = Math.ceil(diff / 86400000);
+  const dateStr = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (diff <= 0) return `Истёк ${dateStr}`;
+  return `${days} дн. (${dateStr})`;
+}
+
+function formatRelTime(ts) {
+  const diff = Math.floor((Date.now() / 1000) - ts);
+  if (diff < 60) return 'только что';
+  if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ч назад`;
+  if (diff < 172800) return 'вчера';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function statusLabel(status) {
+  const map = {
+    active: ['Активен', 'badge-active'],
+    expired: ['Истёк', 'badge-expired'],
+    disabled: ['Отключён', 'badge-disabled'],
+    limited: ['Лимит', 'badge-expired'],
+    on_hold: ['На паузе', 'badge-disabled'],
+  };
+  return map[status] || ['Неизвестно', 'badge-unknown'];
+}
+
+function skeleton(n = 3) {
+  return Array.from({ length: n }, () => '<div class="skeleton"></div>').join('');
+}
+
+async function apiFetch(path) {
+  const token = getToken();
+  const res = await fetch(`/lk/api/${path}?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function renderTokenForm() {
+  app.innerHTML = `
+    <div class="card">
+      <div class="card-title">Вход</div>
+      <div class="token-form">
+        <p>Введите ваш токен подписки, чтобы открыть личный кабинет.</p>
+        <input class="token-input" id="tokenInput" type="text" placeholder="Вставьте токен из ссылки подписки" autocomplete="off">
+        <button class="btn btn-primary" onclick="openWithToken()">Открыть кабинет</button>
+      </div>
+    </div>`;
+}
+
+function openWithToken() {
+  const val = document.getElementById('tokenInput')?.value.trim();
+  if (!val) return;
+  // Handle full URL or bare token
+  let token = val;
+  try {
+    const u = new URL(val);
+    token = u.searchParams.get('token') || val;
+  } catch {}
+  location.href = `/lk/?token=${encodeURIComponent(token)}`;
+}
+
+async function renderDashboard(token) {
+  // Render shell with loading states
+  app.innerHTML = `
+    <div class="card" id="statusCard">
+      <div class="card-title">Статус аккаунта</div>
+      ${skeleton(4)}
+    </div>
+    <div class="card" id="usageCard">
+      <div class="card-title">Трафик по нодам</div>
+      ${skeleton(3)}
+    </div>
+    <div class="card" id="subCard">
+      <div class="card-title">Подписка</div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="copyBtn" onclick="copySubLink()">📋 Скопировать ссылку подписки</button>
+        <div class="collapsible-header" onclick="toggleInstructions()">
+          <h3>❓ Как подключиться?</h3>
+          <span class="chevron" id="chevron">▼</span>
+        </div>
+        <div class="collapsible-body" id="instructions">
+          <div class="app-list">
+            <div class="app-item">
+              <div class="app-name">Hiddify (Android / iOS / Windows / Mac)</div>
+              <div class="app-steps">1. Установите Hiddify<br>2. Нажмите «+» → «Добавить из буфера»<br>3. Вставьте скопированную ссылку подписки</div>
+            </div>
+            <div class="app-item">
+              <div class="app-name">Streisand (iOS)</div>
+              <div class="app-steps">1. Установите Streisand<br>2. Нажмите «+» → «Импорт из URL»<br>3. Вставьте ссылку подписки</div>
+            </div>
+            <div class="app-item">
+              <div class="app-name">v2rayNG (Android)</div>
+              <div class="app-steps">1. Установите v2rayNG<br>2. Меню → «Подписки» → «Группы»<br>3. Добавьте ссылку подписки</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="devicesCard">
+      <div class="card-title">Мои устройства</div>
+      ${skeleton(3)}
+    </div>`;
+
+  // Load in parallel
+  const [infoResult, usageResult, devicesResult] = await Promise.allSettled([
+    apiFetch('info'),
+    apiFetch('usage'),
+    apiFetch('devices'),
+  ]);
+
+  renderStatusCard(infoResult, token);
+  renderUsageCard(usageResult);
+  renderDevicesCard(devicesResult);
+}
+
+function renderStatusCard(result, token) {
+  const card = document.getElementById('statusCard');
+  if (!card) return;
+
+  if (result.status === 'rejected') {
+    card.innerHTML = `<div class="card-title">Статус аккаунта</div><div class="empty-state">${result.reason.message}</div>`;
+    return;
+  }
+
+  const d = result.value;
+  const [label, cls] = statusLabel(d.status);
+  const isExpiredOrDisabled = d.status === 'expired' || d.status === 'disabled' || d.status === 'limited';
+  const usedPct = d.data_limit ? Math.min(100, Math.round(d.used_traffic / d.data_limit * 100)) : 0;
+  const trafficLabel = d.data_limit
+    ? `${formatBytes(d.used_traffic)} / ${formatBytes(d.data_limit)}`
+    : `${formatBytes(d.used_traffic)} / ∞`;
+
+  card.innerHTML = `
+    <div class="card-title">Статус аккаунта</div>
+    ${isExpiredOrDisabled ? `<div class="alert" style="margin-bottom:14px">⚠️ Ваша подписка истекла или отключена. Обратитесь к администратору.</div>` : ''}
+    <div class="user-row">
+      <span class="username">👤 ${escHtml(d.username)}</span>
+      <span class="badge ${cls}">${label}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">📅 Истекает через</span>
+      <span class="info-value">${formatExpire(d.expire)}</span>
+    </div>
+    <div class="info-row" style="border-bottom:none">
+      <span class="info-label">📦 Трафик</span>
+      <span class="info-value">${trafficLabel}</span>
+    </div>
+    ${d.data_limit ? `<div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" style="width:${usedPct}%"></div></div>
+    </div>` : ''}`;
+
+  // Store subscription URL for copy button
+  window._subUrl = d.subscription_url;
+}
+
+function renderUsageCard(result) {
+  const card = document.getElementById('usageCard');
+  if (!card) return;
+
+  if (result.status === 'rejected') {
+    card.innerHTML = `<div class="card-title">Трафик по нодам</div><div class="empty-state">${result.reason.message}</div>`;
+    return;
+  }
+
+  const usages = result.value.usages || [];
+  if (!usages.length) {
+    card.innerHTML = `<div class="card-title">Трафик по нодам</div><div class="empty-state">Нет данных</div>`;
+    return;
+  }
+
+  const rows = usages.map(u => `
+    <div class="node-row">
+      <div class="node-top">
+        <span class="node-name">${escHtml(u.node_name)}</span>
+        <span class="node-traffic">${formatBytes(u.used_traffic)} &nbsp;${u.percent}%</span>
+      </div>
+      <div class="node-bar"><div class="node-bar-fill" style="width:${u.percent}%"></div></div>
+    </div>`).join('');
+
+  card.innerHTML = `<div class="card-title">Трафик по нодам</div>${rows}`;
+}
+
+function renderDevicesCard(result) {
+  const card = document.getElementById('devicesCard');
+  if (!card) return;
+
+  if (result.status === 'rejected') {
+    card.innerHTML = `<div class="card-title">Мои устройства</div><div class="empty-state">${result.reason.message}</div>`;
+    return;
+  }
+
+  const devices = result.value.devices || [];
+  if (!devices.length) {
+    card.innerHTML = `<div class="card-title">Мои устройства</div><div class="empty-state">История пуста</div>`;
+    return;
+  }
+
+  const rows = devices.map(d => `
+    <div class="device-row">
+      <span class="device-ua">${escHtml(d.user_agent || 'Неизвестно')}</span>
+      <span class="device-time">${formatRelTime(d.timestamp)}</span>
+    </div>`).join('');
+
+  card.innerHTML = `<div class="card-title">Мои устройства</div>${rows}`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function copySubLink() {
+  const btn = document.getElementById('copyBtn');
+  const url = window._subUrl;
+  if (!url || !btn) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    btn.textContent = '✅ Скопировано!';
+    btn.classList.add('btn-copied');
+    setTimeout(() => {
+      btn.textContent = '📋 Скопировать ссылку подписки';
+      btn.classList.remove('btn-copied');
+    }, 2000);
+  } catch {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '✅ Скопировано!';
+    setTimeout(() => { btn.textContent = '📋 Скопировать ссылку подписки'; }, 2000);
+  }
+}
+
+function toggleInstructions() {
+  const body = document.getElementById('instructions');
+  const chev = document.getElementById('chevron');
+  if (!body) return;
+  body.classList.toggle('open');
+  chev?.classList.toggle('open');
+}
+
+// Init
+(function init() {
+  const token = getToken();
+  if (!token) {
+    renderTokenForm();
+  } else {
+    renderDashboard(token);
+  }
+})();
+</script>
+</body>
+</html>
