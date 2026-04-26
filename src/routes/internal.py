@@ -109,6 +109,7 @@ def handle_internal_users_list(handler):
     users = users or []
     node_filters = db.get_node_filters()
     per_user_configs_map = db.get_per_user_configs_map()
+    last_devices = db.get_last_devices_by_usernames([user.get("username") for user in users])
 
     items = []
     for user in users:
@@ -118,6 +119,7 @@ def handle_internal_users_list(handler):
             **user,
             "proxy_filtered": bool(filt and filt.get("all") is False and filt.get("allowed_configs")),
             "proxy_extra_configs": len(per_user_configs_map.get(username, [])),
+            "proxy_last_device": last_devices.get(username),
         })
 
     total = payload.get("total") if isinstance(payload, dict) else None

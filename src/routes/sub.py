@@ -1,5 +1,6 @@
 from urllib.error import URLError
 
+from ..device_headers import extract_device_metadata
 from ..marzban import MarzbanClient
 from ..subscription import process_subscription
 
@@ -19,7 +20,14 @@ def handle_sub(handler, token):
 
     db = handler.server.db
     username = _client.get_username_for_token(token)
-    db.log_request(token, username, handler.headers.get("User-Agent"), handler.client_address[0])
+    device_metadata = extract_device_metadata(handler.headers)
+    db.log_request(
+        token,
+        username,
+        device_metadata.get("user_agent"),
+        handler.client_address[0],
+        device_metadata,
+    )
 
     new_body, out_headers = process_subscription(body, marzban_headers, token, username, db)
 

@@ -29,9 +29,17 @@ class Database:
                 username TEXT,
                 user_agent TEXT,
                 ip TEXT,
+                request_key TEXT,
+                device_id TEXT,
+                device_name TEXT,
+                client_name TEXT,
+                client_version TEXT,
+                platform TEXT,
+                os TEXT,
+                fingerprint TEXT,
+                metadata_json TEXT,
                 timestamp INTEGER NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -71,6 +79,36 @@ class Database:
             );
         """)
         self._conn.commit()
+        self._ensure_sub_request_columns()
+        self._conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_sub_requests_token_key
+                ON sub_requests(token, request_key);
+            CREATE INDEX IF NOT EXISTS idx_sub_requests_username_ts
+                ON sub_requests(username, timestamp);
+        """)
+        self._conn.commit()
+
+    def _ensure_sub_request_columns(self):
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(sub_requests)").fetchall()
+        }
+        expected = {
+            "request_key": "TEXT",
+            "device_id": "TEXT",
+            "device_name": "TEXT",
+            "client_name": "TEXT",
+            "client_version": "TEXT",
+            "platform": "TEXT",
+            "os": "TEXT",
+            "fingerprint": "TEXT",
+            "metadata_json": "TEXT",
+        }
+        with self._lock:
+            for name, column_type in expected.items():
+                if name not in columns:
+                    self._conn.execute(f"ALTER TABLE sub_requests ADD COLUMN {name} {column_type}")
+            self._conn.commit()
 
     def migrate_from_json(self):
         """One-time migration from legacy JSON files into SQLite."""
@@ -308,36 +346,127 @@ class Database:
 
     # --- sub_requests ---
 
-    def log_request(self, token, username, user_agent, ip):
-        existing = self._conn.execute(
-            "SELECT id FROM sub_requests WHERE token=? AND user_agent=?",
-            (token, user_agent),
-        ).fetchone()
-        if existing:
-            self._conn.execute(
-                "UPDATE sub_requests SET timestamp=?, ip=?, username=? WHERE id=?",
-                (int(time.time()), ip, username, existing["id"]),
+    @staticmethod
+    def _device_select_columns():
+        return (
+            "user_agent, ip, timestamp, device_id, device_name, client_name, "
+            "client_version, platform, os, fingerprint, metadata_json"
+        )
+
+    @staticmethod
+    def _device_row_to_dict(row):
+        result = dict(row)
+        metadata_json = result.pop("metadata_json", None)
+        result["metadata"] = {}
+        if metadata_json:
+            try:
+                result["metadata"] = json.loads(metadata_json)
+            except (TypeError, ValueError):
+                result["metadata"] = {}
+        return result
+
+    def log_request(self, token, username, user_agent, ip, device_metadata=None):
+        device_metadata = device_metadata or {}
+        request_key = device_metadata.get("request_key")
+        metadata = device_metadata.get("metadata") or {}
+        metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True) if metadata else None
+
+        with self._lock:
+            existing = None
+            if request_key:
+                existing = self._conn.execute(
+                    "SELECT id FROM sub_requests WHERE token=? AND request_key=? ORDER BY timestamp DESC LIMIT 1",
+                    (token, request_key),
+                ).fetchone()
+                if not existing and user_agent:
+                    existing = self._conn.execute(
+                        "SELECT id FROM sub_requests WHERE token=? AND user_agent=? AND request_key IS NULL ORDER BY timestamp DESC LIMIT 1",
+                        (token, user_agent),
+                    ).fetchone()
+            elif user_agent:
+                existing = self._conn.execute(
+                    "SELECT id FROM sub_requests WHERE token=? AND user_agent=? ORDER BY timestamp DESC LIMIT 1",
+                    (token, user_agent),
+                ).fetchone()
+
+            payload = (
+                int(time.time()),
+                ip,
+                username,
+                user_agent,
+                request_key,
+                device_metadata.get("device_id"),
+                device_metadata.get("device_name"),
+                device_metadata.get("client_name"),
+                device_metadata.get("client_version"),
+                device_metadata.get("platform"),
+                device_metadata.get("os"),
+                device_metadata.get("fingerprint"),
+                metadata_json,
             )
-        else:
-            self._conn.execute(
-                "INSERT INTO sub_requests (token, username, user_agent, ip, timestamp) VALUES (?,?,?,?,?)",
-                (token, username, user_agent, ip, int(time.time())),
-            )
-        self._conn.commit()
+
+            if existing:
+                self._conn.execute(
+                    """
+                    UPDATE sub_requests
+                    SET timestamp=?, ip=?, username=?, user_agent=?, request_key=?,
+                        device_id=?, device_name=?, client_name=?, client_version=?,
+                        platform=?, os=?, fingerprint=?, metadata_json=?
+                    WHERE id=?
+                    """,
+                    payload + (existing["id"],),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO sub_requests (
+                        timestamp, ip, username, user_agent, request_key,
+                        device_id, device_name, client_name, client_version,
+                        platform, os, fingerprint, metadata_json, token
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    payload + (token,),
+                )
+            self._conn.commit()
 
     def get_device_history(self, token: str, limit: int = 10) -> list:
         rows = self._conn.execute(
-            "SELECT user_agent, ip, timestamp FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
+            f"SELECT {self._device_select_columns()} FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
             (token, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._device_row_to_dict(r) for r in rows]
 
     def get_device_history_by_username(self, username: str, limit: int = 10) -> list:
         rows = self._conn.execute(
-            "SELECT user_agent, ip, timestamp FROM sub_requests WHERE username=? ORDER BY timestamp DESC LIMIT ?",
+            f"SELECT {self._device_select_columns()} FROM sub_requests WHERE username=? ORDER BY timestamp DESC LIMIT ?",
             (username, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._device_row_to_dict(r) for r in rows]
+
+    def get_last_devices_by_usernames(self, usernames):
+        cleaned = [username for username in usernames if username]
+        if not cleaned:
+            return {}
+
+        placeholders = ",".join("?" for _ in cleaned)
+        rows = self._conn.execute(
+            f"""
+            SELECT username, {self._device_select_columns()}
+            FROM sub_requests
+            WHERE username IN ({placeholders})
+            ORDER BY timestamp DESC
+            """,
+            cleaned,
+        ).fetchall()
+
+        result = {}
+        for row in rows:
+            username = row["username"]
+            if username not in result:
+                entry = self._device_row_to_dict(row)
+                entry.pop("username", None)
+                result[username] = entry
+        return result
 
     # --- settings ---
 
