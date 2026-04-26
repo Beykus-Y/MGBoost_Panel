@@ -465,7 +465,7 @@ async function api(path,opts={}){
   return r;
 }
 async function proxyApi(path,opts={}){
-  return fetch(PROXY_API+path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});
+  return fetch(PROXY_API+path,{...opts,headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});
 }
 
 // AUTH
@@ -974,10 +974,15 @@ async function addGlobalConfig(){
   else toast('Ошибка','err');
 }
 async function deleteConfig(idx){
-  if(!confirm('Удалить?'))return;
-  await proxyApi('/admin/configs/'+idx,{method:'DELETE'});
-  toast('Удалён');loadGlobalConfigs();
-}
+   if(!confirm('Удалить?'))return;
+   const cfg = window._cfgs[idx];
+   if (!cfg || !cfg.id) {
+       toast('Ошибка: конфиг не найден','err');
+       return;
+   }
+   await proxyApi('/admin/configs/'+cfg.id,{method:'DELETE'});
+   toast('Удалён');loadGlobalConfigs();
+ }
 async function toggleConfig(idx){
   const cfgs=window._cfgs||[];
   cfgs[idx].enabled=!cfgs[idx].enabled;
@@ -1035,7 +1040,7 @@ async function deletePerUserConfig(username,idx){
   toast('Удалён');renderPerUserConfigs(username);
 }
 
-function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function closeModal(id){document.getElementById(id).classList.remove('open')}
 document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')}));
 

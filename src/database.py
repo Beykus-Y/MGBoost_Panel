@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import time
+import threading
 
 from .config import DATA_DIR
 
@@ -17,6 +18,7 @@ class Database:
         os.makedirs(DATA_DIR, exist_ok=True)
         self._conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._create_tables()
 
     def _create_tables(self):
@@ -80,19 +82,21 @@ class Database:
     def _migrate_extra_configs(self):
         if not os.path.exists(EXTRA_CONFIGS_JSON):
             return
-        existing = self._conn.execute("SELECT COUNT(*) FROM extra_configs").fetchone()[0]
-        if existing > 0:
-            return
+        with self._lock:
+            existing = self._conn.execute("SELECT COUNT(*) FROM extra_configs").fetchone()[0]
+            if existing > 0:
+                return
         try:
             with open(EXTRA_CONFIGS_JSON) as f:
                 configs = json.load(f)
             now = int(time.time())
-            for i, c in enumerate(configs):
-                self._conn.execute(
-                    "INSERT INTO extra_configs (name, uri, enabled, sort_order, scope, created_at) VALUES (?,?,?,?,?,?)",
-                    (c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, "global", now),
-                )
-            self._conn.commit()
+            with self._lock:
+                for i, c in enumerate(configs):
+                    self._conn.execute(
+                        "INSERT INTO extra_configs (name, uri, enabled, sort_order, scope, created_at) VALUES (?,?,?,?,?,?)",
+                        (c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, "global", now),
+                    )
+                self._conn.commit()
             print(f"[DB] Migrated {len(configs)} extra_configs from JSON")
         except Exception as e:
             print(f"[DB] extra_configs migration failed: {e}")
@@ -100,23 +104,25 @@ class Database:
     def _migrate_node_filters(self):
         if not os.path.exists(NODE_FILTERS_JSON):
             return
-        existing = self._conn.execute("SELECT COUNT(*) FROM node_filters").fetchone()[0]
-        if existing > 0:
-            return
+        with self._lock:
+            existing = self._conn.execute("SELECT COUNT(*) FROM node_filters").fetchone()[0]
+            if existing > 0:
+                return
         try:
             with open(NODE_FILTERS_JSON) as f:
                 filters = json.load(f)
-            for username, filt in filters.items():
-                if "hosts" in filt or "allowed_ips" in filt:
-                    filter_all, allowed = 1, "[]"
-                else:
-                    filter_all = 1 if filt.get("all", True) else 0
-                    allowed = json.dumps(filt.get("allowed_configs") or [])
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO node_filters (username, filter_all, allowed_configs) VALUES (?,?,?)",
-                    (username, filter_all, allowed),
-                )
-            self._conn.commit()
+            with self._lock:
+                for username, filt in filters.items():
+                    if "hosts" in filt or "allowed_ips" in filt:
+                        filter_all, allowed = 1, "[]"
+                    else:
+                        filter_all = 1 if filt.get("all", True) else 0
+                        allowed = json.dumps(filt.get("allowed_configs") or [])
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO node_filters (username, filter_all, allowed_configs) VALUES (?,?,?)",
+                        (username, filter_all, allowed),
+                    )
+                self._conn.commit()
             print(f"[DB] Migrated {len(filters)} node_filters from JSON")
         except Exception as e:
             print(f"[DB] node_filters migration failed: {e}")
@@ -124,20 +130,22 @@ class Database:
     def _migrate_per_user_configs(self):
         if not os.path.exists(PER_USER_CONFIGS_JSON):
             return
-        existing = self._conn.execute("SELECT COUNT(*) FROM per_user_configs").fetchone()[0]
-        if existing > 0:
-            return
+        with self._lock:
+            existing = self._conn.execute("SELECT COUNT(*) FROM per_user_configs").fetchone()[0]
+            if existing > 0:
+                return
         try:
             with open(PER_USER_CONFIGS_JSON) as f:
                 data = json.load(f)
             now = int(time.time())
-            for username, configs in data.items():
-                for i, c in enumerate(configs):
-                    self._conn.execute(
-                        "INSERT INTO per_user_configs (username, name, uri, enabled, sort_order, created_at) VALUES (?,?,?,?,?,?)",
-                        (username, c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, now),
-                    )
-            self._conn.commit()
+            with self._lock:
+                for username, configs in data.items():
+                    for i, c in enumerate(configs):
+                        self._conn.execute(
+                            "INSERT INTO per_user_configs (username, name, uri, enabled, sort_order, created_at) VALUES (?,?,?,?,?,?)",
+                            (username, c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, now),
+                        )
+                self._conn.commit()
             print("[DB] Migrated per_user_configs from JSON")
         except Exception as e:
             print(f"[DB] per_user_configs migration failed: {e}")
@@ -145,18 +153,20 @@ class Database:
     def _migrate_hysteria_stats(self):
         if not os.path.exists(HYSTERIA_STATS_JSON):
             return
-        existing = self._conn.execute("SELECT COUNT(*) FROM hysteria_stats").fetchone()[0]
-        if existing > 0:
-            return
+        with self._lock:
+            existing = self._conn.execute("SELECT COUNT(*) FROM hysteria_stats").fetchone()[0]
+            if existing > 0:
+                return
         try:
             with open(HYSTERIA_STATS_JSON) as f:
                 stats = json.load(f)
-            for token, entry in stats.items():
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
-                    (token, entry.get("upload", 0), entry.get("download", 0)),
-                )
-            self._conn.commit()
+            with self._lock:
+                for token, entry in stats.items():
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
+                        (token, entry.get("upload", 0), entry.get("download", 0)),
+                    )
+                self._conn.commit()
             print(f"[DB] Migrated {len(stats)} hysteria_stats entries from JSON")
         except Exception as e:
             print(f"[DB] hysteria_stats migration failed: {e}")
@@ -170,63 +180,71 @@ class Database:
         return [dict(r) for r in rows]
 
     def add_extra_config(self, name, uri, enabled=True):
-        max_order = self._conn.execute("SELECT COALESCE(MAX(sort_order),0) FROM extra_configs").fetchone()[0]
-        self._conn.execute(
-            "INSERT INTO extra_configs (name, uri, enabled, sort_order, scope, created_at) VALUES (?,?,?,?,?,?)",
-            (name, uri, 1 if enabled else 0, max_order + 1, "global", int(time.time())),
-        )
-        self._conn.commit()
+        with self._lock:
+            max_order = self._conn.execute("SELECT COALESCE(MAX(sort_order),0) FROM extra_configs").fetchone()[0]
+            self._conn.execute(
+                "INSERT INTO extra_configs (name, uri, enabled, sort_order, scope, created_at) VALUES (?,?,?,?,?,?)",
+                (name, uri, 1 if enabled else 0, max_order + 1, "global", int(time.time())),
+            )
+            self._conn.commit()
 
     def delete_extra_config(self, config_id):
-        self._conn.execute("DELETE FROM extra_configs WHERE id=?", (config_id,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM extra_configs WHERE id=?", (config_id,))
+            self._conn.commit()
 
     def reorder_extra_configs(self, ordered_ids):
-        for i, cid in enumerate(ordered_ids):
-            self._conn.execute("UPDATE extra_configs SET sort_order=? WHERE id=?", (i, cid))
-        self._conn.commit()
+        with self._lock:
+            for i, cid in enumerate(ordered_ids):
+                self._conn.execute("UPDATE extra_configs SET sort_order=? WHERE id=?", (i, cid))
+            self._conn.commit()
 
     def toggle_extra_config(self, config_id, enabled):
-        self._conn.execute("UPDATE extra_configs SET enabled=? WHERE id=?", (1 if enabled else 0, config_id))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("UPDATE extra_configs SET enabled=? WHERE id=?", (1 if enabled else 0, config_id))
+            self._conn.commit()
 
     # --- per_user_configs ---
 
     def get_per_user_configs(self, username=None):
-        if username:
-            rows = self._conn.execute(
-                "SELECT id, username, name, uri, enabled FROM per_user_configs WHERE username=? ORDER BY sort_order, id",
-                (username,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT id, username, name, uri, enabled FROM per_user_configs ORDER BY username, sort_order, id"
-            ).fetchall()
+        with self._lock:
+            if username:
+                rows = self._conn.execute(
+                    "SELECT id, username, name, uri, enabled FROM per_user_configs WHERE username=? ORDER BY sort_order, id",
+                    (username,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id, username, name, uri, enabled FROM per_user_configs ORDER BY username, sort_order, id"
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def get_per_user_configs_map(self):
-        rows = self.get_per_user_configs()
-        result = {}
-        for r in rows:
-            result.setdefault(r["username"], []).append(r)
+        with self._lock:
+            rows = self.get_per_user_configs()
+            result = {}
+            for r in rows:
+                result.setdefault(r["username"], []).append(r)
         return result
 
     def save_per_user_configs_map(self, data):
         """Replace all per-user configs with data dict {username: [{name, uri, enabled}]}."""
-        self._conn.execute("DELETE FROM per_user_configs")
-        now = int(time.time())
-        for username, configs in data.items():
-            for i, c in enumerate(configs):
-                self._conn.execute(
-                    "INSERT INTO per_user_configs (username, name, uri, enabled, sort_order, created_at) VALUES (?,?,?,?,?,?)",
-                    (username, c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, now),
-                )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM per_user_configs")
+            now = int(time.time())
+            for username, configs in data.items():
+                for i, c in enumerate(configs):
+                    self._conn.execute(
+                        "INSERT INTO per_user_configs (username, name, uri, enabled, sort_order, created_at) VALUES (?,?,?,?,?,?)",
+                        (username, c.get("name", c["uri"][:30]), c["uri"], 1 if c.get("enabled", True) else 0, i, now),
+                    )
+            self._conn.commit()
 
     # --- node_filters ---
 
     def get_node_filters(self):
-        rows = self._conn.execute("SELECT username, filter_all, allowed_configs FROM node_filters").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT username, filter_all, allowed_configs FROM node_filters").fetchall()
         result = {}
         for r in rows:
             result[r["username"]] = {
@@ -311,6 +329,13 @@ class Database:
         rows = self._conn.execute(
             "SELECT user_agent, ip, timestamp FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
             (token, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_device_history_by_username(self, username: str, limit: int = 10) -> list:
+        rows = self._conn.execute(
+            "SELECT user_agent, ip, timestamp FROM sub_requests WHERE username=? ORDER BY timestamp DESC LIMIT ?",
+            (username, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 

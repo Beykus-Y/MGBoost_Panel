@@ -1,18 +1,120 @@
 import json
+import re
+
+from ..http_utils import json_response as _json_response
+from ..http_utils import read_body as _read_body
+from ..security import require_admin_auth
 
 
-def _read_body(handler):
-    length = int(handler.headers.get("Content-Length", 0))
-    return handler.rfile.read(length)
+def _validate_config_data(data):
+    """Validate config add/reorder data."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected dict")
+    uri = data.get("uri")
+    if not isinstance(uri, str) or not uri.strip():
+        raise ValueError("URI must be a non-empty string")
+    name = data.get("name", uri[:30])
+    if not isinstance(name, str) or len(name) > 100:
+        raise ValueError("Name must be a string with length <= 100")
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        # Accept string "true"/"false" or int 0/1
+        if isinstance(enabled, str):
+            if enabled.lower() not in ("true", "false"):
+                raise ValueError("Enabled must be boolean or string 'true'/'false'")
+            enabled = enabled.lower() == "true"
+        elif isinstance(enabled, int):
+            if enabled not in (0, 1):
+                raise ValueError("Enabled must be 0 or 1")
+            enabled = bool(enabled)
+        else:
+            raise ValueError("Enabled must be boolean")
+    return {"uri": uri.strip(), "name": name.strip(), "enabled": enabled}
 
 
-def _json_response(handler, status, data):
-    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+def _validate_configs_list(configs):
+    """Validate list of configs for reorder."""
+    if not isinstance(configs, list):
+        raise ValueError("Expected list")
+    for i, c in enumerate(configs):
+        if not isinstance(c, dict):
+            raise ValueError(f"Config at index {i} must be a dict")
+        if "id" not in c:
+            raise ValueError(f"Config at index {i} missing 'id' field")
+        try:
+            cid = int(c["id"])
+        except (ValueError, TypeError):
+            raise ValueError(f"Config at index {i} has invalid id: {c['id']}")
+        if "enabled" in c:
+            enabled = c["enabled"]
+            if isinstance(enabled, str):
+                if enabled.lower() not in ("true", "false"):
+                    raise ValueError(f"Config at index {i} enabled must be boolean or string 'true'/'false'")
+                c["enabled"] = enabled.lower() == "true"
+            elif isinstance(enabled, int):
+                if enabled not in (0, 1):
+                    raise ValueError(f"Config at index {i} enabled must be 0 or 1")
+                c["enabled"] = bool(enabled)
+            elif not isinstance(enabled, bool):
+                raise ValueError(f"Config at index {i} enabled must be boolean")
+
+
+def _validate_node_filters(data):
+    """Validate node filters data."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected dict")
+    for username, filt in data.items():
+        if not isinstance(username, str) or len(username) > 128:
+            raise ValueError(f"Invalid username: {username}")
+        if not isinstance(filt, dict):
+            raise ValueError(f"Filter for user {username} must be a dict")
+        # Validate filter structure
+        if "all" in filt and not isinstance(filt["all"], bool):
+            raise ValueError(f"Filter 'all' for user {username} must be boolean")
+        if "allowed_configs" in filt:
+            allowed = filt["allowed_configs"]
+            if not isinstance(allowed, list):
+                raise ValueError(f"Filter 'allowed_configs' for user {username} must be a list")
+            for item in allowed:
+                if not isinstance(item, str):
+                    raise ValueError(f"Each allowed config must be a string for user {username}")
+        # Reject unknown keys that could be dangerous
+        allowed_keys = {"all", "allowed_configs", "hosts", "allowed_ips"}
+        for key in filt:
+            if key not in allowed_keys:
+                raise ValueError(f"Unknown key '{key}' in filter for user {username}")
+
+
+def _validate_per_user_configs(data):
+    """Validate per-user configs data."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected dict")
+    for username, configs in data.items():
+        if not isinstance(username, str) or len(username) > 128:
+            raise ValueError(f"Invalid username: {username}")
+        if not isinstance(configs, list):
+            raise ValueError(f"Configs for user {username} must be a list")
+        for i, c in enumerate(configs):
+            if not isinstance(c, dict):
+                raise ValueError(f"Config at index {i} for user {username} must be a dict")
+            name = c.get("name")
+            uri = c.get("uri")
+            enabled = c.get("enabled", True)
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"Config at index {i} for user {username} must have non-empty name")
+            if not isinstance(uri, str) or not uri.strip():
+                raise ValueError(f"Config at index {i} for user {username} must have non-empty URI")
+            if not isinstance(enabled, bool):
+                if isinstance(enabled, str):
+                    if enabled.lower() not in ("true", "false"):
+                        raise ValueError(f"Config at index {i} for user {username} enabled must be boolean or string 'true'/'false'")
+                    enabled = enabled.lower() == "true"
+                elif isinstance(enabled, int):
+                    if enabled not in (0, 1):
+                        raise ValueError(f"Config at index {i} for user {username} enabled must be 0 or 1")
+                    enabled = bool(enabled)
+                else:
+                    raise ValueError(f"Config at index {i} for user {username} enabled must be boolean")
 
 
 def handle_configs_list(handler):
@@ -22,17 +124,16 @@ def handle_configs_list(handler):
 
 
 def handle_configs_add(handler):
+    if not require_admin_auth(handler):
+        return
     db = handler.server.db
     try:
         data = json.loads(_read_body(handler))
-        uri = data["uri"]
-        name = data.get("name", uri[:30])
-        enabled = data.get("enabled", True)
-    except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+        validated = _validate_config_data(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
         return
-    db.add_extra_config(name, uri, enabled)
+    db.add_extra_config(validated["name"], validated["uri"], validated["enabled"])
     _json_response(handler, 201, {"ok": True})
 
 
@@ -51,9 +152,9 @@ def handle_configs_reorder(handler):
     db = handler.server.db
     try:
         configs = json.loads(_read_body(handler))
-    except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+        _validate_configs_list(configs)
+    except (json.JSONDecodeError, ValueError):
+        _json_response(handler, 400, {"error": "Invalid configs payload"})
         return
     # configs is a list of full config objects with 'id' field
     ordered_ids = [c["id"] for c in configs if "id" in c]
@@ -97,9 +198,9 @@ def handle_per_user_list(handler):
 def handle_per_user_save(handler):
     try:
         data = json.loads(_read_body(handler))
-    except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+        _validate_per_user_configs(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
         return
     handler.server.db.save_per_user_configs_map(data)
     _json_response(handler, 200, {"ok": True})
@@ -113,9 +214,9 @@ def handle_node_filters_list(handler):
 def handle_node_filters_save(handler):
     try:
         data = json.loads(_read_body(handler))
-    except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+        _validate_node_filters(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
         return
     handler.server.db.save_node_filters(data)
     _json_response(handler, 200, {"ok": True})
@@ -133,14 +234,21 @@ def handle_settings_save(handler):
     db = handler.server.db
     try:
         data = json.loads(_read_body(handler))
-    except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+    except json.JSONDecodeError:
+        _json_response(handler, 400, {"error": "Invalid JSON"})
         return
     if "sub_update_interval" in data:
         val = data["sub_update_interval"]
         if val is None:
             db.set_setting("sub_update_interval", "")
         else:
-            db.set_setting("sub_update_interval", str(int(val)))
+            try:
+                numeric = int(val)
+            except (TypeError, ValueError):
+                _json_response(handler, 400, {"error": "sub_update_interval must be an integer or null"})
+                return
+            if numeric < 1 or numeric > 168:
+                _json_response(handler, 400, {"error": "sub_update_interval must be between 1 and 168"})
+                return
+            db.set_setting("sub_update_interval", str(numeric))
     _json_response(handler, 200, {"ok": True})

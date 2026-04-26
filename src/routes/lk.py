@@ -11,11 +11,9 @@ _client = MarzbanClient()
 _rate_limit: dict = defaultdict(list)
 _RATE_LIMIT_WINDOW = 60
 _RATE_LIMIT_MAX = 30
-
-
-# Cache admin token to avoid logging in on every request
-_admin_token_cache: list = [None, 0.0]
+_last_cleanup = time.time()
 _ADMIN_TOKEN_TTL = 3600
+_admin_token_cache: list = [None, 0.0]
 
 
 def _get_admin_token(user: str, password: str):
@@ -29,13 +27,31 @@ def _get_admin_token(user: str, password: str):
         _admin_token_cache[0] = tok
         _admin_token_cache[1] = now + _ADMIN_TOKEN_TTL
         return tok
-    except Exception as e:
-        print(f"[LK] admin token fetch failed: {e}")
+    except Exception:
+        print("[LK] admin token fetch failed")
         return None
 
 
+def _get_real_ip(handler) -> str:
+    """Get real IP considering proxy headers."""
+    forwarded = handler.headers.get("X-Real-IP")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return handler.client_address[0]
+
+
 def _check_rate_limit(ip: str) -> bool:
+    global _last_cleanup
     now = time.time()
+
+    # Periodic cleanup of old records
+    if now - _last_cleanup > 300:  # 5 minutes
+        _last_cleanup = now
+        stale = [k for k, v in _rate_limit.items()
+                 if not v or v[-1] < now - _RATE_LIMIT_WINDOW]
+        for k in stale:
+            del _rate_limit[k]
+
     timestamps = _rate_limit[ip]
     timestamps[:] = [t for t in timestamps if now - t < _RATE_LIMIT_WINDOW]
     if len(timestamps) >= _RATE_LIMIT_MAX:
@@ -44,12 +60,26 @@ def _check_rate_limit(ip: str) -> bool:
     return True
 
 
+# Define allowed origins - in production, this should come from config/environment
+ALLOWED_ORIGINS = {
+    "https://yourdomain.com",
+    "https://panel.yourdomain.com",
+    # Add other trusted origins as needed
+}
+
 def _json_ok(handler, data):
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     handler.send_response(200)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", f"https://{handler.headers.get('Host', '')}")
+    
+    # Fix CORS: don't rely on Host header which can be spoofed
+    origin = handler.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        handler.send_header("Access-Control-Allow-Origin", origin)
+    # Optionally allow credentials if needed
+    # handler.send_header("Access-Control-Allow-Credentials", "true")
+    
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -80,15 +110,21 @@ def handle_lk_page(handler):
 
 
 def _get_token_from_query(handler):
+    from urllib.parse import unquote
+    import re
     query = handler.path.split("?", 1)[1] if "?" in handler.path else ""
     for part in query.split("&"):
         if part.startswith("token="):
-            return part[6:]
+            token = unquote(part[6:])
+            # Validation: only allow safe characters
+            if re.match(r'^[a-zA-Z0-9_\-]{8,64}$', token):
+                return token
+            return None
     return None
 
 
 def handle_lk_info(handler):
-    ip = handler.client_address[0]
+    ip = _get_real_ip(handler)
     if not _check_rate_limit(ip):
         _error(handler, 429, "Too many requests")
         return
