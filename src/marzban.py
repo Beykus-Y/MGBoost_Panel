@@ -2,7 +2,7 @@ import json
 import os
 import time
 from urllib.error import URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .config import MARZBAN_URL
@@ -21,6 +21,19 @@ class MarzbanClient:
         req = Request(f"{self.base_url}{path}", headers={"Authorization": f"Bearer {admin_token}"})
         resp = urlopen(req, timeout=timeout)
         return json.loads(resp.read())
+
+    def _api_request_json(self, method, path, admin_token, payload=None, timeout=10):
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        req = Request(f"{self.base_url}{path}", data=body, headers=headers, method=method.upper())
+        resp = urlopen(req, timeout=timeout)
+        raw = resp.read()
+        if not raw:
+            return {}
+        return json.loads(raw)
 
     def get_sub(self, token, extra_headers=None):
         """Fetch raw subscription from Marzban. Returns (body_bytes, headers_dict) or raises URLError."""
@@ -95,7 +108,16 @@ class MarzbanClient:
         return self._api_json("/api/inbounds", admin_token)
 
     def get_user(self, username, admin_token):
-        return self._api_json(f"/api/user/{username}", admin_token)
+        return self._api_json(f"/api/user/{quote(username, safe='')}", admin_token)
 
     def get_user_usage(self, username, admin_token):
-        return self._api_json(f"/api/user/{username}/usage", admin_token)
+        return self._api_json(f"/api/user/{quote(username, safe='')}/usage", admin_token)
+
+    def create_user(self, payload, admin_token):
+        return self._api_request_json("POST", "/api/user", admin_token, payload)
+
+    def modify_user(self, username, payload, admin_token):
+        return self._api_request_json("PUT", f"/api/user/{quote(username, safe='')}", admin_token, payload)
+
+    def delete_user(self, username, admin_token):
+        return self._api_request_json("DELETE", f"/api/user/{quote(username, safe='')}", admin_token)
