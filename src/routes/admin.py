@@ -272,6 +272,19 @@ def handle_admin_user_devices(handler, username):
     _json_response(handler, 200, {"devices": devices, "limit": limit, "active_count": active_count})
 
 
+def handle_admin_user_device_counts(handler):
+    try:
+        data = json.loads(_read_body(handler))
+        usernames = data.get("usernames", [])
+        if not isinstance(usernames, list):
+            raise ValueError("usernames must be a list")
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    counts = handler.server.db.get_active_device_counts(usernames[:1000])
+    _json_response(handler, 200, counts)
+
+
 def handle_admin_set_device_limit(handler, username):
     try:
         data = json.loads(_read_body(handler))

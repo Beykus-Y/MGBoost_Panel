@@ -620,6 +620,25 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_active_device_counts(self, usernames: list) -> dict:
+        cleaned = [u for u in usernames if isinstance(u, str) and u]
+        if not cleaned:
+            return {}
+        placeholders = ",".join("?" for _ in cleaned)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT username, COUNT(*) AS active_count
+                FROM user_devices
+                WHERE is_active=1 AND username IN ({placeholders})
+                GROUP BY username
+                """,
+                cleaned,
+            ).fetchall()
+        counts = {u: 0 for u in cleaned}
+        counts.update({r["username"]: r["active_count"] for r in rows})
+        return counts
+
     def deactivate_device(self, device_id: int, username: str) -> bool:
         """Deactivate a user device and release its hwid_lock."""
         with self._lock:

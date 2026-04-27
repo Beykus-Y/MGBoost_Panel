@@ -5,6 +5,7 @@ from .http_utils import error_response
 from .routes.admin import (
     handle_admin_remove_device,
     handle_admin_set_device_limit,
+    handle_admin_user_device_counts,
     handle_admin_user_devices,
     handle_configs_add,
     handle_configs_delete,
@@ -46,7 +47,7 @@ from .routes.lk import (
     handle_lk_page,
     handle_lk_usage,
 )
-from .routes.panel import handle_panel
+from .routes.panel import handle_panel, handle_static_asset
 from .routes.sub import handle_sub
 from .security import require_admin_auth, require_internal_auth
 
@@ -58,6 +59,7 @@ _ROUTES = [
     ("GET",    re.compile(r"^/lk/api/devices$"),                lambda h: handle_lk_devices(h)),
     ("DELETE", re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_delete(h, device_id)),
     ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
+    ("GET",    re.compile(r"^/assets/(?P<path>.+)$"),           lambda h, path: handle_static_asset(h, path)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
     ("GET",    re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_list(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_add(h) if require_admin_auth(h) else None),
@@ -72,6 +74,7 @@ _ROUTES = [
     ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/user-devices-counts$"),      lambda h: handle_admin_user_device_counts(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices/(?P<username>[^/]+)/limit$"), lambda h, username: handle_admin_set_device_limit(h, username) if require_admin_auth(h) else None),
     ("DELETE", re.compile(r"^/admin/user-devices/device/(?P<device_id>\d+)$"), lambda h, device_id: handle_admin_remove_device(h, device_id) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/internal/v1/status$"),            lambda h: handle_internal_status(h) if require_internal_auth(h) else None),
