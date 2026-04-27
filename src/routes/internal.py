@@ -258,6 +258,25 @@ def handle_internal_inbounds(handler):
     json_response(handler, 200, inbounds)
 
 
+def handle_internal_nodes_usage(handler):
+    admin_token = _get_admin_token(handler)
+    if not admin_token:
+        return
+
+    query = parse_qs(urlsplit(handler.path).query)
+    start = query.get("start", [""])[0]
+    end = query.get("end", [""])[0]
+
+    try:
+        usage = _client.get_nodes_usage(admin_token, start=start, end=end)
+    except Exception as exc:
+        _marzban_error(handler, exc, "Could not load Marzban node usage")
+        return
+
+    json_response(handler, 200, usage)
+
+
+
 def handle_internal_user_create(handler):
     admin_token = _get_admin_token(handler)
     if not admin_token:
@@ -340,9 +359,13 @@ def handle_internal_user_detail(handler, username):
     if not admin_token:
         return
 
+    query = parse_qs(urlsplit(handler.path).query)
+    start = query.get("start", [""])[0]
+    end = query.get("end", [""])[0]
+
     try:
         user = _client.get_user(username, admin_token)
-        usage = _client.get_user_usage(username, admin_token)
+        usage = _client.get_user_usage(username, admin_token, start=start, end=end)
     except Exception as exc:
         _marzban_error(handler, exc, f"Could not load user {username}")
         return

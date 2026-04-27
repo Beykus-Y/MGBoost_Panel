@@ -94,8 +94,10 @@ class MarzbanClient:
     def get_nodes(self, admin_token):
         return self._api_json("/api/nodes", admin_token)
 
-    def get_nodes_usage(self, admin_token):
-        return self._api_json("/api/nodes/usage", admin_token)
+    def get_nodes_usage(self, admin_token, start="", end=""):
+        query = urlencode({k: v for k, v in {"start": start, "end": end}.items() if v})
+        suffix = f"?{query}" if query else ""
+        return self._api_json(f"/api/nodes/usage{suffix}", admin_token)
 
     def get_system(self, admin_token):
         return self._api_json("/api/system", admin_token)
@@ -110,8 +112,10 @@ class MarzbanClient:
     def get_user(self, username, admin_token):
         return self._api_json(f"/api/user/{quote(username, safe='')}", admin_token)
 
-    def get_user_usage(self, username, admin_token):
-        return self._api_json(f"/api/user/{quote(username, safe='')}/usage", admin_token)
+    def get_user_usage(self, username, admin_token, start="", end=""):
+        query = urlencode({k: v for k, v in {"start": start, "end": end}.items() if v})
+        suffix = f"?{query}" if query else ""
+        return self._api_json(f"/api/user/{quote(username, safe='')}/usage{suffix}", admin_token)
 
     def create_user(self, payload, admin_token):
         return self._api_request_json("POST", "/api/user", admin_token, payload)
