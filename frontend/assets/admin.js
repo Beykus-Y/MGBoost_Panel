@@ -50,6 +50,42 @@ function trafficCostLabel(setting,totalBytes){
   const cost=billable/1024*price;
   return `${fmtMoney(cost,setting.currency)} за период`;
 }
+function billingGroupKey(id,setting){
+  const group=(setting?.billing_group||'').trim();
+  return group||`node:${nodeKey(id)}`;
+}
+function billingGroupLabel(id,setting){
+  const group=(setting?.billing_group||'').trim();
+  return group||`Нода ${nodeKey(id)}`;
+}
+function buildBillingGroups(usages){
+  const groups={};
+  (usages||[]).forEach(u=>{
+    const s=getNodeSetting(u.node_id);
+    const key=billingGroupKey(u.node_id,s);
+    if(!groups[key])groups[key]={key,label:billingGroupLabel(u.node_id,s),total:0,nodes:[],setting:s};
+    groups[key].total+=(u.uplink||0)+(u.downlink||0);
+    groups[key].nodes.push(u.node_id);
+    const current=groups[key].setting||{};
+    groups[key].setting={
+      ...current,
+      ...s,
+      traffic_included_gb:current.traffic_included_gb??s.traffic_included_gb,
+      traffic_price_per_tb:current.traffic_price_per_tb??s.traffic_price_per_tb,
+      currency:current.currency||s.currency||'USD',
+    };
+  });
+  return groups;
+}
+function groupTrafficCostLabel(id,totalBytes,groups){
+  const s=getNodeSetting(id);
+  const key=billingGroupKey(id,s);
+  const group=groups?.[key];
+  if(!group)return trafficCostLabel(s,totalBytes);
+  const label=trafficCostLabel(group.setting,group.total);
+  if(label==='—')return'—';
+  return group.nodes.length>1?`${label} · группа ${group.label}`:label;
+}
 function parseUTC(v){
   if(!v)return null;
   if(typeof v==='number')return new Date(v*1000);
@@ -625,6 +661,7 @@ async function loadNodes(){
   nodeSettings=settingsR.ok?await settingsR.json():{};
   const usageMap={};
   (usage.usages||[]).forEach(u=>usageMap[u.node_id??'null']=u);
+  const billingGroups=buildBillingGroups(usage.usages||[]);
 
   document.getElementById('nodes-grid').innerHTML=nodes.map(n=>{
     const u=usageMap[n.id]||{uplink:0,downlink:0};
@@ -650,7 +687,8 @@ async function loadNodes(){
         <div style="display:flex;justify-content:space-between;gap:8px"><span>VPS / мес</span><b style="color:var(--text)">${fmtMoney(s.monthly_cost,s.currency)}</b></div>
         <div style="display:flex;justify-content:space-between;gap:8px"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
         ${(s.provider||s.location)?`<div style="margin-top:6px;color:var(--text3)">${esc([s.provider,s.location].filter(Boolean).join(' · '))}</div>`:''}
-        ${total&&s.traffic_price_per_tb?`<div style="margin-top:4px;color:var(--text3)">${trafficCostLabel(s,total)}</div>`:''}
+        ${s.billing_group?`<div style="margin-top:4px;color:var(--text3)">группа: ${esc(s.billing_group)}</div>`:''}
+        ${total&&s.traffic_price_per_tb?`<div style="margin-top:4px;color:var(--text3)">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
       </div>
       <button onclick="event.stopPropagation();openNodeSettings(${n.id})" style="width:100%;margin-top:10px">Настроить</button>
     </div>`;
@@ -669,7 +707,7 @@ async function loadNodes(){
       <td>${fmt(u.downlink)}</td>
       <td style="font-weight:500">${fmt(total)}</td>
       <td>${fmtMoney(s.monthly_cost,s.currency)}</td>
-      <td>${trafficCostLabel(s,total)}</td>
+      <td>${groupTrafficCostLabel(u.node_id,total,billingGroups)}</td>
       <td><button onclick="event.stopPropagation();openNodeSettings(${u.node_id===null?'null':u.node_id})" style="padding:4px 10px;font-size:12px">Настроить</button></td>
     </tr>`;
   }).join('');
@@ -710,6 +748,11 @@ function openNodeSettings(id){
         <label>Локация</label>
         <input type="text" id="node-location" maxlength="64" placeholder="DE, NL, Estonia..." value="${esc(s.location||'')}" />
       </div>
+    </div>
+    <label>Группа тарификации</label>
+    <input type="text" id="node-billing-group" maxlength="128" placeholder="например: Yandex Cloud / Москва" value="${esc(s.billing_group||'')}" />
+    <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px">
+      Если несколько нод в одной группе, цена доп. трафика и включённый лимит считаются по суммарному трафику группы.
     </div>
     <div class="form-row">
       <div>
@@ -778,6 +821,7 @@ async function saveNodeSettings(id){
     node_id:id,
     node_name:node?node.name:(getNodeSetting(id).node_name||''),
     node_address:node?node.address:(getNodeSetting(id).node_address||''),
+    billing_group:document.getElementById('node-billing-group').value.trim(),
     provider:document.getElementById('node-provider').value.trim(),
     location:document.getElementById('node-location').value.trim(),
     monthly_cost:monthlyCost,

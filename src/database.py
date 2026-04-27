@@ -105,6 +105,7 @@ class Database:
                 node_id INTEGER,
                 node_name TEXT,
                 node_address TEXT,
+                billing_group TEXT DEFAULT '',
                 provider TEXT DEFAULT '',
                 location TEXT DEFAULT '',
                 monthly_cost REAL,
@@ -119,6 +120,7 @@ class Database:
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
+        self._ensure_node_settings_columns()
         self._conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_sub_requests_token_key
                 ON sub_requests(token, request_key);
@@ -149,6 +151,20 @@ class Database:
             for name, column_type in expected.items():
                 if name not in columns:
                     self._conn.execute(f"ALTER TABLE sub_requests ADD COLUMN {name} {column_type}")
+            self._conn.commit()
+
+    def _ensure_node_settings_columns(self):
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(node_settings)").fetchall()
+        }
+        expected = {
+            "billing_group": "TEXT DEFAULT ''",
+        }
+        with self._lock:
+            for name, column_type in expected.items():
+                if name not in columns:
+                    self._conn.execute(f"ALTER TABLE node_settings ADD COLUMN {name} {column_type}")
             self._conn.commit()
 
     def migrate_from_json(self):
@@ -718,7 +734,7 @@ class Database:
     def get_node_settings(self) -> dict:
         rows = self._conn.execute(
             """
-            SELECT node_key, node_id, node_name, node_address, provider, location,
+            SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
                    monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
                    importance, can_remove, note, updated_at
             FROM node_settings
@@ -731,7 +747,7 @@ class Database:
         node_key = self._node_key(node_id)
         row = self._conn.execute(
             """
-            SELECT node_key, node_id, node_name, node_address, provider, location,
+            SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
                    monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
                    importance, can_remove, note, updated_at
             FROM node_settings
@@ -751,6 +767,7 @@ class Database:
             "node_id": int(node_id) if node_id not in (None, "") else None,
             "node_name": data.get("node_name") or "",
             "node_address": data.get("node_address") or "",
+            "billing_group": data.get("billing_group") or "",
             "provider": data.get("provider") or "",
             "location": data.get("location") or "",
             "monthly_cost": data.get("monthly_cost"),
@@ -767,11 +784,11 @@ class Database:
             self._conn.execute(
                 """
                 INSERT INTO node_settings (
-                    node_key, node_id, node_name, node_address, provider, location,
+                    node_key, node_id, node_name, node_address, billing_group, provider, location,
                     monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
                     importance, can_remove, note, updated_at
                 ) VALUES (
-                    :node_key, :node_id, :node_name, :node_address, :provider, :location,
+                    :node_key, :node_id, :node_name, :node_address, :billing_group, :provider, :location,
                     :monthly_cost, :currency, :traffic_included_gb, :traffic_price_per_tb,
                     :importance, :can_remove, :note, :updated_at
                 )
@@ -779,6 +796,7 @@ class Database:
                     node_id=excluded.node_id,
                     node_name=excluded.node_name,
                     node_address=excluded.node_address,
+                    billing_group=excluded.billing_group,
                     provider=excluded.provider,
                     location=excluded.location,
                     monthly_cost=excluded.monthly_cost,

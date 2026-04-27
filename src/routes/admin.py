@@ -167,6 +167,7 @@ def _validate_node_setting(data):
         "node_id": node_id,
         "node_name": short_text("node_name", 128),
         "node_address": short_text("node_address", 256),
+        "billing_group": short_text("billing_group", 128),
         "provider": short_text("provider", 64),
         "location": short_text("location", 64),
         "monthly_cost": _optional_number(data, "monthly_cost"),
