@@ -117,6 +117,68 @@ def _validate_per_user_configs(data):
                     raise ValueError(f"Config at index {i} for user {username} enabled must be boolean")
 
 
+def _optional_number(data, key):
+    value = data.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} must be a number or null")
+    if numeric < 0:
+        raise ValueError(f"{key} must be >= 0")
+    return numeric
+
+
+def _validate_node_setting(data):
+    """Validate local node metadata used for economics and AI analysis."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected dict")
+
+    node_id = data.get("node_id")
+    if node_id not in (None, ""):
+        try:
+            node_id = int(node_id)
+        except (TypeError, ValueError):
+            raise ValueError("node_id must be an integer or null")
+
+    importance = str(data.get("importance") or "normal").strip()
+    if importance not in {"normal", "core", "backup", "test", "deprecated"}:
+        raise ValueError("importance must be normal, core, backup, test or deprecated")
+
+    can_remove = data.get("can_remove", True)
+    if not isinstance(can_remove, bool):
+        if isinstance(can_remove, int) and can_remove in (0, 1):
+            can_remove = bool(can_remove)
+        else:
+            raise ValueError("can_remove must be boolean")
+
+    currency = str(data.get("currency") or "USD").strip().upper()
+    if not currency or len(currency) > 8:
+        raise ValueError("currency must be 1-8 characters")
+
+    def short_text(key, limit):
+        value = str(data.get(key) or "").strip()
+        if len(value) > limit:
+            raise ValueError(f"{key} max {limit} chars")
+        return value
+
+    return {
+        "node_id": node_id,
+        "node_name": short_text("node_name", 128),
+        "node_address": short_text("node_address", 256),
+        "provider": short_text("provider", 64),
+        "location": short_text("location", 64),
+        "monthly_cost": _optional_number(data, "monthly_cost"),
+        "currency": currency,
+        "traffic_included_gb": _optional_number(data, "traffic_included_gb"),
+        "traffic_price_per_tb": _optional_number(data, "traffic_price_per_tb"),
+        "importance": importance,
+        "can_remove": can_remove,
+        "note": short_text("note", 512),
+    }
+
+
 def handle_configs_list(handler):
     db = handler.server.db
     configs = db.get_extra_configs()
@@ -260,6 +322,22 @@ def handle_settings_save(handler):
             return
         db.set_setting("block_contact", val)
     _json_response(handler, 200, {"ok": True})
+
+
+def handle_node_settings_get(handler):
+    settings = handler.server.db.get_node_settings()
+    _json_response(handler, 200, settings)
+
+
+def handle_node_settings_save(handler):
+    try:
+        data = json.loads(_read_body(handler))
+        validated = _validate_node_setting(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    result = handler.server.db.save_node_setting(validated)
+    _json_response(handler, 200, result)
 
 
 # --- device management (admin) ---

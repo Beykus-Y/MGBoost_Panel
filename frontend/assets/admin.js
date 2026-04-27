@@ -4,6 +4,7 @@ let TOKEN = localStorage.getItem('mz_token') || '';
 let allUsers = [];
 let allNodes = [];
 let nodeFilters = {};
+let nodeSettings = {};
 let dragIdx = null;
 let perUserConfigs = {};
 let userDeviceCounts = {};
@@ -23,6 +24,31 @@ function fmt(bytes){
   if(bytes<1048576)return(bytes/1024).toFixed(1)+'KB';
   if(bytes<1073741824)return(bytes/1048576).toFixed(1)+'MB';
   return(bytes/1073741824).toFixed(2)+'GB';
+}
+function fmtMoney(value,currency='USD'){
+  if(value===null||value===undefined||value==='')return'—';
+  const n=Number(value);
+  if(!Number.isFinite(n))return'—';
+  return `${n.toFixed(n%1===0?0:2)} ${currency||'USD'}`;
+}
+function fmtGb(value){
+  if(value===null||value===undefined||value==='')return'—';
+  const n=Number(value);
+  if(!Number.isFinite(n))return'—';
+  return `${n.toFixed(n%1===0?0:1)} GB`;
+}
+function nodeKey(id){return id===null||id===undefined||id===''?'null':String(id)}
+function getNodeSetting(id){return nodeSettings[nodeKey(id)]||{currency:'USD',importance:'normal',can_remove:true}}
+function importanceLabel(v){return{normal:'обычная',core:'важная',backup:'backup',test:'test',deprecated:'к выводу'}[v]||'обычная'}
+function importanceClass(v){return{core:'badge-red',backup:'badge-blue',test:'badge-gray',deprecated:'badge-amber',normal:'badge-green'}[v]||'badge-green'}
+function trafficCostLabel(setting,totalBytes){
+  const price=Number(setting.traffic_price_per_tb);
+  if(!Number.isFinite(price)||price<=0)return'—';
+  const gb=(totalBytes||0)/1073741824;
+  const included=Number(setting.traffic_included_gb)||0;
+  const billable=Math.max(0,gb-included);
+  const cost=billable/1024*price;
+  return `${fmtMoney(cost,setting.currency)} за период`;
 }
 function parseUTC(v){
   if(!v)return null;
@@ -592,15 +618,18 @@ async function createUser(){
 // NODES
 async function loadNodes(){
   const period=getTrafficPeriod();
-  const [nodesR,usageR]=await Promise.all([api('/nodes'),api('/nodes/usage'+period.query)]);
+  const [nodesR,usageR,settingsR]=await Promise.all([api('/nodes'),api('/nodes/usage'+period.query),proxyApi('/admin/node-settings')]);
   const nodes=await nodesR.json();
   allNodes=nodes;
   const usage=await usageR.json();
+  nodeSettings=settingsR.ok?await settingsR.json():{};
   const usageMap={};
   (usage.usages||[]).forEach(u=>usageMap[u.node_id??'null']=u);
 
   document.getElementById('nodes-grid').innerHTML=nodes.map(n=>{
     const u=usageMap[n.id]||{uplink:0,downlink:0};
+    const total=(u.uplink||0)+(u.downlink||0);
+    const s=getNodeSetting(n.id);
     return`<div class="node-card clickable" onclick="openNode(${n.id})">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
         <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
@@ -608,18 +637,41 @@ async function loadNodes(){
         <button onclick="event.stopPropagation();reconnectNode(${n.id})" style="padding:2px 8px;font-size:11px">⟳</button>
       </div>
       <div class="node-addr">${esc(n.address)}:${n.port}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+        <span class="badge ${importanceClass(s.importance)}">${importanceLabel(s.importance)}</span>
+        <span class="badge ${s.can_remove?'badge-green':'badge-red'}">${s.can_remove?'можно убрать':'не трогать'}</span>
+      </div>
       <div class="node-stats">
         <span>↑${fmt(u.uplink)}</span>
         <span>↓${fmt(u.downlink)}</span>
         <span style="color:var(--text3)">${n.xray_version||'?'}</span>
       </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)">
+        <div style="display:flex;justify-content:space-between;gap:8px"><span>VPS / мес</span><b style="color:var(--text)">${fmtMoney(s.monthly_cost,s.currency)}</b></div>
+        <div style="display:flex;justify-content:space-between;gap:8px"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
+        ${(s.provider||s.location)?`<div style="margin-top:6px;color:var(--text3)">${esc([s.provider,s.location].filter(Boolean).join(' · '))}</div>`:''}
+        ${total&&s.traffic_price_per_tb?`<div style="margin-top:4px;color:var(--text3)">${trafficCostLabel(s,total)}</div>`:''}
+      </div>
+      <button onclick="event.stopPropagation();openNodeSettings(${n.id})" style="width:100%;margin-top:10px">Настроить</button>
     </div>`;
   }).join('');
 
   const tbody=document.getElementById('node-traffic-tbody');
   tbody.innerHTML=(usage.usages||[]).map(u=>{
     const total=u.uplink+u.downlink;
-    return`<tr class="clickable" onclick="openNodeTraffic(${u.node_id===null?'null':u.node_id})"><td>${u.node_name}</td><td>${fmt(u.uplink)}</td><td>${fmt(u.downlink)}</td><td style="font-weight:500">${fmt(total)}</td></tr>`;
+    const s=getNodeSetting(u.node_id);
+    return`<tr class="clickable" onclick="openNodeTraffic(${u.node_id===null?'null':u.node_id})">
+      <td>
+        <div style="font-weight:500">${esc(u.node_name)}</div>
+        <div style="font-size:11px;color:var(--text3)">${esc([s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance))}</div>
+      </td>
+      <td>${fmt(u.uplink)}</td>
+      <td>${fmt(u.downlink)}</td>
+      <td style="font-weight:500">${fmt(total)}</td>
+      <td>${fmtMoney(s.monthly_cost,s.currency)}</td>
+      <td>${trafficCostLabel(s,total)}</td>
+      <td><button onclick="event.stopPropagation();openNodeSettings(${u.node_id===null?'null':u.node_id})" style="padding:4px 10px;font-size:12px">Настроить</button></td>
+    </tr>`;
   }).join('');
 }
 
@@ -627,6 +679,122 @@ async function reconnectNode(id){
   const r=await api('/node/'+id+'/reconnect',{method:'POST'});
   if(r.ok){toast('Reconnect послан');setTimeout(loadNodes,1000);}
   else toast('Ошибка','err');
+}
+
+function option(value,current,label){
+  return `<option value="${esc(value)}" ${value===current?'selected':''}>${esc(label)}</option>`;
+}
+
+function emptyToNumber(id){
+  const raw=document.getElementById(id).value.trim().replace(',','.');
+  if(raw==='')return null;
+  const n=Number(raw);
+  return Number.isFinite(n)&&n>=0?n:null;
+}
+
+function openNodeSettings(id){
+  const node=allNodes.find(n=>sameNodeId(n.id,id));
+  const s={currency:'USD',importance:'normal',can_remove:true,...getNodeSetting(id)};
+  document.getElementById('node-modal-title').textContent=node?`Настройки ноды · ${node.name}`:'Настройки ноды';
+  const body=document.getElementById('node-modal-body');
+  body.innerHTML=`
+    <div style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+      Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду. Они нужны для аналитики, рекомендаций и будущего LLM-ассистента.
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Провайдер</label>
+        <input type="text" id="node-provider" maxlength="64" placeholder="Hetzner, Aeza..." value="${esc(s.provider||'')}" />
+      </div>
+      <div>
+        <label>Локация</label>
+        <input type="text" id="node-location" maxlength="64" placeholder="DE, NL, Estonia..." value="${esc(s.location||'')}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Стоимость VPS / месяц</label>
+        <input type="number" id="node-monthly-cost" min="0" step="0.01" placeholder="например: 6.5" value="${s.monthly_cost??''}" />
+      </div>
+      <div>
+        <label>Валюта</label>
+        <input type="text" id="node-currency" maxlength="8" placeholder="USD" value="${esc(s.currency||'USD')}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Включённый трафик, GB</label>
+        <input type="number" id="node-traffic-included" min="0" step="1" placeholder="пусто = неизвестно" value="${s.traffic_included_gb??''}" />
+      </div>
+      <div>
+        <label>Цена доп. трафика за TB</label>
+        <input type="number" id="node-traffic-price" min="0" step="0.01" placeholder="пусто = неизвестно" value="${s.traffic_price_per_tb??''}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Роль ноды</label>
+        <select id="node-importance">
+          ${option('normal',s.importance,'Обычная')}
+          ${option('core',s.importance,'Важная / core')}
+          ${option('backup',s.importance,'Backup')}
+          ${option('test',s.importance,'Тестовая')}
+          ${option('deprecated',s.importance,'К выводу')}
+        </select>
+      </div>
+      <div>
+        <label>Кандидат на удаление</label>
+        <select id="node-can-remove">
+          <option value="true" ${s.can_remove?'selected':''}>Можно убрать, если метрики слабые</option>
+          <option value="false" ${!s.can_remove?'selected':''}>Не трогать без ручного решения</option>
+        </select>
+      </div>
+    </div>
+    <label>Заметка</label>
+    <textarea id="node-note" maxlength="512" rows="4" placeholder="Например: дешёвая, плохой провайдер, оставить как резерв...">${esc(s.note||'')}</textarea>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem">
+      <div class="detail-item"><div class="detail-label">Marzban ID</div><div class="detail-value">${node?node.id:'—'}</div></div>
+      <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?esc(node.address):esc(s.node_address||'—')}</div></div>
+      <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?esc(node.status):'—'}</div></div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeModal('node-modal')">Отмена</button>
+      <button class="primary" onclick="saveNodeSettings(${id===null?'null':id})">Сохранить</button>
+    </div>
+  `;
+  document.getElementById('node-modal').classList.add('open');
+}
+
+async function saveNodeSettings(id){
+  const node=allNodes.find(n=>sameNodeId(n.id,id));
+  const monthlyCost=emptyToNumber('node-monthly-cost');
+  const trafficIncluded=emptyToNumber('node-traffic-included');
+  const trafficPrice=emptyToNumber('node-traffic-price');
+  if(monthlyCost===null&&document.getElementById('node-monthly-cost').value.trim()!==''){toast('Некорректная цена VPS','err');return}
+  if(trafficIncluded===null&&document.getElementById('node-traffic-included').value.trim()!==''){toast('Некорректный включённый трафик','err');return}
+  if(trafficPrice===null&&document.getElementById('node-traffic-price').value.trim()!==''){toast('Некорректная цена трафика','err');return}
+
+  const payload={
+    node_id:id,
+    node_name:node?node.name:(getNodeSetting(id).node_name||''),
+    node_address:node?node.address:(getNodeSetting(id).node_address||''),
+    provider:document.getElementById('node-provider').value.trim(),
+    location:document.getElementById('node-location').value.trim(),
+    monthly_cost:monthlyCost,
+    currency:(document.getElementById('node-currency').value.trim()||'USD').toUpperCase(),
+    traffic_included_gb:trafficIncluded,
+    traffic_price_per_tb:trafficPrice,
+    importance:document.getElementById('node-importance').value,
+    can_remove:document.getElementById('node-can-remove').value==='true',
+    note:document.getElementById('node-note').value.trim(),
+  };
+  const r=await proxyApi('/admin/node-settings',{method:'POST',body:JSON.stringify(payload)});
+  if(!r.ok){const e=await r.json().catch(()=>({error:'Ошибка'}));toast(e.error||'Ошибка','err');return}
+  const saved=await r.json();
+  nodeSettings[nodeKey(id)]=saved;
+  toast('Настройки ноды сохранены');
+  closeModal('node-modal');
+  loadNodes();
 }
 
 function sameNodeId(a,b){

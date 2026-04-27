@@ -460,6 +460,25 @@ def handle_internal_node_filters_save(handler):
     json_response(handler, 200, {"ok": True})
 
 
+def handle_internal_node_settings_get(handler):
+    settings = handler.server.db.get_node_settings()
+    json_response(handler, 200, settings)
+
+
+def handle_internal_node_settings_save(handler):
+    from .admin import _validate_node_setting
+
+    try:
+        data = json.loads(read_body(handler) or b"{}")
+        validated = _validate_node_setting(data)
+    except (json.JSONDecodeError, ValueError) as exc:
+        error_response(handler, 400, str(exc))
+        return
+
+    result = handler.server.db.save_node_setting(validated)
+    json_response(handler, 200, result)
+
+
 def handle_internal_settings_get(handler):
     interval = handler.server.db.get_setting("sub_update_interval")
     json_response(handler, 200, {

@@ -99,6 +99,23 @@ class Database:
                 username TEXT NOT NULL,
                 locked_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS node_settings (
+                node_key TEXT PRIMARY KEY,
+                node_id INTEGER,
+                node_name TEXT,
+                node_address TEXT,
+                provider TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                monthly_cost REAL,
+                currency TEXT DEFAULT 'USD',
+                traffic_included_gb REAL,
+                traffic_price_per_tb REAL,
+                importance TEXT DEFAULT 'normal',
+                can_remove INTEGER DEFAULT 1,
+                note TEXT DEFAULT '',
+                updated_at INTEGER NOT NULL
+            );
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -683,3 +700,98 @@ class Database:
             )
             self._conn.commit()
         return True
+
+    # --- node settings / economics ---
+
+    @staticmethod
+    def _node_key(node_id) -> str:
+        if node_id is None or node_id == "":
+            return "null"
+        return str(node_id)
+
+    @staticmethod
+    def _node_settings_row_to_dict(row) -> dict:
+        result = dict(row)
+        result["can_remove"] = bool(result.get("can_remove"))
+        return result
+
+    def get_node_settings(self) -> dict:
+        rows = self._conn.execute(
+            """
+            SELECT node_key, node_id, node_name, node_address, provider, location,
+                   monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
+                   importance, can_remove, note, updated_at
+            FROM node_settings
+            ORDER BY node_name, node_key
+            """
+        ).fetchall()
+        return {row["node_key"]: self._node_settings_row_to_dict(row) for row in rows}
+
+    def get_node_setting(self, node_id):
+        node_key = self._node_key(node_id)
+        row = self._conn.execute(
+            """
+            SELECT node_key, node_id, node_name, node_address, provider, location,
+                   monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
+                   importance, can_remove, note, updated_at
+            FROM node_settings
+            WHERE node_key=?
+            """,
+            (node_key,),
+        ).fetchone()
+        return self._node_settings_row_to_dict(row) if row else None
+
+    def save_node_setting(self, data: dict) -> dict:
+        node_id = data.get("node_id")
+        node_key = self._node_key(node_id)
+        now = int(time.time())
+
+        payload = {
+            "node_key": node_key,
+            "node_id": int(node_id) if node_id not in (None, "") else None,
+            "node_name": data.get("node_name") or "",
+            "node_address": data.get("node_address") or "",
+            "provider": data.get("provider") or "",
+            "location": data.get("location") or "",
+            "monthly_cost": data.get("monthly_cost"),
+            "currency": data.get("currency") or "USD",
+            "traffic_included_gb": data.get("traffic_included_gb"),
+            "traffic_price_per_tb": data.get("traffic_price_per_tb"),
+            "importance": data.get("importance") or "normal",
+            "can_remove": 1 if data.get("can_remove", True) else 0,
+            "note": data.get("note") or "",
+            "updated_at": now,
+        }
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO node_settings (
+                    node_key, node_id, node_name, node_address, provider, location,
+                    monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
+                    importance, can_remove, note, updated_at
+                ) VALUES (
+                    :node_key, :node_id, :node_name, :node_address, :provider, :location,
+                    :monthly_cost, :currency, :traffic_included_gb, :traffic_price_per_tb,
+                    :importance, :can_remove, :note, :updated_at
+                )
+                ON CONFLICT(node_key) DO UPDATE SET
+                    node_id=excluded.node_id,
+                    node_name=excluded.node_name,
+                    node_address=excluded.node_address,
+                    provider=excluded.provider,
+                    location=excluded.location,
+                    monthly_cost=excluded.monthly_cost,
+                    currency=excluded.currency,
+                    traffic_included_gb=excluded.traffic_included_gb,
+                    traffic_price_per_tb=excluded.traffic_price_per_tb,
+                    importance=excluded.importance,
+                    can_remove=excluded.can_remove,
+                    note=excluded.note,
+                    updated_at=excluded.updated_at
+                """,
+                payload,
+            )
+            self._conn.commit()
+
+        return self.get_node_setting(node_id)
