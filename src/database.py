@@ -564,15 +564,15 @@ class Database:
                 self._conn.commit()
                 return False, None
 
-            # 3. Count active slots
-            active_count = self._conn.execute(
-                "SELECT COUNT(*) FROM user_devices WHERE username=? AND is_active=1",
-                (username,),
-            ).fetchone()[0]
-
+            # 3. Count active slots (limit=0 means unlimited)
             limit = self.get_device_limit(username)
-            if active_count >= limit:
-                return True, "device_limit_reached"
+            if limit > 0:
+                active_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM user_devices WHERE username=? AND is_active=1",
+                    (username,),
+                ).fetchone()[0]
+                if active_count >= limit:
+                    return True, "device_limit_reached"
 
             # 4. Register or re-activate
             device_name = device_metadata.get("device_name") or device_metadata.get("platform")

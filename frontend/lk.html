@@ -712,7 +712,7 @@ function renderDevicesCard(result) {
   const counter = `
     <div class="device-counter">
       <span class="device-counter-label">Активные устройства</span>
-      <span class="device-counter-val">${activeCount} / ${limit}</span>
+      <span class="device-counter-val">${activeCount} / ${limit === 0 ? '∞' : limit}</span>
     </div>
     <div class="device-slots-bar"><div class="device-slots-fill" style="width:${pct}%"></div></div>`;
 

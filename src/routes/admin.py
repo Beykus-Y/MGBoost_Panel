@@ -276,8 +276,8 @@ def handle_admin_set_device_limit(handler, username):
     try:
         data = json.loads(_read_body(handler))
         limit = int(data["limit"])
-        if limit < 1 or limit > 20:
-            raise ValueError("limit must be between 1 and 20")
+        if limit < 0 or limit > 20:
+            raise ValueError("limit must be between 0 and 20 (0 = unlimited)")
     except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
         _json_response(handler, 400, {"error": str(e)})
         return
