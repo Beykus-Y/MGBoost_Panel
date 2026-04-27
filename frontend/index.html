@@ -331,6 +331,16 @@ tr:hover td{background:var(--bg3)}
         <button onclick="saveSettings()">Сохранить</button>
       </div>
       <div class="card">
+        <div class="card-title">Сообщение при блокировке устройства</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:10px">
+          Показывается пользователю в VPN-клиенте вместо серверов, если устройство заблокировано (лимит или шеринг).
+          Например: <code style="background:var(--bg4);padding:1px 5px;border-radius:4px">@your_support_bot</code> или номер телефона.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="set-block-contact" maxlength="128" placeholder="@support или +7..." style="width:280px" />
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">Автообновление подписки</div>
         <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
           Интервал (в часах), через который клиент должен обновлять подписку. Переопределяет значение из Marzban (текущее: 12 ч).
@@ -424,14 +434,21 @@ function fmt(bytes){
   if(bytes<1073741824)return(bytes/1048576).toFixed(1)+'MB';
   return(bytes/1073741824).toFixed(2)+'GB';
 }
+function parseUTC(v){
+  if(!v)return null;
+  if(typeof v==='number')return new Date(v*1000);
+  // Marzban returns naive UTC strings without 'Z' — force UTC to avoid local-time offset
+  if(!v.endsWith('Z')&&!/[+-]\d{2}:?\d{2}$/.test(v))v+='Z';
+  return new Date(v);
+}
 function fmtDate(ts){
   if(!ts)return'∞';
-  const d=new Date(typeof ts==='number'?ts*1000:ts);
+  const d=parseUTC(ts);
   return d.toLocaleDateString('ru-RU');
 }
 function fmtRelDate(ts){
   if(!ts)return'∞';
-  const d=new Date(typeof ts==='number'?ts*1000:ts);
+  const d=parseUTC(ts);
   const diff=d-Date.now();
   const days=Math.ceil(diff/86400000);
   if(days<0)return'<span style="color:var(--red)">просрочен</span>';
@@ -441,7 +458,7 @@ function fmtRelDate(ts){
 }
 function fmtOnline(dt){
   if(!dt)return'—';
-  const d=new Date(dt);
+  const d=parseUTC(dt);
   const diff=(Date.now()-d)/1000;
   if(diff<120)return'<span style="color:var(--green)">сейчас</span>';
   if(diff<3600)return`${Math.floor(diff/60)}м назад`;
@@ -595,9 +612,14 @@ async function openUser(username){
   footer.innerHTML='';
   modal.classList.add('open');
 
-  const [userR,usageR]=await Promise.all([api('/user/'+username),api('/user/'+username+'/usage')]);
+  const [userR,usageR,devR]=await Promise.all([
+    api('/user/'+username),
+    api('/user/'+username+'/usage'),
+    proxyApi('/admin/user-devices/'+encodeURIComponent(username)),
+  ]);
   const u=await userR.json();
   const usage=await usageR.json();
+  const devData=devR.ok?await devR.json():null;
 
   const usageByNode=usage.usages||[];
   const totalUsage=usageByNode.reduce((s,n)=>s+n.used_traffic,0);
@@ -624,6 +646,29 @@ async function openUser(username){
           <div class="traffic-bar" style="margin-top:6px"><div class="traffic-fill" style="width:${pct}%"></div></div>
         </div>`;
       }).join('')}
+    </div>
+    <div style="margin-top:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Устройства (HWID)</div>
+        <button style="font-size:11px;padding:3px 10px" onclick="changeDeviceLimit('${username}',${devData?devData.limit:3})">Изменить лимит</button>
+      </div>
+      ${devData?`
+        <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
+          Активных: <b>${devData.active_count}</b> / <b>${devData.limit}</b>
+        </div>
+        ${devData.devices.length?devData.devices.map(d=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px">
+            <div>
+              <span style="${d.is_active?'color:var(--green)':'color:var(--text3)'}">${d.is_active?'●':'○'}</span>
+              <span style="margin-left:6px;font-weight:500">${esc(d.display_name||d.device_name||d.client_name||'Устройство')}</span>
+              <span style="color:var(--text2);margin-left:6px">${esc(d.platform||'')}${d.client_name?' · '+esc(d.client_name):''}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="color:var(--text3)">${fmtOnline(new Date(d.last_seen*1000).toISOString())}</span>
+              <button style="font-size:11px;padding:2px 8px;color:var(--red)" onclick="adminRemoveDevice(${d.id},'${username}')">✕</button>
+            </div>
+          </div>`).join(''):'<div style="color:var(--text3);font-size:12px">Нет зарегистрированных устройств</div>'}
+      `:'<div style="color:var(--text3);font-size:12px">Нет данных</div>'}
     </div>
     <div style="margin-top:1rem" id="nf-section">
       <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
@@ -830,6 +875,21 @@ async function deleteUser(username){
 async function disableUser(username){
   const r=await api('/user/'+username,{method:'PUT',body:JSON.stringify({status:'disabled'})});
   if(r.ok){toast('Отключён');openUser(username);loadUsers();}
+}
+async function changeDeviceLimit(username,current){
+  const val=prompt('Лимит устройств для '+username+' (1–20):', current);
+  if(val===null)return;
+  const n=parseInt(val,10);
+  if(isNaN(n)||n<1||n>20){toast('Некорректное значение','err');return;}
+  const r=await proxyApi('/admin/user-devices/'+encodeURIComponent(username)+'/limit',{method:'POST',body:JSON.stringify({limit:n})});
+  if(r.ok){toast('Лимит обновлён');openUser(username);}
+  else toast('Ошибка','err');
+}
+async function adminRemoveDevice(deviceId,username){
+  if(!confirm('Удалить устройство и снять HWID-блокировку?'))return;
+  const r=await proxyApi('/admin/user-devices/device/'+deviceId,{method:'DELETE'});
+  if(r.ok){toast('Устройство удалено');openUser(username);}
+  else toast('Ошибка','err');
 }
 async function enableUser(username){
   const r=await api('/user/'+username,{method:'PUT',body:JSON.stringify({status:'active'})});
@@ -1063,8 +1123,8 @@ async function loadSettings(){
   try{
     const r=await proxyApi('/admin/settings');
     const data=await r.json();
-    const inp=document.getElementById('set-sub-interval');
-    inp.value=data.sub_update_interval!=null?data.sub_update_interval:'';
+    document.getElementById('set-sub-interval').value=data.sub_update_interval!=null?data.sub_update_interval:'';
+    document.getElementById('set-block-contact').value=data.block_contact||'';
     status.textContent='';
   }catch(e){
     status.textContent='Ошибка загрузки настроек';
@@ -1078,9 +1138,10 @@ async function saveSettings(){
     status.textContent='Введите число от 1 до 168';
     return;
   }
+  const contact=document.getElementById('set-block-contact').value.trim();
   status.textContent='Сохранение...';
   try{
-    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({sub_update_interval:val})});
+    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({sub_update_interval:val,block_contact:contact||null})});
     status.style.color='#6f6';
     status.textContent='Сохранено';
     setTimeout(()=>{status.textContent='';status.style.color='';},2000);

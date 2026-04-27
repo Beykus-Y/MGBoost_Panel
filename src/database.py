@@ -77,6 +77,28 @@ class Database:
                 sort_order INTEGER DEFAULT 0,
                 created_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS user_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                token TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                device_name TEXT,
+                display_name TEXT,
+                platform TEXT,
+                client_name TEXT,
+                client_version TEXT,
+                is_active INTEGER DEFAULT 1,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                UNIQUE(username, request_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS hwid_lock (
+                request_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                locked_at INTEGER NOT NULL
+            );
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -85,6 +107,8 @@ class Database:
                 ON sub_requests(token, request_key);
             CREATE INDEX IF NOT EXISTS idx_sub_requests_username_ts
                 ON sub_requests(username, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_user_devices_username
+                ON user_devices(username, is_active);
         """)
         self._conn.commit()
 
@@ -482,3 +506,161 @@ class Database:
             (key, value),
         )
         self._conn.commit()
+
+    # --- device limits ---
+
+    def get_device_limit(self, username: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM settings WHERE key=?", (f"device_limit:{username}",)
+            ).fetchone()
+            if not row:
+                row = self._conn.execute(
+                    "SELECT value FROM settings WHERE key='device_limit_default'"
+                ).fetchone()
+        return int(row["value"]) if row else 3
+
+    def set_device_limit(self, username: str, limit: int):
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                (f"device_limit:{username}", str(limit)),
+            )
+            self._conn.commit()
+
+    # --- user_devices / hwid_lock ---
+
+    def check_device_access(self, username: str, token: str, device_metadata: dict) -> tuple:
+        """
+        Returns (blocked: bool, reason: str | None).
+        Side effect: registers or refreshes device entry if access is granted.
+        Only enforces limits for hwid: keys; fp: keys pass through.
+        """
+        request_key = device_metadata.get("request_key")
+        if not request_key or not request_key.startswith("hwid:"):
+            return False, None
+
+        now = int(time.time())
+
+        with self._lock:
+            # 1. Global anti-sharing check
+            lock_row = self._conn.execute(
+                "SELECT username FROM hwid_lock WHERE request_key=?", (request_key,)
+            ).fetchone()
+            if lock_row and lock_row["username"] != username:
+                return True, "device_locked"
+
+            # 2. Is device already registered for this user?
+            existing = self._conn.execute(
+                "SELECT id, is_active FROM user_devices WHERE username=? AND request_key=?",
+                (username, request_key),
+            ).fetchone()
+
+            if existing and existing["is_active"]:
+                self._conn.execute(
+                    "UPDATE user_devices SET last_seen=?, token=?, client_version=? WHERE id=?",
+                    (now, token, device_metadata.get("client_version"), existing["id"]),
+                )
+                self._conn.commit()
+                return False, None
+
+            # 3. Count active slots
+            active_count = self._conn.execute(
+                "SELECT COUNT(*) FROM user_devices WHERE username=? AND is_active=1",
+                (username,),
+            ).fetchone()[0]
+
+            limit = self.get_device_limit(username)
+            if active_count >= limit:
+                return True, "device_limit_reached"
+
+            # 4. Register or re-activate
+            device_name = device_metadata.get("device_name") or device_metadata.get("platform")
+            if existing:
+                self._conn.execute(
+                    """UPDATE user_devices
+                       SET is_active=1, last_seen=?, token=?, client_name=?, client_version=?, device_name=?
+                       WHERE id=?""",
+                    (now, token, device_metadata.get("client_name"),
+                     device_metadata.get("client_version"), device_name, existing["id"]),
+                )
+            else:
+                self._conn.execute(
+                    """INSERT INTO user_devices
+                       (username, token, request_key, device_name, platform, client_name,
+                        client_version, is_active, first_seen, last_seen)
+                       VALUES (?,?,?,?,?,?,?,1,?,?)""",
+                    (username, token, request_key, device_name,
+                     device_metadata.get("platform"), device_metadata.get("client_name"),
+                     device_metadata.get("client_version"), now, now),
+                )
+
+            # 5. Acquire hwid_lock
+            if lock_row:
+                self._conn.execute(
+                    "UPDATE hwid_lock SET username=?, locked_at=? WHERE request_key=?",
+                    (username, now, request_key),
+                )
+            else:
+                self._conn.execute(
+                    "INSERT INTO hwid_lock (request_key, username, locked_at) VALUES (?,?,?)",
+                    (request_key, username, now),
+                )
+
+            self._conn.commit()
+            return False, None
+
+    def get_user_devices(self, username: str) -> list:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, request_key, device_name, display_name, platform, client_name,
+                          client_version, is_active, first_seen, last_seen
+                   FROM user_devices WHERE username=? ORDER BY last_seen DESC""",
+                (username,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def deactivate_device(self, device_id: int, username: str) -> bool:
+        """Deactivate a user device and release its hwid_lock."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT request_key FROM user_devices WHERE id=? AND username=?",
+                (device_id, username),
+            ).fetchone()
+            if not row:
+                return False
+            self._conn.execute(
+                "UPDATE user_devices SET is_active=0 WHERE id=? AND username=?",
+                (device_id, username),
+            )
+            self._conn.execute(
+                "DELETE FROM hwid_lock WHERE request_key=? AND username=?",
+                (row["request_key"], username),
+            )
+            self._conn.commit()
+        return True
+
+    def rename_device(self, device_id: int, username: str, display_name: str) -> bool:
+        with self._lock:
+            result = self._conn.execute(
+                "UPDATE user_devices SET display_name=? WHERE id=? AND username=?",
+                (display_name[:50], device_id, username),
+            )
+            self._conn.commit()
+        return result.rowcount > 0
+
+    def admin_remove_device(self, device_id: int) -> bool:
+        """Admin: remove device completely and release its hwid_lock."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT request_key, username FROM user_devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not row:
+                return False
+            self._conn.execute("DELETE FROM user_devices WHERE id=?", (device_id,))
+            self._conn.execute(
+                "DELETE FROM hwid_lock WHERE request_key=? AND username=?",
+                (row["request_key"], row["username"]),
+            )
+            self._conn.commit()
+        return True

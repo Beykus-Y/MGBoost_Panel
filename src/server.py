@@ -3,6 +3,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .http_utils import error_response
 from .routes.admin import (
+    handle_admin_remove_device,
+    handle_admin_set_device_limit,
+    handle_admin_user_devices,
     handle_configs_add,
     handle_configs_delete,
     handle_configs_list,
@@ -35,7 +38,14 @@ from .routes.internal import (
     handle_internal_user_renew,
     handle_internal_users_list,
 )
-from .routes.lk import handle_lk_devices, handle_lk_info, handle_lk_page, handle_lk_usage
+from .routes.lk import (
+    handle_lk_device_delete,
+    handle_lk_device_rename,
+    handle_lk_devices,
+    handle_lk_info,
+    handle_lk_page,
+    handle_lk_usage,
+)
 from .routes.panel import handle_panel
 from .routes.sub import handle_sub
 from .security import require_admin_auth, require_internal_auth
@@ -46,6 +56,8 @@ _ROUTES = [
     ("GET",    re.compile(r"^/lk/api/info$"),                   lambda h: handle_lk_info(h)),
     ("GET",    re.compile(r"^/lk/api/usage$"),                  lambda h: handle_lk_usage(h)),
     ("GET",    re.compile(r"^/lk/api/devices$"),                lambda h: handle_lk_devices(h)),
+    ("DELETE", re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_delete(h, device_id)),
+    ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
     ("GET",    re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_list(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_add(h) if require_admin_auth(h) else None),
@@ -59,6 +71,9 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/node-filters$"),            lambda h: handle_node_filters_save(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h) if require_admin_auth(h) else None),
+    ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/user-devices/(?P<username>[^/]+)/limit$"), lambda h, username: handle_admin_set_device_limit(h, username) if require_admin_auth(h) else None),
+    ("DELETE", re.compile(r"^/admin/user-devices/device/(?P<device_id>\d+)$"), lambda h, device_id: handle_admin_remove_device(h, device_id) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/internal/v1/status$"),            lambda h: handle_internal_status(h) if require_internal_auth(h) else None),
     ("GET",    re.compile(r"^/internal/v1/inbounds$"),          lambda h: handle_internal_inbounds(h) if require_internal_auth(h) else None),
     ("GET",    re.compile(r"^/internal/v1/users$"),             lambda h: handle_internal_users_list(h) if require_internal_auth(h) else None),
@@ -109,6 +124,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._dispatch("DELETE")
+
+    def do_PATCH(self):
+        self._dispatch("PATCH")
 
 
 class _ServerWithDB(HTTPServer):

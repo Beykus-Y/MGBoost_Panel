@@ -225,8 +225,10 @@ def handle_node_filters_save(handler):
 def handle_settings_get(handler):
     db = handler.server.db
     interval = db.get_setting("sub_update_interval")
+    contact = db.get_setting("block_contact") or ""
     _json_response(handler, 200, {
-        "sub_update_interval": int(interval) if interval is not None else None,
+        "sub_update_interval": int(interval) if interval not in (None, "") else None,
+        "block_contact": contact,
     })
 
 
@@ -251,4 +253,46 @@ def handle_settings_save(handler):
                 _json_response(handler, 400, {"error": "sub_update_interval must be between 1 and 168"})
                 return
             db.set_setting("sub_update_interval", str(numeric))
+    if "block_contact" in data:
+        val = str(data["block_contact"] or "").strip()
+        if len(val) > 128:
+            _json_response(handler, 400, {"error": "block_contact max 128 chars"})
+            return
+        db.set_setting("block_contact", val)
+    _json_response(handler, 200, {"ok": True})
+
+
+# --- device management (admin) ---
+
+def handle_admin_user_devices(handler, username):
+    db = handler.server.db
+    devices = db.get_user_devices(username)
+    limit = db.get_device_limit(username)
+    active_count = sum(1 for d in devices if d["is_active"])
+    _json_response(handler, 200, {"devices": devices, "limit": limit, "active_count": active_count})
+
+
+def handle_admin_set_device_limit(handler, username):
+    try:
+        data = json.loads(_read_body(handler))
+        limit = int(data["limit"])
+        if limit < 1 or limit > 20:
+            raise ValueError("limit must be between 1 and 20")
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    handler.server.db.set_device_limit(username, limit)
+    _json_response(handler, 200, {"ok": True})
+
+
+def handle_admin_remove_device(handler, device_id):
+    try:
+        did = int(device_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid device id"})
+        return
+    ok = handler.server.db.admin_remove_device(did)
+    if not ok:
+        _json_response(handler, 404, {"error": "Device not found"})
+        return
     _json_response(handler, 200, {"ok": True})

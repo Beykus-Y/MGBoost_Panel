@@ -3,6 +3,7 @@ import os
 import time
 from collections import defaultdict
 
+from ..http_utils import read_body as _read_body
 from ..marzban import MarzbanClient
 
 _client = MarzbanClient()
@@ -233,9 +234,80 @@ def handle_lk_devices(handler):
         return
 
     db = handler.server.db
-    history = db.get_device_history(token, limit=10)
-    # Strip IP from response for privacy
-    for entry in history:
-        entry.pop("ip", None)
+    devices = db.get_user_devices(username)
+    limit = db.get_device_limit(username)
+    active_count = sum(1 for d in devices if d["is_active"])
 
-    _json_ok(handler, {"devices": history})
+    for d in devices:
+        d.pop("request_key", None)
+
+    _json_ok(handler, {"devices": devices, "limit": limit, "active_count": active_count})
+
+
+def handle_lk_device_delete(handler, device_id):
+    ip = handler.client_address[0]
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+
+    token = _get_token_from_query(handler)
+    if not token:
+        _error(handler, 400, "Missing token")
+        return
+
+    username = _client.get_username_for_token(token)
+    if not username:
+        _error(handler, 404, "User not found")
+        return
+
+    try:
+        did = int(device_id)
+    except (ValueError, TypeError):
+        _error(handler, 400, "Invalid device id")
+        return
+
+    ok = handler.server.db.deactivate_device(did, username)
+    if not ok:
+        _error(handler, 404, "Device not found")
+        return
+
+    _json_ok(handler, {"ok": True})
+
+
+def handle_lk_device_rename(handler, device_id):
+    ip = handler.client_address[0]
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+
+    token = _get_token_from_query(handler)
+    if not token:
+        _error(handler, 400, "Missing token")
+        return
+
+    username = _client.get_username_for_token(token)
+    if not username:
+        _error(handler, 404, "User not found")
+        return
+
+    try:
+        did = int(device_id)
+    except (ValueError, TypeError):
+        _error(handler, 400, "Invalid device id")
+        return
+
+    try:
+        data = json.loads(_read_body(handler))
+        name = str(data.get("name", "")).strip()
+        if not name or len(name) > 50:
+            raise ValueError("name must be 1-50 chars")
+    except (ValueError, json.JSONDecodeError) as e:
+        _error(handler, 400, str(e))
+        return
+
+    ok = handler.server.db.rename_device(did, username, name)
+    if not ok:
+        _error(handler, 404, "Device not found")
+        return
+
+    _json_ok(handler, {"ok": True})
