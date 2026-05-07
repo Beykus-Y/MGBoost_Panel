@@ -1011,6 +1011,8 @@ async function loadSettings(){
     const data=await r.json();
     document.getElementById('set-sub-interval').value=data.sub_update_interval!=null?data.sub_update_interval:'';
     document.getElementById('set-block-contact').value=data.block_contact||'';
+    document.getElementById('set-sub-title').value=data.sub_custom_title||'';
+    document.getElementById('set-sub-desc').value=data.sub_custom_desc||'';
     status.textContent='';
   }catch(e){
     status.textContent='Ошибка загрузки настроек';
@@ -1025,9 +1027,16 @@ async function saveSettings(){
     return;
   }
   const contact=document.getElementById('set-block-contact').value.trim();
+  const subTitle=document.getElementById('set-sub-title').value.trim();
+  const subDesc=document.getElementById('set-sub-desc').value.trim();
   status.textContent='Сохранение...';
   try{
-    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({sub_update_interval:val,block_contact:contact||null})});
+    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({
+      sub_update_interval:val,
+      block_contact:contact||null,
+      sub_custom_title:subTitle||null,
+      sub_custom_desc:subDesc||null
+    })});
     status.style.color='#6f6';
     status.textContent='Сохранено';
     setTimeout(()=>{status.textContent='';status.style.color='';},2000);

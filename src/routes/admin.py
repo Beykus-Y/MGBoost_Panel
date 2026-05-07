@@ -289,9 +289,13 @@ def handle_settings_get(handler):
     db = handler.server.db
     interval = db.get_setting("sub_update_interval")
     contact = db.get_setting("block_contact") or ""
+    custom_title = db.get_setting("sub_custom_title") or ""
+    custom_desc = db.get_setting("sub_custom_desc") or ""
     _json_response(handler, 200, {
         "sub_update_interval": int(interval) if interval not in (None, "") else None,
         "block_contact": contact,
+        "sub_custom_title": custom_title,
+        "sub_custom_desc": custom_desc,
     })
 
 
@@ -322,6 +326,18 @@ def handle_settings_save(handler):
             _json_response(handler, 400, {"error": "block_contact max 128 chars"})
             return
         db.set_setting("block_contact", val)
+    if "sub_custom_title" in data:
+        val = str(data["sub_custom_title"] or "").strip()
+        if len(val) > 256:
+            _json_response(handler, 400, {"error": "sub_custom_title max 256 chars"})
+            return
+        db.set_setting("sub_custom_title", val)
+    if "sub_custom_desc" in data:
+        val = str(data["sub_custom_desc"] or "").strip()
+        if len(val) > 1024:
+            _json_response(handler, 400, {"error": "sub_custom_desc max 1024 chars"})
+            return
+        db.set_setting("sub_custom_desc", val)
     _json_response(handler, 200, {"ok": True})
 
 

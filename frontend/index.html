@@ -209,6 +209,17 @@
         </div>
       </div>
       <div class="card">
+        <div class="card-title">Вид подписки в приложении</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+          Вы можете задать шаблон для названия и описания (фейковая нода сверху).<br/>
+          Переменные: <code>{spent}</code>, <code>{remaining}</code>, <code>{total}</code>, <code>{days_left}</code>, <code>{expire_date}</code>.
+        </p>
+        <label>Название подписки (Profile Title)</label>
+        <input type="text" id="set-sub-title" placeholder="MGBoost: {spent} / {total}" style="width:100%;margin-bottom:12px" />
+        <label>Описание (Инфо-нода сверху)</label>
+        <input type="text" id="set-sub-desc" placeholder="📊 Осталось: {remaining} ({days_left} дн.)" style="width:100%" />
+      </div>
+      <div class="card">
         <div class="card-title">Автообновление подписки</div>
         <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
           Интервал (в часах), через который клиент должен обновлять подписку. Переопределяет значение из Marzban (текущее: 12 ч).

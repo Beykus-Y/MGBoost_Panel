@@ -111,6 +111,46 @@ def patch_userinfo_header(header_value, token, db):
     return build_userinfo(info)
 
 
+def format_sub_template(template, userinfo_str):
+    """Format template with variables from userinfo string."""
+    if not template:
+        return ""
+    info = parse_userinfo(userinfo_str)
+    
+    upload = info.get("upload", 0)
+    download = info.get("download", 0)
+    total = info.get("total", 0)
+    expire = info.get("expire", 0)
+    
+    spent = upload + download
+    remaining = max(0, total - spent) if total > 0 else 0
+    
+    import time
+    now = int(time.time())
+    days_left = max(0, (expire - now) // 86400) if expire > 0 else None
+    
+    def fmt_bytes(b):
+        if b == 0: return "0 B"
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if b < 1024.0:
+                return f"{b:.2f} {unit}"
+            b /= 1024.0
+        return f"{b:.2f} PB"
+
+    mapping = {
+        "{spent}": fmt_bytes(spent),
+        "{total}": fmt_bytes(total) if total > 0 else "∞",
+        "{remaining}": fmt_bytes(remaining) if total > 0 else "∞",
+        "{days_left}": str(days_left) if days_left is not None else "∞",
+        "{expire_date}": time.strftime('%Y-%m-%d', time.localtime(expire)) if expire > 0 else "∞"
+    }
+    
+    res = template
+    for k, v in mapping.items():
+        res = res.replace(k, str(v))
+    return res
+
+
 def process_subscription(body, marzban_headers, token, username, db):
     """
     Decode base64 subscription, apply filters and extra configs, re-encode.
@@ -126,9 +166,24 @@ def process_subscription(body, marzban_headers, token, username, db):
 
     lines = filter_by_node_filters(lines, username, db)
     lines = add_extra_configs(lines, username, db)
+
+    # Custom description (fake node)
+    userinfo_raw = marzban_headers.get("subscription-userinfo", "")
+    # Use patched info for formatting if available
+    userinfo_patched = patch_userinfo_header(userinfo_raw, token, db)
+    
+    custom_desc_tpl = db.get_setting("sub_custom_desc")
+    if custom_desc_tpl:
+        from urllib.parse import quote
+        desc = format_sub_template(custom_desc_tpl, userinfo_patched)
+        # Fake VLESS node as description
+        fake_node = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?type=tcp#{quote(desc)}"
+        lines.insert(0, fake_node)
+
     new_body = base64.b64encode("\n".join(lines).encode("utf-8"))
 
     custom_interval = db.get_setting("sub_update_interval")
+    custom_title_tpl = db.get_setting("sub_custom_title")
 
     out_headers = {}
     for key, val in marzban_headers.items():
@@ -136,10 +191,24 @@ def process_subscription(body, marzban_headers, token, username, db):
         if key_lower in SKIP_HEADERS:
             continue
         if key_lower == "subscription-userinfo":
-            out_headers[key] = patch_userinfo_header(val, token, db)
+            out_headers[key] = userinfo_patched
         elif key_lower == "profile-update-interval":
             out_headers[key] = custom_interval if custom_interval else val
+        elif key_lower == "profile-title":
+            if custom_title_tpl:
+                title = format_sub_template(custom_title_tpl, userinfo_patched)
+                # Marzban often uses base64: prefix for titles with non-ascii chars
+                title_b64 = base64.b64encode(title.encode("utf-8")).decode("utf-8")
+                out_headers[key] = f"base64:{title_b64}"
+            else:
+                out_headers[key] = val
         elif key_lower in FORWARD_HEADERS:
             out_headers[key] = val
+
+    # If custom title is set but not present in marzban_headers, add it
+    if custom_title_tpl and "profile-title" not in out_headers:
+        title = format_sub_template(custom_title_tpl, userinfo_patched)
+        title_b64 = base64.b64encode(title.encode("utf-8")).decode("utf-8")
+        out_headers["profile-title"] = f"base64:{title_b64}"
 
     return new_body, out_headers
