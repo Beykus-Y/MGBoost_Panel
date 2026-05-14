@@ -8,6 +8,7 @@ let nodeSettings = {};
 let dragIdx = null;
 let perUserConfigs = {};
 let userDeviceCounts = {};
+let inboundClientExtras = {};
 
 const TRAFFIC_PERIODS = {
   '1h': { label: 'за 1 час', ms: 60 * 60 * 1000 },
@@ -216,7 +217,7 @@ function showPage(name){
   document.getElementById('page-'+name).classList.add('active');
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
   if(name==='nodes')loadNodes();
-  if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();}
+  if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings')loadSettings();
 }
 function switchTab(id,el){
@@ -984,6 +985,64 @@ async function deletePerUserConfig(username,idx){
   perUserConfigs[username].splice(idx,1);
   await proxyApi('/admin/per-user-configs',{method:'POST',body:JSON.stringify(perUserConfigs)});
   toast('Удалён');renderPerUserConfigs(username);
+}
+
+// INBOUND EXTRAS
+async function loadInboundExtras(){
+  if(!allInbounds||!Object.keys(allInbounds).length){
+    try{const r=await api('/inbounds');allInbounds=await r.json();}catch{}
+  }
+  const sel=document.getElementById('ie-inbound-select');
+  const tags=[];
+  Object.values(allInbounds).forEach(items=>items.forEach(i=>tags.push(i.tag)));
+  sel.innerHTML=tags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')||'<option>Нет inbounds</option>';
+
+  try{
+    const r=await proxyApi('/admin/settings');
+    const data=await r.json();
+    inboundClientExtras=data.inbound_client_extras||{};
+  }catch{}
+  renderInboundExtras();
+}
+
+function renderInboundExtras(){
+  const list=document.getElementById('inbound-extra-list');
+  const entries=Object.entries(inboundClientExtras);
+  if(!entries.length){list.innerHTML='<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>';return;}
+  list.innerHTML=entries.map(([tag,extra])=>`
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <div style="font-weight:500;width:150px;font-size:13px">${esc(tag)}</div>
+      <input type="text" style="flex:1" value="${esc(extra)}" onchange="updateInboundExtra('${esc(tag)}',this.value)" placeholder="extra=..." />
+      <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deleteInboundExtra('${esc(tag)}')">×</button>
+    </div>
+  `).join('');
+}
+
+async function addInboundExtra(){
+  const sel=document.getElementById('ie-inbound-select');
+  const tag=sel.value;
+  if(!tag||tag==='Нет inbounds'){toast('Выберите Inbound','err');return;}
+  if(inboundClientExtras[tag]){toast('Уже добавлен','err');return;}
+  inboundClientExtras[tag]='';
+  renderInboundExtras();
+  await saveInboundExtras();
+}
+
+async function updateInboundExtra(tag,value){
+  inboundClientExtras[tag]=value;
+  await saveInboundExtras();
+  toast('Сохранено');
+}
+
+async function deleteInboundExtra(tag){
+  delete inboundClientExtras[tag];
+  renderInboundExtras();
+  await saveInboundExtras();
+  toast('Удалено');
+}
+
+async function saveInboundExtras(){
+  await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({inbound_client_extras:inboundClientExtras})});
 }
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}

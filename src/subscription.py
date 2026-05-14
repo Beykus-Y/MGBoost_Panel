@@ -82,6 +82,65 @@ def add_extra_configs(lines, username, db):
     return lines + global_configs + user_configs
 
 
+def apply_inbound_client_extras(lines, db):
+    """Inject extra parameters to links matching an inbound tag."""
+    raw = db.get_setting("inbound_client_extras")
+    if not raw:
+        return lines
+    try:
+        import json
+        extras = json.loads(raw)
+    except Exception:
+        return lines
+    if not extras:
+        return lines
+
+    out = []
+    for line in lines:
+        if not line.startswith(("vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "tuic://")):
+            out.append(line)
+            continue
+            
+        fragment = extract_fragment_from_uri(line) or ""
+        matched_extra = None
+        
+        # Check if fragment contains one of our configured inbound tags
+        for tag, extra_params in extras.items():
+            if tag in fragment:
+                matched_extra = extra_params
+                break
+                
+        if matched_extra:
+            # We need to inject matched_extra into the URL query parameters
+            # e.g., vless://...@host:port?type=xhttp#Frag -> vless://...@host:port?type=xhttp&extra=...#Frag
+            # We assume matched_extra is something like "extra=%7B...%7D" or "&extra=..."
+            # Clean up leading ? or &
+            clean_extra = matched_extra.lstrip("?&")
+            if not clean_extra:
+                out.append(line)
+                continue
+                
+            base_part = line
+            frag_part = ""
+            if "#" in line:
+                base_part, frag_part = line.split("#", 1)
+            
+            if "?" in base_part:
+                base_part = f"{base_part}&{clean_extra}"
+            else:
+                base_part = f"{base_part}?{clean_extra}"
+                
+            if frag_part:
+                out.append(f"{base_part}#{frag_part}")
+            else:
+                out.append(base_part)
+        else:
+            out.append(line)
+            
+    return out
+
+
+
 def parse_userinfo(header_value):
     result = {}
     if not header_value:
@@ -165,6 +224,7 @@ def process_subscription(body, marzban_headers, token, username, db):
         return body, out_headers
 
     lines = filter_by_node_filters(lines, username, db)
+    lines = apply_inbound_client_extras(lines, db)
     lines = add_extra_configs(lines, username, db)
 
     # Custom description (fake node)

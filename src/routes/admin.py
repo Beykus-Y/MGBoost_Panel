@@ -291,11 +291,18 @@ def handle_settings_get(handler):
     contact = db.get_setting("block_contact") or ""
     custom_title = db.get_setting("sub_custom_title") or ""
     custom_desc = db.get_setting("sub_custom_desc") or ""
+    inbound_client_extras_raw = db.get_setting("inbound_client_extras") or "{}"
+    try:
+        inbound_client_extras = json.loads(inbound_client_extras_raw)
+    except json.JSONDecodeError:
+        inbound_client_extras = {}
+
     _json_response(handler, 200, {
         "sub_update_interval": int(interval) if interval not in (None, "") else None,
         "block_contact": contact,
         "sub_custom_title": custom_title,
         "sub_custom_desc": custom_desc,
+        "inbound_client_extras": inbound_client_extras,
     })
 
 
@@ -338,6 +345,20 @@ def handle_settings_save(handler):
             _json_response(handler, 400, {"error": "sub_custom_desc max 1024 chars"})
             return
         db.set_setting("sub_custom_desc", val)
+    if "inbound_client_extras" in data:
+        val = data["inbound_client_extras"]
+        if not isinstance(val, dict):
+            _json_response(handler, 400, {"error": "inbound_client_extras must be an object"})
+            return
+        # clean and validate
+        cleaned = {}
+        for k, v in val.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue
+            k_clean, v_clean = k.strip(), v.strip()
+            if k_clean:
+                cleaned[k_clean] = v_clean
+        db.set_setting("inbound_client_extras", json.dumps(cleaned))
     _json_response(handler, 200, {"ok": True})
 
 

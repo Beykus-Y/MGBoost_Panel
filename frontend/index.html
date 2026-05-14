@@ -149,6 +149,7 @@
       <div class="tabs">
         <div class="tab active" onclick="switchTab('tab-global',this)">Глобальные</div>
         <div class="tab" onclick="switchTab('tab-per-user',this)">По пользователям</div>
+        <div class="tab" onclick="switchTab('tab-inbound-extra',this)">Client Extra (Inbounds)</div>
       </div>
       <div class="tab-content active" id="tab-global">
         <div class="card" style="margin-bottom:1rem">
@@ -188,6 +189,17 @@
               <button class="primary" onclick="addPerUserConfig()">+</button>
             </div>
           </div>
+        </div>
+      </div>
+      <div class="tab-content" id="tab-inbound-extra">
+        <div class="card">
+          <div class="card-title">Доп. параметры (Client Extra) для Inbound'ов</div>
+          <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Здесь можно настроить параметры, которые будут автоматически добавляться к ссылкам (например, для xhttp обфускации) в подписке пользователей.<br/>Например: <code style="background:var(--bg4);padding:1px 5px;border-radius:4px">extra={"obfs":"123"}</code> или любые другие URL-параметры.</p>
+          <div style="display:flex;gap:8px;margin-bottom:1rem">
+            <select id="ie-inbound-select" style="flex:1"><option>Загрузка...</option></select>
+            <button class="primary" onclick="addInboundExtra()">Добавить Inbound</button>
+          </div>
+          <div id="inbound-extra-list"><div class="loading"><span class="spinner"></span></div></div>
         </div>
       </div>
     </div>
