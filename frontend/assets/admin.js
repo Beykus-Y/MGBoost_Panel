@@ -992,10 +992,10 @@ async function loadInboundExtras(){
   if(!allInbounds||!Object.keys(allInbounds).length){
     try{const r=await api('/inbounds');allInbounds=await r.json();}catch{}
   }
-  const sel=document.getElementById('ie-inbound-select');
+  const dl=document.getElementById('ie-inbounds-list');
   const tags=[];
   Object.values(allInbounds).forEach(items=>items.forEach(i=>tags.push(i.tag)));
-  sel.innerHTML=tags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')||'<option>Нет inbounds</option>';
+  dl.innerHTML=tags.map(t=>`<option value="${esc(t)}">`).join('');
 
   try{
     const r=await proxyApi('/admin/settings');
@@ -1026,11 +1026,12 @@ function renderInboundExtras(){
 }
 
 async function addInboundExtra(){
-  const sel=document.getElementById('ie-inbound-select');
-  const tag=sel.value;
-  if(!tag||tag==='Нет inbounds'){toast('Выберите Inbound','err');return;}
+  const input=document.getElementById('ie-inbound-select');
+  const tag=input.value.trim();
+  if(!tag){toast('Введите строку (например: type=xhttp или vless-xhttp)','err');return;}
   if(inboundClientExtras[tag]){toast('Уже добавлен','err');return;}
   inboundClientExtras[tag]='';
+  input.value='';
   renderInboundExtras();
   await saveInboundExtras();
 }
