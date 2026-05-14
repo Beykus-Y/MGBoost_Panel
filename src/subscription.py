@@ -104,9 +104,10 @@ def apply_inbound_client_extras(lines, db):
         fragment = extract_fragment_from_uri(line) or ""
         matched_extra = None
         
-        # Check if fragment contains one of our configured inbound tags
+        # Check if fragment or line contains one of our configured inbound tags
+        decoded_line = unquote(line)
         for tag, extra_params in extras.items():
-            if tag in fragment:
+            if tag in decoded_line:
                 matched_extra = extra_params
                 break
                 

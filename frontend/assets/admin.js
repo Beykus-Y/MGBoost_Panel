@@ -1010,10 +1010,17 @@ function renderInboundExtras(){
   const entries=Object.entries(inboundClientExtras);
   if(!entries.length){list.innerHTML='<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>';return;}
   list.innerHTML=entries.map(([tag,extra])=>`
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <div style="font-weight:500;width:150px;font-size:13px">${esc(tag)}</div>
-      <input type="text" style="flex:1" value="${esc(extra)}" onchange="updateInboundExtra('${esc(tag)}',this.value)" placeholder="extra=..." />
-      <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deleteInboundExtra('${esc(tag)}')">×</button>
+    <div style="background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:500;font-size:14px">${esc(tag)}</div>
+        <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deleteInboundExtra('${esc(tag)}')">Удалить</button>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Параметры (URL query) или чистый JSON:</div>
+      <textarea style="width:100%;height:100px;font-family:monospace;font-size:12px" id="ie-val-${esc(tag)}" placeholder="extra=... или { \\\"xmux\\\": ... }">${esc(extra)}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <button onclick="formatInboundExtraJson('${esc(tag)}')">Сжать и закодировать JSON (если введён чистый JSON)</button>
+        <button class="primary" onclick="updateInboundExtra('${esc(tag)}')">Сохранить</button>
+      </div>
     </div>
   `).join('');
 }
@@ -1028,8 +1035,44 @@ async function addInboundExtra(){
   await saveInboundExtras();
 }
 
-async function updateInboundExtra(tag,value){
-  inboundClientExtras[tag]=value;
+function formatInboundExtraJson(tag){
+  const el=document.getElementById('ie-val-'+tag);
+  let val=el.value.trim();
+  if(!val)return;
+  // If it starts with { it might be raw JSON
+  try{
+    if(val.startsWith('{')){
+      const j=JSON.parse(val);
+      const str=JSON.stringify(j);
+      val='extra='+encodeURIComponent(str);
+      el.value=val;
+      toast('JSON успешно закодирован');
+    }else{
+      toast('Не похоже на сырой JSON','err');
+    }
+  }catch(e){
+    toast('Ошибка парсинга JSON: '+e.message,'err');
+  }
+}
+
+async function updateInboundExtra(tag){
+  const el=document.getElementById('ie-val-'+tag);
+  let val=el.value.trim();
+  
+  // auto-encode if user forgot and it's valid JSON
+  if(val.startsWith('{')){
+     try{
+       const str=JSON.stringify(JSON.parse(val));
+       val='extra='+encodeURIComponent(str);
+       el.value=val;
+       toast('JSON был автоматически закодирован');
+     }catch(e){
+       toast('Ошибка в JSON: '+e.message,'err');
+       return;
+     }
+  }
+  
+  inboundClientExtras[tag]=val;
   await saveInboundExtras();
   toast('Сохранено');
 }
