@@ -1,4 +1,7 @@
 import base64
+import json
+import os
+import re
 from urllib.error import URLError
 from urllib.parse import quote
 
@@ -15,6 +18,21 @@ _BLOCK_TITLES = {
 
 _FAKE_URI = "vless://00000000-0000-0000-0000-000000000000@0.0.0.0:1?type=tcp"
 
+_BROWSER_UA_RE = re.compile(r"Mozilla|Chrome|Safari|Firefox|Edge|Opera", re.IGNORECASE)
+
+_BROWSER_PAGE_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "frontend", "browser_page.html"
+)
+
+
+def _browser_page(sub_url: str) -> bytes:
+    with open(_BROWSER_PAGE_PATH, "r", encoding="utf-8") as f:
+        template = f.read()
+    safe_text = sub_url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = template.replace("__SUB_URL__", safe_text)
+    html = html.replace("__SUB_URL_JSON__", json.dumps(sub_url))
+    return html.encode("utf-8")
+
 
 def _fake_sub(reason: str, contact: str | None) -> bytes:
     title = _BLOCK_TITLES.get(reason, "⛔ Доступ ограничен")
@@ -26,6 +44,19 @@ def _fake_sub(reason: str, contact: str | None) -> bytes:
 
 
 def handle_sub(handler, token):
+    ua = handler.headers.get("User-Agent", "")
+    if _BROWSER_UA_RE.search(ua):
+        proto = handler.headers.get("X-Forwarded-Proto", "https")
+        host = handler.headers.get("Host", "")
+        sub_url = f"{proto}://{host}/sub/{token}"
+        page = _browser_page(sub_url)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(page)))
+        handler.end_headers()
+        handler.wfile.write(page)
+        return
+
     extra_headers = {k: v for k, v in handler.headers.items()}
 
     try:

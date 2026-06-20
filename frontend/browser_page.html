@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Открой в приложении</title>
+  <link rel="stylesheet" href="/assets/browser_page.css">
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="header-icon">🔒</div>
+    <h1>Ссылку нужно вставить в&nbsp;приложение</h1>
+    <p>
+      Ты открыл ссылку подписки в браузере&nbsp;— в браузере она не работает.<br>
+      Скопируй её и вставь в одно из VPN&#8209;приложений ниже.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="copy-label">Твоя ссылка подписки</div>
+    <div class="copy-row">
+      <div class="copy-url" id="url-display">__SUB_URL__</div>
+      <button class="copy-btn" id="copy-btn" onclick="copyUrl()">Копировать</button>
+    </div>
+    <div class="copy-hint">Скопируй и вставь в одно из приложений ниже&nbsp;↓</div>
+  </div>
+
+  <div class="section-title">Приложения</div>
+
+  <div class="apps">
+
+    <div class="app-card">
+      <div class="app-icon">⚡</div>
+      <div class="app-meta">
+        <div class="app-name">Happ</div>
+        <div class="app-platforms">iOS · Android · Windows</div>
+        <div class="app-btns">
+          <a class="btn btn-ios" href="https://apps.apple.com/us/app/happ-proxy-utility/id6504287215" target="_blank">🍎 App Store</a>
+          <a class="btn btn-android" href="https://play.google.com/store/apps/details?id=com.happproxy&hl=ru" target="_blank">🤖 Google Play</a>
+          <a class="btn btn-windows" href="https://happ.su/main" target="_blank">🪟 Windows</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-card">
+      <div class="app-icon">🌐</div>
+      <div class="app-meta">
+        <div class="app-name">Incy</div>
+        <div class="app-platforms">iOS · Android · Windows</div>
+        <div class="app-btns">
+          <a class="btn btn-ios" href="https://apps.apple.com/us/app/incy/id6756943388" target="_blank">🍎 App Store</a>
+          <a class="btn btn-android" href="https://play.google.com/store/apps/details?id=llc.itdev.incy&hl=ru" target="_blank">🤖 Google Play</a>
+          <a class="btn btn-windows" href="https://incy.cc/" target="_blank">🪟 Windows</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-card">
+      <div class="app-icon">🚀</div>
+      <div class="app-meta">
+        <div class="app-name">V2RayTun</div>
+        <div class="app-platforms">iOS · Android · Windows</div>
+        <div class="app-btns">
+          <a class="btn btn-ios" href="https://apps.apple.com/us/app/v2raytun/id6476628951" target="_blank">🍎 App Store</a>
+          <a class="btn btn-android" href="https://play.google.com/store/apps/details?id=com.v2raytun.android" target="_blank">🤖 Google Play</a>
+          <a class="btn btn-windows" href="https://v2raytun.com/" target="_blank">🪟 Windows</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="card">
+    <div class="steps-title">Как подключиться</div>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Скачай одно из приложений выше</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">Нажми <b>«Копировать»</b> на ссылке подписки выше</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">В приложении найди <b>«Добавить подписку»</b> или <b>«Import»</b></div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-text">Вставь ссылку и нажми подключиться&nbsp;🎉</div>
+    </div>
+  </div>
+
+</div>
+<script>
+  function copyUrl() {
+    var url = __SUB_URL_JSON__;
+    var btn = document.getElementById('copy-btn');
+    var done = function() {
+      btn.textContent = '✓ Скопировано';
+      btn.classList.add('ok');
+      setTimeout(function() {
+        btn.textContent = 'Копировать';
+        btn.classList.remove('ok');
+      }, 2000);
+    };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+    function fallback() {
+      var t = document.createElement('textarea');
+      t.value = url;
+      t.style.position = 'fixed';
+      t.style.opacity = '0';
+      document.body.appendChild(t);
+      t.focus();
+      t.select();
+      try { document.execCommand('copy'); } catch(e) {}
+      document.body.removeChild(t);
+      done();
+    }
+  }
+</script>
+</body>
+</html>
