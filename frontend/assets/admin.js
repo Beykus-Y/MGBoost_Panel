@@ -1322,7 +1322,7 @@ async function openTicket(id){
   chat.scrollTop=chat.scrollHeight;
   document.getElementById('ticket-reply-text').value='';
   document.getElementById('ticket-action-status').textContent='';
-  document.getElementById('ticket-modal').classList.add('active');
+  document.getElementById('ticket-modal').classList.add('open');
 }
 
 async function sendTicketReply(){
