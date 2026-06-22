@@ -414,7 +414,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         try:
             admin_token = await _run_sync(marzban.get_admin_token_from_env)
             user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
-            await message.answer(format_subscription(user_info))
+            await safe_answer(message, format_subscription(user_info))
         except Exception as e:
             logger.error(f"Ошибка получения подписки: {e}")
             await message.answer("Не удалось получить информацию о подписке.")
@@ -511,7 +511,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             node_states=current_states, node_names=current_names,
         )
         db.add_ticket_message(ticket_id, "ai", reply)
-        await message.answer(reply)
+        await safe_answer(message, reply)
 
         ticket_after = db.get_open_ticket(message.from_user.id)
         if ticket_after and ticket_after["status"] == "waiting_human":
@@ -521,6 +521,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 reply_markup=kb_waiting(),
             )
             await _notify_admin(message.bot, db, message.from_user.id, username)
+
+
+async def safe_answer(message, text: str, **kwargs):
+    try:
+        await message.answer(text, parse_mode="Markdown", **kwargs)
+    except Exception:
+        try:
+            await message.answer(text, **kwargs)
+        except Exception as e:
+            logger.error(f"safe_answer failed: {e}")
 
 
 async def _notify_admin(bot, db, telegram_id: int, username: str | None):
@@ -553,10 +563,14 @@ async def notify_ticket_closed(bot, telegram_id: int, state_storage=None):
 
 
 async def send_operator_reply(bot, telegram_id: int, text: str):
+    msg = f"💬 Оператор: {text}"
     try:
-        await bot.send_message(telegram_id, f"💬 Оператор: {text}")
-    except Exception as e:
-        logger.warning(f"Не удалось доставить ответ оператора: {e}")
+        await bot.send_message(telegram_id, msg, parse_mode="Markdown")
+    except Exception:
+        try:
+            await bot.send_message(telegram_id, msg)
+        except Exception as e:
+            logger.warning(f"Не удалось доставить ответ оператора: {e}")
 
 
 async def _run_sync(func, *args):
