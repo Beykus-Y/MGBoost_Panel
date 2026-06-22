@@ -74,28 +74,197 @@ def build_ai_messages(user_message: str, history: list, system: str = SYSTEM_PRO
     return messages
 
 
-async def ask_openrouter(api_key: str, model: str, messages: list) -> str:
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "HTTP-Referer": "https://sub.beykus.fun",
-                    "X-Title": "MGBoost Support",
+def get_tools() -> list:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_subscription_info",
+                "description": "Получить информацию о подписке пользователя: статус, трафик, срок действия.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_nodes_status",
+                "description": "Получить текущий статус всех VPN-нод (онлайн/офлайн).",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_ticket_history",
+                "description": "Получить историю прошлых обращений пользователя в поддержку.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Количество тикетов (по умолчанию 3)",
+                        }
+                    },
+                    "required": [],
                 },
-                json={"model": model, "messages": messages},
-                timeout=aiohttp.ClientTimeout(total=30),
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "escalate_to_human",
+                "description": "Передать диалог живому оператору, если AI не может решить проблему.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Причина передачи оператору",
+                        }
+                    },
+                    "required": ["reason"],
+                },
+            },
+        },
+    ]
+
+
+async def execute_tool(
+    name: str, args: dict, *, db, marzban, telegram_id: int,
+    node_states: dict, node_names: dict
+) -> str:
+    if name == "get_subscription_info":
+        tg_user = db.get_tg_user(telegram_id)
+        if not tg_user:
+            return "Подписка не привязана."
+        try:
+            admin_token = await _run_sync(marzban.get_admin_token_from_env)
+            user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
+            return format_subscription(user_info)
+        except Exception as e:
+            logger.error(f"execute_tool get_subscription_info: {e}")
+            return "Не удалось получить информацию о подписке."
+
+    if name == "get_nodes_status":
+        if not node_states:
+            return "Статус нод ещё не загружен."
+        lines = []
+        for nid, state in node_states.items():
+            icon = "🟢" if state.get("up") else "🔴"
+            n_name = node_names.get(nid, str(nid))
+            lines.append(f"{icon} {n_name}")
+        return "\n".join(lines) if lines else "Ноды не найдены."
+
+    if name == "get_ticket_history":
+        limit = int(args.get("limit", 3))
+        tickets = db.list_tickets(status="closed", limit=limit)
+        user_tickets = [t for t in tickets if t["telegram_id"] == telegram_id]
+        if not user_tickets:
+            return "История обращений пуста."
+        parts = []
+        for t in user_tickets[:limit]:
+            msgs = db.get_ticket_messages(t["id"], limit=10)
+            summary = " / ".join(
+                m["text"][:60] for m in msgs if m["role"] in ("user", "ai")
             )
-            data = await resp.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"OpenRouter error: {e}")
-        return "Извините, AI-ассистент временно недоступен. Попробуйте позже или позвоните оператору."
+            parts.append(f"Тикет #{t['id']}: {summary}")
+        return "\n\n".join(parts)
+
+    if name == "escalate_to_human":
+        reason = args.get("reason", "")
+        tg_user = db.get_tg_user(telegram_id)
+        username = tg_user["marzban_username"] if tg_user else None
+        ticket = db.get_open_ticket(telegram_id)
+        if ticket:
+            db.update_ticket_status(ticket["id"], "waiting_human")
+            if reason:
+                db.add_ticket_message(ticket["id"], "ai", f"[AI передал оператору: {reason}]")
+        else:
+            tid = db.create_ticket(telegram_id, marzban_username=username, status="waiting_human")
+            if reason:
+                db.add_ticket_message(tid, "ai", f"[AI передал оператору: {reason}]")
+        return f"Передаю оператору: {reason}"
+
+    return f"Неизвестный инструмент: {name}"
 
 
-def setup_support_handlers(dp, db, marzban):
+async def ask_openrouter_with_tools(
+    api_key: str, model: str, messages: list, tools: list, *,
+    db, marzban, telegram_id: int, node_states: dict, node_names: dict,
+    max_tool_rounds: int = 3,
+) -> str:
+    if not api_key:
+        return "AI-ассистент недоступен. Нажмите «🆘 Позвать человека»."
+
+    import json as _json
+    import aiohttp
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://sub.beykus.fun",
+        "X-Title": "MGBoost Support",
+    }
+
+    current_messages = list(messages)
+
+    async with aiohttp.ClientSession() as session:
+        for _ in range(max_tool_rounds):
+            try:
+                payload = {"model": model, "messages": current_messages}
+                if tools:
+                    payload["tools"] = tools
+                    payload["tool_choice"] = "auto"
+
+                resp = await session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                )
+                data = await resp.json()
+            except Exception as e:
+                logger.error(f"OpenRouter request error: {e}")
+                return "AI-ассистент временно недоступен."
+
+            choice = data.get("choices", [{}])[0]
+            finish_reason = choice.get("finish_reason", "stop")
+            msg = choice.get("message", {})
+
+            if finish_reason != "tool_calls" or not msg.get("tool_calls"):
+                return msg.get("content") or "Не удалось получить ответ."
+
+            current_messages.append(msg)
+
+            for tc in msg["tool_calls"]:
+                fn_name = tc["function"]["name"]
+                try:
+                    fn_args = _json.loads(tc["function"].get("arguments", "{}"))
+                except Exception:
+                    fn_args = {}
+
+                tool_result = await execute_tool(
+                    fn_name, fn_args,
+                    db=db, marzban=marzban, telegram_id=telegram_id,
+                    node_states=node_states, node_names=node_names,
+                )
+                current_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_result,
+                })
+
+    return "AI не смог завершить ответ. Попробуйте ещё раз."
+
+
+async def ask_openrouter(api_key: str, model: str, messages: list) -> str:
+    return await ask_openrouter_with_tools(
+        api_key, model, messages, tools=[],
+        db=None, marzban=None, telegram_id=0,
+        node_states={}, node_names={},
+    )
+
+
+def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None):
     try:
         from aiogram import F
         from aiogram.filters import CommandStart
@@ -260,10 +429,25 @@ def setup_support_handlers(dp, db, marzban):
             return
 
         history = db.get_ticket_messages(ticket_id, limit=20)
-        messages = build_ai_messages(message.text, history[:-1])
-        reply = await ask_openrouter(api_key, model, messages)
+        ai_messages = build_ai_messages(message.text, history[:-1])
+        current_states = node_states if node_states is not None else {}
+        current_names = node_names if node_names is not None else {}
+        reply = await ask_openrouter_with_tools(
+            api_key, model, ai_messages, get_tools(),
+            db=db, marzban=marzban, telegram_id=message.from_user.id,
+            node_states=current_states, node_names=current_names,
+        )
         db.add_ticket_message(ticket_id, "ai", reply)
         await message.answer(reply)
+
+        ticket_after = db.get_open_ticket(message.from_user.id)
+        if ticket_after and ticket_after["status"] == "waiting_human":
+            await state.set_state(SupportStates.waiting_human)
+            await message.answer(
+                "Передаю вас оператору, ожидайте.",
+                reply_markup=kb_waiting(),
+            )
+            await _notify_admin(message.bot, db, message.from_user.id, username)
 
 
 async def _notify_admin(bot, db, telegram_id: int, username: str | None):

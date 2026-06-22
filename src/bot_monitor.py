@@ -78,7 +78,8 @@ async def _delete_after(bot, channel_id, *message_ids: int, delay: int = 600):
             logger.warning(f"Не удалось удалить сообщение {mid}: {e}")
 
 
-async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading.Event):
+async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading.Event,
+                        shared_states: dict | None = None, shared_names: dict | None = None):
     states: dict = {}
     down_ids: dict = {}
 
@@ -95,6 +96,12 @@ async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading
             return
 
         names = {n["id"]: get_display_name(n, db) for n in nodes}
+        if shared_states is not None:
+            shared_states.clear()
+            shared_states.update(states)
+        if shared_names is not None:
+            shared_names.clear()
+            shared_names.update(names)
         changes = compute_changes(nodes, states, db)
 
         for ch in changes:
@@ -173,11 +180,15 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
     if bot_ref is not None:
         bot_ref.append(bot)
 
+    shared_states: dict = {}
+    shared_names: dict = {}
+
     dp = Dispatcher(storage=MemoryStorage())
-    setup_support_handlers(dp, db, marzban)
+    setup_support_handlers(dp, db, marzban, node_states=shared_states, node_names=shared_names)
 
     monitor_task = asyncio.create_task(
-        _monitor_loop(bot, channel_id, db, marzban, stop_event)
+        _monitor_loop(bot, channel_id, db, marzban, stop_event,
+                      shared_states=shared_states, shared_names=shared_names)
     )
     stop_watcher = asyncio.create_task(_wait_stop(stop_event))
 

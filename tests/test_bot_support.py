@@ -145,3 +145,109 @@ def test_build_ai_messages_limits_history():
     msgs = build_ai_messages("latest", history, system="s")
     user_msgs = [m for m in msgs if m["role"] == "user" and m["content"] != "latest"]
     assert len(user_msgs) <= 10
+
+
+# --- tool definitions ---
+
+def test_get_tools_returns_list():
+    from src.bot_support import get_tools
+    tools = get_tools()
+    assert isinstance(tools, list)
+    assert len(tools) >= 4
+
+
+def test_tools_have_required_fields():
+    from src.bot_support import get_tools
+    for tool in get_tools():
+        assert tool["type"] == "function"
+        assert "function" in tool
+        fn = tool["function"]
+        assert "name" in fn
+        assert "description" in fn
+        assert "parameters" in fn
+
+
+def test_tool_names():
+    from src.bot_support import get_tools
+    names = {t["function"]["name"] for t in get_tools()}
+    assert "get_subscription_info" in names
+    assert "get_nodes_status" in names
+    assert "get_ticket_history" in names
+    assert "escalate_to_human" in names
+
+
+# --- execute_tool ---
+
+def test_execute_get_nodes_status(db):
+    from src.bot_support import execute_tool
+    import asyncio
+
+    states = {1: {"up": True, "last_check": None}, 2: {"up": False, "last_check": None}}
+    names = {1: "Estonia", 2: "Selectel"}
+
+    result = asyncio.get_event_loop().run_until_complete(
+        execute_tool("get_nodes_status", {}, db=db, marzban=None,
+                     telegram_id=111, node_states=states, node_names=names)
+    )
+    assert "Estonia" in result
+    assert "Selectel" in result
+    assert "🟢" in result
+    assert "🔴" in result
+
+
+def test_execute_get_ticket_history_empty(db):
+    from src.bot_support import execute_tool
+    import asyncio
+
+    result = asyncio.get_event_loop().run_until_complete(
+        execute_tool("get_ticket_history", {}, db=db, marzban=None,
+                     telegram_id=999, node_states={}, node_names={})
+    )
+    assert "нет" in result.lower() or "пуст" in result.lower() or "история" in result.lower()
+
+
+def test_execute_get_ticket_history_with_data(db):
+    from src.bot_support import execute_tool
+    import asyncio
+
+    t1 = db.create_ticket(111, status="closed")
+    db.add_ticket_message(t1, "user", "Вопрос 1")
+    db.add_ticket_message(t1, "ai", "Ответ 1")
+    db.update_ticket_status(t1, "closed")
+
+    result = asyncio.get_event_loop().run_until_complete(
+        execute_tool("get_ticket_history", {}, db=db, marzban=None,
+                     telegram_id=111, node_states={}, node_names={})
+    )
+    assert "Вопрос 1" in result or "тикет" in result.lower()
+
+
+def test_execute_escalate_to_human(db):
+    from src.bot_support import execute_tool
+    import asyncio
+
+    result = asyncio.get_event_loop().run_until_complete(
+        execute_tool("escalate_to_human", {"reason": "Не могу решить проблему"},
+                     db=db, marzban=None, telegram_id=111, node_states={}, node_names={})
+    )
+    assert isinstance(result, str)
+    ticket = db.get_open_ticket(111)
+    assert ticket is not None
+    assert ticket["status"] == "waiting_human"
+
+
+# --- ask_openrouter_with_tools ---
+
+def test_ask_openrouter_with_tools_no_key(db):
+    from src.bot_support import ask_openrouter_with_tools
+    import asyncio
+
+    result = asyncio.get_event_loop().run_until_complete(
+        ask_openrouter_with_tools(
+            api_key="", model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "test"}],
+            tools=[], db=db, marzban=None,
+            telegram_id=111, node_states={}, node_names={}
+        )
+    )
+    assert isinstance(result, str)
