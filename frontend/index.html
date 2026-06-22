@@ -39,6 +39,9 @@
     <div class="nav-item" onclick="showPage('configs')" data-page="configs">
       <span class="nav-icon">⊕</span> Extra конфиги
     </div>
+    <div class="nav-item" onclick="showPage('tickets')" data-page="tickets">
+      <span class="nav-icon">🎫</span> Тикеты
+    </div>
     <div class="nav-item" onclick="showPage('settings')" data-page="settings">
       <span class="nav-icon">⚙</span> Настройки
     </div>
@@ -205,6 +208,41 @@
       </div>
     </div>
 
+    <!-- TICKETS -->
+    <div class="page" id="page-tickets">
+      <div class="page-header">
+        <span class="page-title">Тикеты</span>
+        <div class="page-actions" style="display:flex;gap:8px;align-items:center">
+          <select id="ticket-filter" onchange="loadTickets(this.value)" style="width:160px">
+            <option value="">Все</option>
+            <option value="open">Open</option>
+            <option value="waiting_human">Ждёт оператора</option>
+            <option value="new_user">Новый пользователь</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table id="tickets-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Статус</th>
+                <th>Пользователь</th>
+                <th>Последнее сообщение</th>
+                <th>Дата</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="tickets-tbody">
+              <tr><td colspan="6"><div class="loading"><span class="spinner"></span></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="page" id="page-settings">
       <div class="page-header">
@@ -290,8 +328,48 @@
           <span id="bot-settings-status" style="font-size:13px;color:var(--text3)"></span>
         </div>
       </div>
+      <div class="card">
+        <div class="card-title">AI-ассистент поддержки</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+          Пользователи пишут боту в ЛС — бот отвечает через OpenRouter API. Нужен ключ с openrouter.ai.
+        </p>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <label style="margin:0">Включить поддержку</label>
+          <input type="checkbox" id="bot-support-enabled" style="width:auto" />
+        </div>
+        <label>OpenRouter API ключ</label>
+        <input type="password" id="bot-openrouter-key" maxlength="256" placeholder="sk-or-v1-..." style="width:100%;margin-bottom:12px;font-family:monospace" />
+        <label>Модель</label>
+        <input type="text" id="bot-openrouter-model" maxlength="128" placeholder="openai/gpt-4o-mini" style="width:100%;margin-bottom:12px;font-family:monospace" />
+        <label>ID администратора (для уведомлений)</label>
+        <input type="text" id="bot-admin-tg-id" maxlength="32" placeholder="7898157769" style="width:200px" />
+        <div style="margin-top:12px">
+          <button onclick="saveSupportSettings()">Сохранить</button>
+          <span id="support-settings-status" style="margin-left:10px;font-size:13px;color:var(--text3)"></span>
+        </div>
+      </div>
     </div>
 
+  </div>
+</div>
+
+<!-- Ticket modal -->
+<div class="modal-overlay" id="ticket-modal">
+  <div class="modal" style="max-width:620px">
+    <div class="modal-header">
+      <span class="modal-title" id="ticket-modal-title">Тикет</span>
+      <button class="modal-close" onclick="closeModal('ticket-modal')">×</button>
+    </div>
+    <div id="ticket-chat" style="max-height:360px;overflow-y:auto;padding:10px;background:var(--bg3);border-radius:6px;margin-bottom:12px"></div>
+    <div>
+      <label>Ответить</label>
+      <textarea id="ticket-reply-text" rows="3" style="width:100%;resize:vertical;margin-bottom:8px" placeholder="Текст ответа..."></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="primary" onclick="sendTicketReply()">Отправить</button>
+      <button onclick="closeTicket()" style="margin-left:8px">Закрыть тикет</button>
+      <span id="ticket-action-status" style="margin-left:10px;font-size:13px;color:var(--text3)"></span>
+    </div>
   </div>
 </div>
 

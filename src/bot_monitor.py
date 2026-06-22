@@ -78,21 +78,7 @@ async def _delete_after(bot, channel_id, *message_ids: int, delay: int = 600):
             logger.warning(f"Не удалось удалить сообщение {mid}: {e}")
 
 
-async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db, marzban, stop_event: threading.Event):
-    try:
-        from aiogram import Bot
-        from aiogram.client.session.aiohttp import AiohttpSession
-    except ImportError:
-        logger.error("aiogram не установлен — бот не запустится")
-        return
-
-    if proxy_url:
-        proxy = proxy_url.replace("socks5h://", "socks5://")
-        session = AiohttpSession(proxy=proxy)
-    else:
-        session = None
-    bot = Bot(token=bot_token, session=session) if session else Bot(token=bot_token)
-
+async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading.Event):
     states: dict = {}
     down_ids: dict = {}
 
@@ -101,8 +87,9 @@ async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db
 
     async def tick():
         try:
-            admin_token = await asyncio.get_event_loop().run_in_executor(None, marzban.get_admin_token_from_env)
-            nodes = await asyncio.get_event_loop().run_in_executor(None, marzban.get_nodes, admin_token)
+            loop = asyncio.get_event_loop()
+            admin_token = await loop.run_in_executor(None, marzban.get_admin_token_from_env)
+            nodes = await loop.run_in_executor(None, marzban.get_nodes, admin_token)
         except Exception as e:
             logger.warning(f"Не удалось получить ноды от Marzban: {e}")
             return
@@ -148,12 +135,64 @@ async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db
 
     logger.info("Инициализация состояния нод...")
     await tick()
-
     logger.info(f"Мониторинг запущен, канал: {channel_id}, интервал: {CHECK_INTERVAL}с")
+
     while not stop_event.is_set():
         await asyncio.sleep(CHECK_INTERVAL)
         if stop_event.is_set():
             break
         await tick()
 
-    await bot.session.close()
+
+async def _wait_stop(stop_event: threading.Event):
+    loop = asyncio.get_event_loop()
+    while not stop_event.is_set():
+        await asyncio.sleep(1)
+
+
+async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, marzban,
+                  stop_event: threading.Event, bot_ref: list | None = None):
+    try:
+        from aiogram import Bot, Dispatcher
+        from aiogram.client.session.aiohttp import AiohttpSession
+        from aiogram.fsm.storage.memory import MemoryStorage
+    except ImportError:
+        logger.error("aiogram не установлен — бот не запустится")
+        return
+
+    from .bot_support import setup_support_handlers
+
+    if proxy_url:
+        proxy = proxy_url.replace("socks5h://", "socks5://")
+        session = AiohttpSession(proxy=proxy)
+    else:
+        session = None
+
+    bot = Bot(token=bot_token, session=session) if session else Bot(token=bot_token)
+
+    if bot_ref is not None:
+        bot_ref.append(bot)
+
+    dp = Dispatcher(storage=MemoryStorage())
+    setup_support_handlers(dp, db, marzban)
+
+    monitor_task = asyncio.create_task(
+        _monitor_loop(bot, channel_id, db, marzban, stop_event)
+    )
+    stop_watcher = asyncio.create_task(_wait_stop(stop_event))
+
+    try:
+        await asyncio.gather(
+            dp.start_polling(bot, handle_signals=False),
+            monitor_task,
+            stop_watcher,
+            return_exceptions=True,
+        )
+    finally:
+        await dp.stop_polling()
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+        if bot_ref:
+            bot_ref.clear()

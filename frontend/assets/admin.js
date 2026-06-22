@@ -218,7 +218,8 @@ function showPage(name){
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
   if(name==='nodes')loadNodes();
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
-  if(name==='settings'){loadSettings();loadBotSettings();}
+  if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
+  if(name==='tickets'){loadTickets();}
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -1246,6 +1247,115 @@ async function restartBot(){
     setTimeout(()=>{status.textContent='';status.style.color='';},3000);
   }catch(e){status.style.color='';status.textContent='Ошибка';}
 }
+
+// SUPPORT SETTINGS
+async function loadSupportSettings(){
+  try{
+    const r=await proxyApi('/admin/bot-settings');
+    if(!r.ok)return;
+    const d=await r.json();
+    document.getElementById('bot-support-enabled').checked=!!d.support_enabled;
+    document.getElementById('bot-openrouter-key').value=d.openrouter_api_key||'';
+    document.getElementById('bot-openrouter-model').value=d.openrouter_model||'openai/gpt-4o-mini';
+    document.getElementById('bot-admin-tg-id').value=d.admin_tg_id||'';
+  }catch(e){console.warn('loadSupportSettings',e);}
+}
+async function saveSupportSettings(){
+  const status=document.getElementById('support-settings-status');
+  status.textContent='Сохранение...';
+  try{
+    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify({
+      support_enabled:document.getElementById('bot-support-enabled').checked,
+      openrouter_api_key:document.getElementById('bot-openrouter-key').value.trim(),
+      openrouter_model:document.getElementById('bot-openrouter-model').value.trim()||'openai/gpt-4o-mini',
+      admin_tg_id:document.getElementById('bot-admin-tg-id').value.trim(),
+    })});
+    if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
+    status.style.color='#6f6';status.textContent='Сохранено';
+    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+  }catch(e){status.style.color='';status.textContent='Ошибка';}
+}
+
+// TICKETS
+let _currentTicketId=null;
+const _TICKET_STATUS_LABELS={open:'Открыт',waiting_human:'Ждёт оператора',new_user:'Новый польз.',closed:'Закрыт'};
+const _TICKET_STATUS_COLORS={open:'#4af',waiting_human:'#fa4',new_user:'#a4f',closed:'#888'};
+
+async function loadTickets(status){
+  const tbody=document.getElementById('tickets-tbody');
+  tbody.innerHTML='<tr><td colspan="6"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  try{
+    const qs=status?`?status=${status}`:'';
+    const r=await proxyApi('/admin/tickets'+qs);
+    const tickets=await r.json();
+    if(!tickets.length){tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3)">Тикетов нет</td></tr>';return;}
+    tbody.innerHTML=tickets.map(t=>`
+      <tr>
+        <td>#${t.id}</td>
+        <td><span style="color:${_TICKET_STATUS_COLORS[t.status]||'#888'};font-weight:600">${_TICKET_STATUS_LABELS[t.status]||t.status}</span></td>
+        <td>${t.marzban_username||`tg:${t.telegram_id}`}</td>
+        <td style="font-size:12px;color:var(--text2)">${_tsAgo(t.updated_at)}</td>
+        <td style="font-size:12px;color:var(--text3)">${_fmtDate(t.created_at)}</td>
+        <td><button onclick="openTicket(${t.id})">Открыть</button></td>
+      </tr>`).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="6" style="color:#f66">Ошибка загрузки</td></tr>';}
+}
+
+async function openTicket(id){
+  _currentTicketId=id;
+  const r=await proxyApi(`/admin/tickets/${id}`);
+  if(!r.ok)return;
+  const {ticket,messages}=await r.json();
+  document.getElementById('ticket-modal-title').textContent=
+    `Тикет #${id} — ${ticket.marzban_username||`tg:${ticket.telegram_id}`} [${_TICKET_STATUS_LABELS[ticket.status]||ticket.status}]`;
+  const chat=document.getElementById('ticket-chat');
+  chat.innerHTML=messages.length?messages.map(m=>{
+    const bg=m.role==='user'?'var(--bg4)':m.role==='ai'?'#1a3a2a':'#2a2a1a';
+    const label=m.role==='user'?'Пользователь':m.role==='ai'?'AI':'Оператор';
+    return `<div style="margin-bottom:8px;padding:8px;background:${bg};border-radius:6px">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${label} · ${_fmtDate(m.ts)}</div>
+      <div style="white-space:pre-wrap;font-size:13px">${_esc(m.text)}</div>
+    </div>`;
+  }).join(''):'<div style="color:var(--text3);font-size:13px">Сообщений нет</div>';
+  chat.scrollTop=chat.scrollHeight;
+  document.getElementById('ticket-reply-text').value='';
+  document.getElementById('ticket-action-status').textContent='';
+  document.getElementById('ticket-modal').classList.add('active');
+}
+
+async function sendTicketReply(){
+  if(!_currentTicketId)return;
+  const text=document.getElementById('ticket-reply-text').value.trim();
+  if(!text)return;
+  const status=document.getElementById('ticket-action-status');
+  status.textContent='Отправка...';
+  const r=await proxyApi(`/admin/tickets/${_currentTicketId}/reply`,{method:'POST',body:JSON.stringify({text})});
+  if(!r.ok){status.textContent='Ошибка';return;}
+  status.style.color='#6f6';status.textContent='Отправлено';
+  setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+  document.getElementById('ticket-reply-text').value='';
+  await openTicket(_currentTicketId);
+}
+
+async function closeTicket(){
+  if(!_currentTicketId)return;
+  const status=document.getElementById('ticket-action-status');
+  status.textContent='Закрываю...';
+  const r=await proxyApi(`/admin/tickets/${_currentTicketId}/close`,{method:'POST'});
+  if(!r.ok){status.textContent='Ошибка';return;}
+  closeModal('ticket-modal');
+  loadTickets(document.getElementById('ticket-filter').value||undefined);
+}
+
+function _tsAgo(ts){
+  const diff=Math.floor(Date.now()/1000)-ts;
+  if(diff<60)return'только что';
+  if(diff<3600)return`${Math.floor(diff/60)} мин назад`;
+  if(diff<86400)return`${Math.floor(diff/3600)} ч назад`;
+  return`${Math.floor(diff/86400)} дн назад`;
+}
+function _fmtDate(ts){return new Date(ts*1000).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
+function _esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
 // INIT
 if(TOKEN){

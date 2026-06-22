@@ -18,6 +18,7 @@ class BotRunner(threading.Thread):
         self.marzban = marzban
         self._stop_event = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._bot_ref: list = []
 
     @classmethod
     def from_db(cls, db, marzban=None) -> "BotRunner | None":
@@ -33,6 +34,10 @@ class BotRunner(threading.Thread):
         )
         return cls(bot_token=token, channel_id=channel_id, proxy_url=proxy_url, db=db, marzban=marzban)
 
+    @property
+    def bot_instance(self):
+        return self._bot_ref[0] if self._bot_ref else None
+
     def stop(self):
         self._stop_event.set()
         if self._loop and self._loop.is_running():
@@ -47,12 +52,13 @@ class BotRunner(threading.Thread):
             self._loop.close()
 
     async def _run_bot(self):
-        from .bot_monitor import run_monitor
-        await run_monitor(
+        from .bot_monitor import run_all
+        await run_all(
             bot_token=self.bot_token,
             channel_id=self.channel_id,
             proxy_url=self.proxy_url,
             db=self.db,
             marzban=self.marzban,
             stop_event=self._stop_event,
+            bot_ref=self._bot_ref,
         )

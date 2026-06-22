@@ -118,6 +118,29 @@ class Database:
                 updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS tg_users (
+                telegram_id INTEGER PRIMARY KEY,
+                marzban_username TEXT NOT NULL,
+                registered_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                marzban_username TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ticket_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                ts INTEGER NOT NULL
+            );
+
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -844,3 +867,94 @@ class Database:
             self._conn.commit()
 
         return self.get_node_setting(node_id)
+
+    # ------------------------------------------------------------------ tg_users
+
+    def get_tg_user(self, telegram_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM tg_users WHERE telegram_id = ?", (telegram_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_tg_user(self, telegram_id: int, marzban_username: str):
+        now = int(time.time())
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO tg_users (telegram_id, marzban_username, registered_at) VALUES (?,?,?)"
+                " ON CONFLICT(telegram_id) DO UPDATE SET marzban_username=excluded.marzban_username",
+                (telegram_id, marzban_username, now),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------ tickets
+
+    def create_ticket(self, telegram_id: int, marzban_username: str | None = None, status: str = "open") -> int:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO tickets (telegram_id, marzban_username, status, created_at, updated_at) VALUES (?,?,?,?,?)",
+                (telegram_id, marzban_username, status, now, now),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_open_ticket(self, telegram_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM tickets WHERE telegram_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 1",
+                (telegram_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_ticket(self, ticket_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_ticket_status(self, ticket_id: int, status: str):
+        now = int(time.time())
+        with self._lock:
+            self._conn.execute(
+                "UPDATE tickets SET status=?, updated_at=? WHERE id=?",
+                (status, now, ticket_id),
+            )
+            self._conn.commit()
+
+    def list_tickets(self, status: str | None = None, limit: int = 50) -> list:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM tickets WHERE status=? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM tickets ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ ticket_messages
+
+    def add_ticket_message(self, ticket_id: int, role: str, text: str) -> int:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO ticket_messages (ticket_id, role, text, ts) VALUES (?,?,?,?)",
+                (ticket_id, role, text, now),
+            )
+            self._conn.execute(
+                "UPDATE tickets SET updated_at=? WHERE id=?", (now, ticket_id)
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_ticket_messages(self, ticket_id: int, limit: int = 20) -> list:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM ticket_messages WHERE ticket_id=? ORDER BY id ASC LIMIT ?",
+                (ticket_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]

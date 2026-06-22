@@ -24,6 +24,10 @@ from .routes.admin import (
     handle_settings_save,
     handle_stats_get,
     handle_stats_update,
+    handle_ticket_close,
+    handle_ticket_detail,
+    handle_ticket_reply,
+    handle_tickets_list,
 )
 from .routes.internal import (
     handle_internal_configs_add,
@@ -84,6 +88,10 @@ _ROUTES = [
     ("GET",    re.compile(r"^/admin/bot-settings$"),            lambda h: handle_bot_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/bot-settings$"),            lambda h: handle_bot_settings_save(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/bot-restart$"),             lambda h: handle_bot_restart(h) if require_admin_auth(h) else None),
+    ("GET",    re.compile(r"^/admin/tickets$"),                 lambda h: handle_tickets_list(h, status=h.path.split("status=")[1] if "status=" in h.path else None) if require_admin_auth(h) else None),
+    ("GET",    re.compile(r"^/admin/tickets/(?P<tid>\d+)$"),    lambda h, tid: handle_ticket_detail(h, tid) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/tickets/(?P<tid>\d+)/reply$"), lambda h, tid: handle_ticket_reply(h, tid) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/tickets/(?P<tid>\d+)/close$"), lambda h, tid: handle_ticket_close(h, tid) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),

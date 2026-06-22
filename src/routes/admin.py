@@ -417,6 +417,10 @@ def handle_bot_settings_get(handler):
         "proxy_port": int(db.get_setting("bot:proxy_port") or 1080),
         "proxy_user": db.get_setting("bot:proxy_user") or "socks",
         "proxy_pass": db.get_setting("bot:proxy_pass") or "",
+        "support_enabled": db.get_setting("bot:support_enabled", "1") == "1",
+        "openrouter_api_key": db.get_setting("bot:openrouter_api_key") or "",
+        "openrouter_model": db.get_setting("bot:openrouter_model") or "openai/gpt-4o-mini",
+        "admin_tg_id": db.get_setting("bot:admin_tg_id") or "",
     })
 
 
@@ -427,14 +431,30 @@ def handle_bot_settings_save(handler):
         _json_response(handler, 400, {"error": str(e)})
         return
     db = handler.server.db
-    db.set_setting("bot:enabled", "1" if data.get("enabled") else "0")
-    db.set_setting("bot:token", str(data.get("token") or "").strip())
-    db.set_setting("bot:channel_id", str(data.get("channel_id") or "@MGBoost_News").strip())
-    db.set_setting("bot:proxy_enabled", "1" if data.get("proxy_enabled") else "0")
-    db.set_setting("bot:proxy_host", str(data.get("proxy_host") or "").strip())
-    db.set_setting("bot:proxy_port", str(int(data.get("proxy_port") or 1080)))
-    db.set_setting("bot:proxy_user", str(data.get("proxy_user") or "socks").strip())
-    db.set_setting("bot:proxy_pass", str(data.get("proxy_pass") or "").strip())
+    if "enabled" in data:
+        db.set_setting("bot:enabled", "1" if data.get("enabled") else "0")
+    if "token" in data:
+        db.set_setting("bot:token", str(data.get("token") or "").strip())
+    if "channel_id" in data:
+        db.set_setting("bot:channel_id", str(data.get("channel_id") or "@MGBoost_News").strip())
+    if "proxy_enabled" in data:
+        db.set_setting("bot:proxy_enabled", "1" if data.get("proxy_enabled") else "0")
+    if "proxy_host" in data:
+        db.set_setting("bot:proxy_host", str(data.get("proxy_host") or "").strip())
+    if "proxy_port" in data:
+        db.set_setting("bot:proxy_port", str(int(data.get("proxy_port") or 1080)))
+    if "proxy_user" in data:
+        db.set_setting("bot:proxy_user", str(data.get("proxy_user") or "socks").strip())
+    if "proxy_pass" in data:
+        db.set_setting("bot:proxy_pass", str(data.get("proxy_pass") or "").strip())
+    if "support_enabled" in data:
+        db.set_setting("bot:support_enabled", "1" if data.get("support_enabled") else "0")
+    if "openrouter_api_key" in data:
+        db.set_setting("bot:openrouter_api_key", str(data.get("openrouter_api_key") or "").strip())
+    if "openrouter_model" in data:
+        db.set_setting("bot:openrouter_model", str(data.get("openrouter_model") or "openai/gpt-4o-mini").strip())
+    if "admin_tg_id" in data:
+        db.set_setting("bot:admin_tg_id", str(data.get("admin_tg_id") or "").strip())
     _json_response(handler, 200, {"ok": True})
 
 
@@ -484,4 +504,82 @@ def handle_admin_remove_device(handler, device_id):
     if not ok:
         _json_response(handler, 404, {"error": "Device not found"})
         return
+    _json_response(handler, 200, {"ok": True})
+
+
+# --- ticket management ---
+
+def _send_ticket_notification(handler, telegram_id: int, text: str):
+    runner = getattr(handler.server, "bot_runner", None)
+    if not runner:
+        return
+    bot = getattr(runner, "bot_instance", None)
+    if not bot:
+        return
+    loop = getattr(runner, "_loop", None)
+    if not loop or not loop.is_running():
+        return
+    from ..bot_support import send_operator_reply, notify_ticket_closed
+    import asyncio
+    asyncio.run_coroutine_threadsafe(
+        send_operator_reply(bot, telegram_id, text) if text else
+        notify_ticket_closed(bot, telegram_id),
+        loop,
+    )
+
+
+def handle_tickets_list(handler, status: str | None = None):
+    db = handler.server.db
+    tickets = db.list_tickets(status=status or None)
+    _json_response(handler, 200, tickets)
+
+
+def handle_ticket_detail(handler, ticket_id):
+    try:
+        tid = int(ticket_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid ticket id"})
+        return
+    db = handler.server.db
+    ticket = db.get_ticket(tid)
+    if not ticket:
+        _json_response(handler, 404, {"error": "Ticket not found"})
+        return
+    messages = db.get_ticket_messages(tid, limit=100)
+    _json_response(handler, 200, {"ticket": ticket, "messages": messages})
+
+
+def handle_ticket_close(handler, ticket_id):
+    try:
+        tid = int(ticket_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid ticket id"})
+        return
+    db = handler.server.db
+    ticket = db.get_ticket(tid)
+    if not ticket:
+        _json_response(handler, 404, {"error": "Ticket not found"})
+        return
+    db.update_ticket_status(tid, "closed")
+    _send_ticket_notification(handler, ticket["telegram_id"], "")
+    _json_response(handler, 200, {"ok": True})
+
+
+def handle_ticket_reply(handler, ticket_id):
+    try:
+        tid = int(ticket_id)
+        data = json.loads(_read_body(handler))
+        text = data.get("text", "").strip()
+        if not text:
+            raise ValueError("text is required")
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    db = handler.server.db
+    ticket = db.get_ticket(tid)
+    if not ticket:
+        _json_response(handler, 404, {"error": "Ticket not found"})
+        return
+    db.add_ticket_message(tid, "human", text)
+    _send_ticket_notification(handler, ticket["telegram_id"], text)
     _json_response(handler, 200, {"ok": True})
