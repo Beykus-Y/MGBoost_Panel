@@ -7,6 +7,7 @@ from .routes.admin import (
     handle_admin_set_device_limit,
     handle_admin_user_device_counts,
     handle_admin_user_devices,
+    handle_bot_restart,
     handle_bot_settings_get,
     handle_bot_settings_save,
     handle_configs_add,
@@ -82,6 +83,7 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/node-settings$"),           lambda h: handle_node_settings_save(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/bot-settings$"),            lambda h: handle_bot_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/bot-settings$"),            lambda h: handle_bot_settings_save(h) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/bot-restart$"),             lambda h: handle_bot_restart(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
@@ -147,16 +149,20 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _ServerWithDB(HTTPServer):
-    def __init__(self, address, handler_cls, db):
+    def __init__(self, address, handler_cls, db, bot_runner=None, bot_runner_factory=None):
         super().__init__(address, handler_cls)
         self.db = db
+        self.bot_runner = bot_runner
+        self.bot_runner_factory = bot_runner_factory or (lambda: None)
 
 
 class Server:
     def __init__(self, db):
         self._db = db
 
-    def run(self, host, port):
-        server = _ServerWithDB((host, port), _Handler, self._db)
+    def run(self, host, port, bot_runner=None, bot_runner_factory=None):
+        server = _ServerWithDB((host, port), _Handler, self._db,
+                               bot_runner=bot_runner,
+                               bot_runner_factory=bot_runner_factory)
         print(f"[Server] Listening on {host}:{port}")
         server.serve_forever()

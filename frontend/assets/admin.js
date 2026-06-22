@@ -1234,6 +1234,19 @@ async function saveBotSettings(){
   }catch(e){status.style.color='';status.textContent='Ошибка';}
 }
 
+async function restartBot(){
+  const status=document.getElementById('bot-settings-status');
+  status.textContent='Перезапуск...';
+  try{
+    const r=await proxyApi('/admin/bot-restart',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){status.textContent=d.error||'Ошибка';return;}
+    status.style.color='#6f6';
+    status.textContent=d.started?'Бот запущен':'Бот остановлен (токен не задан)';
+    setTimeout(()=>{status.textContent='';status.style.color='';},3000);
+  }catch(e){status.style.color='';status.textContent='Ошибка';}
+}
+
 // INIT
 if(TOKEN){
   document.getElementById('login-page').style.display='none';

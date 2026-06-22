@@ -389,6 +389,23 @@ def handle_node_settings_save(handler):
     _json_response(handler, 200, result)
 
 
+def handle_bot_restart(handler):
+    server = handler.server
+    old = getattr(server, "bot_runner", None)
+    if old and old.is_alive():
+        old.stop()
+        old.join(timeout=5)
+    factory = getattr(server, "bot_runner_factory", None)
+    new_runner = factory() if factory else None
+    if new_runner:
+        new_runner.start()
+        server.bot_runner = new_runner
+        _json_response(handler, 200, {"ok": True, "started": True})
+    else:
+        server.bot_runner = None
+        _json_response(handler, 200, {"ok": True, "started": False})
+
+
 def handle_bot_settings_get(handler):
     db = handler.server.db
     _json_response(handler, 200, {
