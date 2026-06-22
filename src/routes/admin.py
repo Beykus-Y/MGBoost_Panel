@@ -421,6 +421,7 @@ def handle_bot_settings_get(handler):
         "openrouter_api_key": db.get_setting("bot:openrouter_api_key") or "",
         "openrouter_model": db.get_setting("bot:openrouter_model") or "openai/gpt-4o-mini",
         "admin_tg_id": db.get_setting("bot:admin_tg_id") or "",
+        "support_faq": db.get_setting("bot:support_faq") or "",
     })
 
 
@@ -455,6 +456,8 @@ def handle_bot_settings_save(handler):
         db.set_setting("bot:openrouter_model", str(data.get("openrouter_model") or "openai/gpt-4o-mini").strip())
     if "admin_tg_id" in data:
         db.set_setting("bot:admin_tg_id", str(data.get("admin_tg_id") or "").strip())
+    if "support_faq" in data:
+        db.set_setting("bot:support_faq", str(data.get("support_faq") or "").strip())
     _json_response(handler, 200, {"ok": True})
 
 

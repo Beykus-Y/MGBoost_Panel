@@ -7,14 +7,18 @@ logger = logging.getLogger(__name__)
 
 _SUB_TOKEN_RE = re.compile(r"https?://[^/]+/sub/([^/\s?#]+)")
 
-SYSTEM_PROMPT = (
-    "Ты — AI-ассистент технической поддержки VPN-сервиса MGBoost. "
-    "Отвечай коротко, по-русски, дружелюбно. "
-    "Помогай пользователям с подключением, настройкой клиентов (Hiddify, V2RayNG, Clash), "
-    "проблемами с подпиской и доступом к интернету через VPN. "
-    "Если вопрос не связан с VPN или техподдержкой — мягко перенаправь. "
-    "Не раскрывай технические детали сервера."
-)
+SYSTEM_PROMPT = """Ты — помощник поддержки VPN-сервиса MGBoost. Помогаешь обычным людям, не программистам.
+
+Правила общения:
+- Пиши просто, как живой человек. Без технических терминов и портянок.
+- Короткие сообщения. Максимум 3–4 предложения на ответ.
+- Не давай сразу 5 советов — спроси уточняющий вопрос и дай один конкретный шаг.
+- Не упоминай TCP/UDP, TLS, порты и прочую техническую лабуду — пользователь этого не знает.
+- Если нужна инфа — используй инструменты (подписка, статус нод, история).
+- Если не можешь помочь или вопрос сложный — передай оператору через escalate_to_human.
+- Отвечай только по теме VPN и подписки. На остальное — "не по теме, но могу помочь с VPN".
+
+Стиль: дружелюбно, коротко, по делу. Как будто помогает живой человек, а не робот."""
 
 
 def parse_sub_link(text: str) -> str | None:
@@ -62,6 +66,24 @@ def _fmt_bytes(b: int) -> str:
             return f"{b:.1f} {unit}"
         b /= 1024
     return f"{b:.1f} PB"
+
+
+DEFAULT_FAQ = """## Частые проблемы
+
+**Не обновляется подписка**
+Открой приложение → найди свою подписку → нажми "Обновить" или значок обновления. Если не помогает — удали подписку и добавь заново по той же ссылке.
+
+**Таймаут при подключении / не подключается**
+Попробуй сменить сервер — выбери другую страну в приложении. Обычно помогает. Если все серверы не работают — возможно, проблема с интернетом или провайдер блокирует.
+
+**Медленный интернет через VPN**
+Смени сервер на ближайший географически. Если не помогает — напиши нам.
+
+**Закончился трафик**
+Используй кнопку "Моя подписка" чтобы проверить остаток. Для продления — обратись к оператору.
+
+**Приложение вылетает / глючит**
+Переустанови приложение. Рекомендуемые: Hiddify (iOS/Android), V2RayNG (Android)."""
 
 
 def build_ai_messages(user_message: str, history: list, system: str = SYSTEM_PROMPT) -> list:
@@ -264,6 +286,13 @@ async def ask_openrouter(api_key: str, model: str, messages: list) -> str:
     )
 
 
+def build_system_prompt(db) -> str:
+    faq = db.get_setting("bot:support_faq") if db else None
+    if faq:
+        return SYSTEM_PROMPT + "\n\n" + faq
+    return SYSTEM_PROMPT + "\n\n" + DEFAULT_FAQ
+
+
 def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None):
     try:
         from aiogram import F
@@ -404,6 +433,37 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             db.add_ticket_message(ticket["id"], "user", message.text or "")
         await message.answer("Ваш вопрос передан оператору, ожидайте ответа.")
 
+    @dp.message(SupportStates.in_dialog, F.photo | F.document | F.video)
+    async def msg_in_dialog_media(message: Message, state: FSMContext):
+        tg_user = db.get_tg_user(message.from_user.id)
+        username = tg_user["marzban_username"] if tg_user else None
+        ticket = db.get_open_ticket(message.from_user.id)
+        if not ticket:
+            ticket_id = db.create_ticket(message.from_user.id, marzban_username=username, status="waiting_human")
+        else:
+            ticket_id = ticket["id"]
+            db.update_ticket_status(ticket_id, "waiting_human")
+
+        media_type = "фото" if message.photo else ("видео" if message.video else "файл")
+        caption = message.caption or ""
+        db.add_ticket_message(ticket_id, "user", f"[{media_type}]{': ' + caption if caption else ''}")
+
+        await state.set_state(SupportStates.waiting_human)
+        await message.answer(
+            f"Получил {media_type}! Передаю оператору — он скоро ответит.",
+            reply_markup=kb_waiting(),
+        )
+        await _notify_admin(message.bot, db, message.from_user.id, username)
+
+    @dp.message(SupportStates.waiting_human, F.photo | F.document | F.video)
+    async def msg_waiting_human_media(message: Message, state: FSMContext):
+        ticket = db.get_open_ticket(message.from_user.id)
+        if ticket:
+            media_type = "фото" if message.photo else ("видео" if message.video else "файл")
+            caption = message.caption or ""
+            db.add_ticket_message(ticket["id"], "user", f"[{media_type}]{': ' + caption if caption else ''}")
+        await message.answer("Получил, оператор посмотрит.")
+
     @dp.message(SupportStates.in_dialog)
     async def msg_in_dialog(message: Message, state: FSMContext):
         if not message.text:
@@ -429,7 +489,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return
 
         history = db.get_ticket_messages(ticket_id, limit=20)
-        ai_messages = build_ai_messages(message.text, history[:-1])
+        ai_messages = build_ai_messages(message.text, history[:-1], system=build_system_prompt(db))
         current_states = node_states if node_states is not None else {}
         current_names = node_names if node_names is not None else {}
         reply = await ask_openrouter_with_tools(

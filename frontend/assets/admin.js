@@ -1258,6 +1258,7 @@ async function loadSupportSettings(){
     document.getElementById('bot-openrouter-key').value=d.openrouter_api_key||'';
     document.getElementById('bot-openrouter-model').value=d.openrouter_model||'openai/gpt-4o-mini';
     document.getElementById('bot-admin-tg-id').value=d.admin_tg_id||'';
+    document.getElementById('bot-support-faq').value=d.support_faq||'';
   }catch(e){console.warn('loadSupportSettings',e);}
 }
 async function saveSupportSettings(){
@@ -1269,6 +1270,7 @@ async function saveSupportSettings(){
       openrouter_api_key:document.getElementById('bot-openrouter-key').value.trim(),
       openrouter_model:document.getElementById('bot-openrouter-model').value.trim()||'openai/gpt-4o-mini',
       admin_tg_id:document.getElementById('bot-admin-tg-id').value.trim(),
+      support_faq:document.getElementById('bot-support-faq').value,
     })});
     if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
     status.style.color='#6f6';status.textContent='Сохранено';
