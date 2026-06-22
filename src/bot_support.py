@@ -296,7 +296,7 @@ def build_system_prompt(db) -> str:
 def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None):
     try:
         from aiogram import F
-        from aiogram.filters import CommandStart
+        from aiogram.filters import CommandStart, StateFilter
         from aiogram.fsm.context import FSMContext
         from aiogram.fsm.state import State, StatesGroup
         from aiogram.types import (
@@ -350,6 +350,19 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 "👋 Привет! Я помогу с вашей VPN-подпиской.\n\n"
                 "Пришлите ссылку подписки для привязки аккаунта.\n"
                 "Её можно найти в письме или у администратора.",
+                reply_markup=kb_no_link(),
+            )
+
+    @dp.message(StateFilter(None))
+    async def msg_no_state(message: Message, state: FSMContext):
+        tg_user = db.get_tg_user(message.from_user.id)
+        if tg_user:
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("Чем могу помочь?", reply_markup=kb_main())
+        else:
+            await state.set_state(SupportStates.waiting_link)
+            await message.answer(
+                "👋 Привет! Пришли ссылку подписки для привязки аккаунта.",
                 reply_markup=kb_no_link(),
             )
 
