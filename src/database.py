@@ -117,6 +117,7 @@ class Database:
                 note TEXT DEFAULT '',
                 updated_at INTEGER NOT NULL
             );
+
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -160,6 +161,7 @@ class Database:
         }
         expected = {
             "billing_group": "TEXT DEFAULT ''",
+            "monitor_quiet_hours": "TEXT DEFAULT '[]'",
         }
         with self._lock:
             for name, column_type in expected.items():
@@ -716,6 +718,35 @@ class Database:
             )
             self._conn.commit()
         return True
+
+    # --- monitor quiet hours ---
+
+    def get_node_quiet_hours(self, node_id) -> list:
+        node_key = self._node_key(node_id)
+        row = self._conn.execute(
+            "SELECT monitor_quiet_hours FROM node_settings WHERE node_key=?", (node_key,)
+        ).fetchone()
+        if not row:
+            return []
+        return json.loads(row["monitor_quiet_hours"] or "[]")
+
+    def set_node_quiet_hours(self, node_id, quiet_hours: list):
+        node_key = self._node_key(node_id)
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT node_key FROM node_settings WHERE node_key=?", (node_key,)
+            ).fetchone()
+            if existing:
+                self._conn.execute(
+                    "UPDATE node_settings SET monitor_quiet_hours=? WHERE node_key=?",
+                    (json.dumps(quiet_hours), node_key),
+                )
+            else:
+                self._conn.execute(
+                    "INSERT INTO node_settings (node_key, monitor_quiet_hours, updated_at) VALUES (?,?,?)",
+                    (node_key, json.dumps(quiet_hours), int(time.time())),
+                )
+            self._conn.commit()
 
     # --- node settings / economics ---
 

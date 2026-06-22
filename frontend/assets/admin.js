@@ -218,7 +218,7 @@ function showPage(name){
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
   if(name==='nodes')loadNodes();
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
-  if(name==='settings')loadSettings();
+  if(name==='settings'){loadSettings();loadBotSettings();}
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -738,8 +738,10 @@ function openNodeSettings(id){
   const body=document.getElementById('node-modal-body');
   body.innerHTML=`
     <div style="font-size:13px;color:var(--text2);margin-bottom:1rem">
-      Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду. Они нужны для аналитики, рекомендаций и будущего LLM-ассистента.
+      Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду.
     </div>
+    <label>Отображаемое имя (в боте)</label>
+    <input type="text" id="node-display-name" maxlength="128" placeholder="${esc(node?node.name:'')}" value="${esc(s.node_name||'')}" style="margin-bottom:12px" />
     <div class="form-row">
       <div>
         <label>Провайдер</label>
@@ -801,6 +803,12 @@ function openNodeSettings(id){
       <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?esc(node.address):esc(s.node_address||'—')}</div></div>
       <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?esc(node.status):'—'}</div></div>
     </div>
+    <div style="margin-top:1rem">
+      <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Тихие часы мониторинга (UTC)</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Во время тихих часов алерты в Telegram не отправляются (для прерываемых ВМ).</div>
+      <div id="node-quiet-hours-list">${renderQuietHours(s.monitor_quiet_hours||[])}</div>
+      <button style="margin-top:6px;font-size:12px" onclick="addQuietHour()">+ Добавить окно</button>
+    </div>
     <div class="modal-footer">
       <button onclick="closeModal('node-modal')">Отмена</button>
       <button class="primary" onclick="saveNodeSettings(${id===null?'null':id})">Сохранить</button>
@@ -820,7 +828,7 @@ async function saveNodeSettings(id){
 
   const payload={
     node_id:id,
-    node_name:node?node.name:(getNodeSetting(id).node_name||''),
+    node_name:document.getElementById('node-display-name').value.trim()||(node?node.name:(getNodeSetting(id).node_name||'')),
     node_address:node?node.address:(getNodeSetting(id).node_address||''),
     billing_group:document.getElementById('node-billing-group').value.trim(),
     provider:document.getElementById('node-provider').value.trim(),
@@ -832,6 +840,7 @@ async function saveNodeSettings(id){
     importance:document.getElementById('node-importance').value,
     can_remove:document.getElementById('node-can-remove').value==='true',
     note:document.getElementById('node-note').value.trim(),
+    monitor_quiet_hours:collectQuietHours(),
   };
   const r=await proxyApi('/admin/node-settings',{method:'POST',body:JSON.stringify(payload)});
   if(!r.ok){const e=await r.json().catch(()=>({error:'Ошибка'}));toast(e.error||'Ошибка','err');return}
@@ -1147,6 +1156,82 @@ async function saveSettings(){
     status.style.color='';
     status.textContent='Ошибка сохранения';
   }
+}
+
+// QUIET HOURS
+function renderQuietHours(list){
+  if(!list||!list.length)return'<div style="font-size:12px;color:var(--text3)">Не заданы</div>';
+  return list.map((w,i)=>`
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <input type="time" value="${esc(w.from)}" style="width:100px" data-qh-from="${i}" />
+      <span style="font-size:12px;color:var(--text2)">—</span>
+      <input type="time" value="${esc(w.to)}" style="width:100px" data-qh-to="${i}" />
+      <button style="padding:2px 8px;font-size:12px" onclick="removeQuietHour(${i})">✕</button>
+    </div>`).join('');
+}
+function addQuietHour(){
+  const list=document.getElementById('node-quiet-hours-list');
+  const existing=collectQuietHours();
+  existing.push({from:'00:00',to:'01:00'});
+  list.innerHTML=renderQuietHours(existing);
+}
+function removeQuietHour(i){
+  const list=document.getElementById('node-quiet-hours-list');
+  const existing=collectQuietHours();
+  existing.splice(i,1);
+  list.innerHTML=renderQuietHours(existing);
+}
+function collectQuietHours(){
+  const froms=document.querySelectorAll('[data-qh-from]');
+  const tos=document.querySelectorAll('[data-qh-to]');
+  const result=[];
+  froms.forEach((el,i)=>{
+    const f=el.value.trim();
+    const t=tos[i]?tos[i].value.trim():'';
+    if(f&&t)result.push({from:f,to:t});
+  });
+  return result;
+}
+
+// BOT SETTINGS
+function toggleBotProxy(){
+  const on=document.getElementById('bot-proxy-enabled').checked;
+  document.getElementById('bot-proxy-fields').style.display=on?'block':'none';
+}
+async function loadBotSettings(){
+  try{
+    const r=await proxyApi('/admin/bot-settings');
+    if(!r.ok)return;
+    const d=await r.json();
+    document.getElementById('bot-enabled').checked=!!d.enabled;
+    document.getElementById('bot-token').value=d.token||'';
+    document.getElementById('bot-channel').value=d.channel_id||'@MGBoost_News';
+    document.getElementById('bot-proxy-enabled').checked=!!d.proxy_enabled;
+    document.getElementById('bot-proxy-host').value=d.proxy_host||'';
+    document.getElementById('bot-proxy-port').value=d.proxy_port||1080;
+    document.getElementById('bot-proxy-user').value=d.proxy_user||'socks';
+    document.getElementById('bot-proxy-pass').value=d.proxy_pass||'';
+    toggleBotProxy();
+  }catch(e){console.warn('loadBotSettings',e);}
+}
+async function saveBotSettings(){
+  const status=document.getElementById('bot-settings-status');
+  status.textContent='Сохранение...';
+  try{
+    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify({
+      enabled:document.getElementById('bot-enabled').checked,
+      token:document.getElementById('bot-token').value.trim(),
+      channel_id:document.getElementById('bot-channel').value.trim()||'@MGBoost_News',
+      proxy_enabled:document.getElementById('bot-proxy-enabled').checked,
+      proxy_host:document.getElementById('bot-proxy-host').value.trim(),
+      proxy_port:parseInt(document.getElementById('bot-proxy-port').value)||1080,
+      proxy_user:document.getElementById('bot-proxy-user').value.trim()||'socks',
+      proxy_pass:document.getElementById('bot-proxy-pass').value.trim(),
+    })});
+    if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
+    status.style.color='#6f6';status.textContent='Сохранено';
+    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+  }catch(e){status.style.color='';status.textContent='Ошибка';}
 }
 
 // INIT

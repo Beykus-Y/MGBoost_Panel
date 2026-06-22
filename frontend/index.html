@@ -245,6 +245,50 @@
         </div>
         <div id="settings-status" style="margin-top:10px;font-size:13px;color:var(--text3)"></div>
       </div>
+      <div class="card">
+        <div class="card-title">Telegram-бот мониторинга</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+          Бот читает статусы нод из Marzban и постит обновления в канал. Тихие часы настраиваются в настройках каждой ноды.
+        </p>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <label style="margin:0">Включить бота</label>
+          <input type="checkbox" id="bot-enabled" style="width:auto" />
+        </div>
+        <label>Токен бота</label>
+        <input type="text" id="bot-token" maxlength="128" placeholder="123456:ABCDEF..." style="width:100%;margin-bottom:12px;font-family:monospace" />
+        <label>Канал для публикации</label>
+        <input type="text" id="bot-channel" maxlength="64" placeholder="@MGBoost_News" style="width:100%;margin-bottom:14px" />
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <label style="margin:0">Использовать прокси (Estonia SOCKS5)</label>
+          <input type="checkbox" id="bot-proxy-enabled" style="width:auto" onchange="toggleBotProxy()" />
+        </div>
+        <div id="bot-proxy-fields" style="display:none">
+          <div class="form-row">
+            <div>
+              <label>Хост прокси</label>
+              <input type="text" id="bot-proxy-host" maxlength="128" placeholder="150.241.74.147" style="width:100%" />
+            </div>
+            <div>
+              <label>Порт</label>
+              <input type="number" id="bot-proxy-port" min="1" max="65535" value="1080" style="width:100%" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label>Пользователь</label>
+              <input type="text" id="bot-proxy-user" maxlength="64" placeholder="socks" style="width:100%" />
+            </div>
+            <div>
+              <label>Пароль</label>
+              <input type="text" id="bot-proxy-pass" maxlength="64" placeholder="telegram" style="width:100%;font-family:monospace" />
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button onclick="saveBotSettings()">Сохранить настройки бота</button>
+          <span id="bot-settings-status" style="font-size:13px;color:var(--text3)"></span>
+        </div>
+      </div>
     </div>
 
   </div>

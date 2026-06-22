@@ -363,7 +363,11 @@ def handle_settings_save(handler):
 
 
 def handle_node_settings_get(handler):
-    settings = handler.server.db.get_node_settings()
+    db = handler.server.db
+    settings = db.get_node_settings()
+    for node_key, s in settings.items():
+        node_id = s.get("node_id")
+        s["monitor_quiet_hours"] = db.get_node_quiet_hours(node_id)
     _json_response(handler, 200, settings)
 
 
@@ -374,8 +378,47 @@ def handle_node_settings_save(handler):
     except (json.JSONDecodeError, ValueError) as e:
         _json_response(handler, 400, {"error": str(e)})
         return
-    result = handler.server.db.save_node_setting(validated)
+    db = handler.server.db
+    result = db.save_node_setting(validated)
+    quiet_hours = data.get("monitor_quiet_hours")
+    if isinstance(quiet_hours, list):
+        db.set_node_quiet_hours(data.get("node_id"), quiet_hours)
+        result["monitor_quiet_hours"] = quiet_hours
+    else:
+        result["monitor_quiet_hours"] = db.get_node_quiet_hours(data.get("node_id"))
     _json_response(handler, 200, result)
+
+
+def handle_bot_settings_get(handler):
+    db = handler.server.db
+    _json_response(handler, 200, {
+        "enabled": db.get_setting("bot:enabled") == "1",
+        "token": db.get_setting("bot:token") or "",
+        "channel_id": db.get_setting("bot:channel_id") or "@MGBoost_News",
+        "proxy_enabled": db.get_setting("bot:proxy_enabled") == "1",
+        "proxy_host": db.get_setting("bot:proxy_host") or "",
+        "proxy_port": int(db.get_setting("bot:proxy_port") or 1080),
+        "proxy_user": db.get_setting("bot:proxy_user") or "socks",
+        "proxy_pass": db.get_setting("bot:proxy_pass") or "",
+    })
+
+
+def handle_bot_settings_save(handler):
+    try:
+        data = json.loads(_read_body(handler))
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    db = handler.server.db
+    db.set_setting("bot:enabled", "1" if data.get("enabled") else "0")
+    db.set_setting("bot:token", str(data.get("token") or "").strip())
+    db.set_setting("bot:channel_id", str(data.get("channel_id") or "@MGBoost_News").strip())
+    db.set_setting("bot:proxy_enabled", "1" if data.get("proxy_enabled") else "0")
+    db.set_setting("bot:proxy_host", str(data.get("proxy_host") or "").strip())
+    db.set_setting("bot:proxy_port", str(int(data.get("proxy_port") or 1080)))
+    db.set_setting("bot:proxy_user", str(data.get("proxy_user") or "socks").strip())
+    db.set_setting("bot:proxy_pass", str(data.get("proxy_pass") or "").strip())
+    _json_response(handler, 200, {"ok": True})
 
 
 # --- device management (admin) ---

@@ -1,6 +1,21 @@
-.env
-data/db.sqlite3
-data/*.json
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+
+# Data & DB
+data/
+*.sqlite3
+*.db
+
+# Env & secrets
+.env
+
+# macOS
 .DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
