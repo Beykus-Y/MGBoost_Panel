@@ -86,17 +86,11 @@ async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db
         logger.error("aiogram не установлен — бот не запустится")
         return
 
-    session_kwargs = {}
     if proxy_url:
-        try:
-            from aiohttp_socks import ProxyConnector
-            # aiohttp_socks не понимает socks5h — заменяем на socks5 (DNS резолвится на стороне прокси по умолчанию)
-            connector_url = proxy_url.replace("socks5h://", "socks5://")
-            session_kwargs["connector"] = ProxyConnector.from_url(connector_url)
-        except ImportError:
-            logger.warning("aiohttp_socks не установлен — прокси не будет использоваться")
-
-    session = AiohttpSession(**session_kwargs) if session_kwargs else None
+        proxy = proxy_url.replace("socks5h://", "socks5://")
+        session = AiohttpSession(proxy=proxy)
+    else:
+        session = None
     bot = Bot(token=bot_token, session=session) if session else Bot(token=bot_token)
 
     states: dict = {}
