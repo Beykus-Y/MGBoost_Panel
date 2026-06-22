@@ -95,7 +95,9 @@ async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db
 
     states: dict = {}
     down_ids: dict = {}
-    pinned: list = []
+
+    saved_id = db.get_setting("bot:pinned_message_id") if db else None
+    pinned: list = [int(saved_id)] if saved_id else []
 
     async def tick():
         try:
@@ -136,6 +138,8 @@ async def run_monitor(bot_token: str, channel_id: str, proxy_url: str | None, db
         else:
             msg = await bot.send_message(channel_id, status_text, parse_mode="Markdown")
             pinned[0:] = [msg.message_id]
+            if db:
+                db.set_setting("bot:pinned_message_id", str(msg.message_id))
             try:
                 pin_msg = await bot.pin_chat_message(channel_id, msg.message_id, disable_notification=True)
                 await bot.delete_message(channel_id, pin_msg.message_id)

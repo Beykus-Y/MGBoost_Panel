@@ -71,3 +71,15 @@ def test_bot_settings_independent_from_other_settings(db):
     db.set_setting("bot:channel_id", "@MGBoost_News")
     assert db.get_setting("some_other_key") == "value1"
     assert db.get_setting("bot:channel_id") == "@MGBoost_News"
+
+
+def test_pinned_message_id_persisted(db):
+    assert db.get_setting("bot:pinned_message_id") is None
+    db.set_setting("bot:pinned_message_id", "99887766")
+    assert db.get_setting("bot:pinned_message_id") == "99887766"
+
+
+def test_pinned_message_id_overwrite(db):
+    db.set_setting("bot:pinned_message_id", "111")
+    db.set_setting("bot:pinned_message_id", "222")
+    assert db.get_setting("bot:pinned_message_id") == "222"
