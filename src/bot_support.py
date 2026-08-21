@@ -5,6 +5,27 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+SQLITE_MAX_INTEGER = (1 << 63) - 1
+
+
+class PaymentDurabilityError(BaseException):
+    """Stop polling before an unpersisted payment update is confirmed.
+
+    This deliberately derives from BaseException: aiogram catches ordinary
+    Exceptions and treats the update as processed. BotRunner uses sequential
+    polling so this escapes before getUpdates advances its offset.
+    """
+
+
+def _parse_stars_invoice_id(payload) -> int | None:
+    if not isinstance(payload, str) or not re.fullmatch(r"[1-9][0-9]*", payload):
+        return None
+    try:
+        value = int(payload)
+    except (ValueError, OverflowError):
+        return None
+    return value if value <= SQLITE_MAX_INTEGER else None
+
 _SUB_TOKEN_RE = re.compile(r"https?://[^/]+/sub/([^/\s?#]+)")
 
 SYSTEM_PROMPT = """Ты — помощник поддержки VPN-сервиса MGBoost. Помогаешь обычным людям, не программистам.
@@ -353,26 +374,169 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             inline_keyboard=[[InlineKeyboardButton(text="У меня нет ссылки", callback_data="no_link")]]
         )
 
+    # Payment service updates must be registered before every FSM/state
+    # catch-all. MemoryStorage is intentionally ephemeral, so after a bot
+    # restart a legitimate successful_payment arrives in State(None).
+    @dp.pre_checkout_query()
+    async def on_pre_checkout(query: PreCheckoutQuery):
+        payload = query.invoice_payload
+        invoice_id = _parse_stars_invoice_id(payload)
+        if invoice_id is None:
+            await query.answer(ok=False, error_message="Неверные данные счёта.")
+            return
+        row = db.get_invoice(invoice_id)
+        if row is None:
+            await query.answer(ok=False, error_message="Счёт не найден.")
+            return
+        if row["status"] != "created":
+            await query.answer(ok=False, error_message="Счёт уже недействителен.")
+            return
+        if query.currency != "XTR":
+            await query.answer(ok=False, error_message="Неподдерживаемая валюта.")
+            return
+        if query.total_amount != row["stars_price"]:
+            await query.answer(ok=False, error_message="Сумма не совпадает.")
+            return
+        # Payable interval is explicitly created_at <= now < expires_at.
+        if int(time.time()) >= row["expires_at"]:
+            await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
+            return
+        await query.answer(ok=True)
+
+    async def capture_orphan_payment(message: Message, reason: str):
+        sp = message.successful_payment
+        try:
+            row, created = db.record_stars_orphan_payment(
+                telegram_payment_charge_id=sp.telegram_payment_charge_id,
+                provider_payment_charge_id=sp.provider_payment_charge_id,
+                payer_telegram_id=message.from_user.id,
+                currency=sp.currency,
+                total_amount=sp.total_amount,
+                invoice_payload=sp.invoice_payload,
+                reason=reason,
+            )
+        except Exception as exc:
+            logger.critical("Could not durably capture Stars payment as orphan", exc_info=True)
+            raise PaymentDurabilityError("Stars payment was not durably captured") from exc
+        if created:
+            await _notify_admin_orphan_payment(message.bot, db, sp, message.from_user.id)
+        return row, created
+
+    @dp.message(F.successful_payment)
+    async def on_successful_payment(message: Message, state: FSMContext):
+        sp = message.successful_payment
+        payer_telegram_id = message.from_user.id
+        payload = sp.invoice_payload
+        invoice_id = _parse_stars_invoice_id(payload)
+        if invoice_id is None:
+            await capture_orphan_payment(message, "invalid_invoice_payload")
+            return
+
+        try:
+            row = db.get_invoice(invoice_id)
+        except Exception as exc:
+            logger.critical("Could not read Stars invoice before payment capture", exc_info=True)
+            raise PaymentDurabilityError("Stars payment was not durably captured") from exc
+        if row is None:
+            await capture_orphan_payment(message, "invoice_not_found")
+            return
+
+        if row["status"] != "created":
+            if row.get("telegram_payment_charge_id") == sp.telegram_payment_charge_id:
+                return  # ordinary duplicate delivery of the same payment
+            await capture_orphan_payment(
+                message, f"invoice_not_payable:{row['status']}"
+            )
+            return
+
+        mismatch_reason = None
+        if sp.currency != "XTR" or sp.total_amount != row["stars_price"]:
+            mismatch_reason = "amount_or_currency_mismatch"
+        elif payer_telegram_id != row["created_by_telegram_id"]:
+            # Phase 2 MVP invoices are private, single-chat invoices. Shared
+            # Marzban subscriptions remain supported because each linked TG
+            # account can create its own invoice through the menu.
+            mismatch_reason = "unexpected_payer_for_single_chat_invoice"
+
+        if mismatch_reason:
+            try:
+                ok = db.mark_invoice_paid_but_ambiguous(
+                    invoice_id,
+                    charge_id=sp.telegram_payment_charge_id,
+                    provider_payment_charge_id=sp.provider_payment_charge_id,
+                    payer_telegram_id=payer_telegram_id,
+                    total_amount=sp.total_amount,
+                    currency=sp.currency,
+                    reason=mismatch_reason,
+                )
+            except Exception as exc:
+                logger.critical("Could not durably capture ambiguous Stars payment", exc_info=True)
+                raise PaymentDurabilityError("Stars payment was not durably captured") from exc
+            if ok:
+                from .stars import notify_admin_stuck_payment
+                await notify_admin_stuck_payment(message.bot, db, db.get_invoice(invoice_id))
+            else:
+                try:
+                    fresh = db.get_invoice(invoice_id)
+                except Exception as exc:
+                    logger.critical("Could not verify ambiguous Stars payment capture", exc_info=True)
+                    raise PaymentDurabilityError("Stars payment capture could not be verified") from exc
+                if not fresh or fresh.get("telegram_payment_charge_id") != sp.telegram_payment_charge_id:
+                    await capture_orphan_payment(message, "invoice_changed_during_payment_capture")
+            return
+
+        try:
+            ok = db.mark_invoice_paid(
+                invoice_id,
+                telegram_payment_charge_id=sp.telegram_payment_charge_id,
+                provider_payment_charge_id=sp.provider_payment_charge_id,
+                payer_telegram_id=payer_telegram_id,
+                total_amount=sp.total_amount,
+                currency=sp.currency,
+            )
+        except Exception as exc:
+            logger.critical("Could not durably capture Stars payment", exc_info=True)
+            raise PaymentDurabilityError("Stars payment was not durably captured") from exc
+        if ok:
+            await message.answer("Оплата получена! Продлеваем подписку…")
+            if stars_trigger is not None:
+                stars_trigger.set()
+            return
+
+        try:
+            fresh = db.get_invoice(invoice_id)
+        except Exception as exc:
+            logger.critical("Could not verify Stars payment capture", exc_info=True)
+            raise PaymentDurabilityError("Stars payment capture could not be verified") from exc
+        if not fresh or fresh.get("telegram_payment_charge_id") != sp.telegram_payment_charge_id:
+            await capture_orphan_payment(message, "invoice_changed_during_payment_capture")
+
     @dp.message(CommandStart())
     async def cmd_start(message: Message, state: FSMContext):
         await state.clear()
+        parts = (getattr(message, "text", None) or "").split(maxsplit=1)
+        forwarded_invoice_link = len(parts) == 2 and parts[1].startswith("stars_invoice_")
         tg_user = db.get_tg_user(message.from_user.id)
         if tg_user:
             await state.set_state(SupportStates.in_dialog)
             await message.answer(
-                f"С возвращением! Чем могу помочь?",
+                ("Этот счёт нельзя оплатить из пересланного сообщения. "
+                 "Создайте новый через «⭐️ Продлить подписку»."
+                 if forwarded_invoice_link else "С возвращением! Чем могу помочь?"),
                 reply_markup=kb_main(),
             )
         else:
             await state.set_state(SupportStates.waiting_link)
             await message.answer(
-                "👋 Привет! Я помогу с вашей VPN-подпиской.\n\n"
+                (("Пересланный счёт оплатить нельзя — после привязки создайте свой через меню.\n\n")
+                 if forwarded_invoice_link else "")
+                + "👋 Привет! Я помогу с вашей VPN-подпиской.\n\n"
                 "Пришлите ссылку подписки для привязки аккаунта.\n"
                 "Её можно найти в письме или у администратора.",
                 reply_markup=kb_no_link(),
             )
 
-    @dp.message(StateFilter(None))
+    @dp.message(StateFilter(None), ~F.successful_payment)
     async def msg_no_state(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
         if tg_user:
@@ -556,86 +720,14 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 provider_token="",
                 currency="XTR",
                 prices=[LabeledPrice(label=tariff["name"], amount=tariff["stars_price"])],
+                # Official single-chat invoice mode: a forwarded copy gets
+                # a deep-link button, never another Pay button. This is not
+                # a gift-payment mechanism in Phase 2 MVP.
+                start_parameter=f"stars_invoice_{invoice['id']}",
             )
         except Exception as e:
             logger.error(f"Не удалось отправить счёт: {e}")
             await call.message.answer("Не удалось создать счёт. Попробуйте позже.")
-
-    @dp.pre_checkout_query()
-    async def on_pre_checkout(query: PreCheckoutQuery):
-        try:
-            invoice_id = int(query.invoice_payload)
-        except (ValueError, TypeError):
-            await query.answer(ok=False, error_message="Неверные данные счёта.")
-            return
-        row = db.get_invoice(invoice_id)
-        if row is None:
-            await query.answer(ok=False, error_message="Счёт не найден.")
-            return
-        if row["status"] != "created":
-            await query.answer(ok=False, error_message="Счёт уже недействителен.")
-            return
-        if query.currency != "XTR":
-            await query.answer(ok=False, error_message="Неподдерживаемая валюта.")
-            return
-        if query.total_amount != row["stars_price"]:
-            await query.answer(ok=False, error_message="Сумма не совпадает.")
-            return
-        if int(time.time()) > row["expires_at"]:
-            await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
-            return
-        await query.answer(ok=True)
-
-    @dp.message(F.successful_payment)
-    async def on_successful_payment(message: Message, state: FSMContext):
-        sp = message.successful_payment
-        try:
-            invoice_id = int(sp.invoice_payload)
-        except (ValueError, TypeError):
-            db.log_audit_event("payment_failed", metadata={
-                "reason": "invalid_payload", "charge_id": sp.telegram_payment_charge_id,
-                "payer": message.from_user.id,
-            })
-            return
-
-        payer_telegram_id = message.from_user.id
-
-        row = db.get_invoice(invoice_id)
-        if row is None:
-            db.log_audit_event("payment_failed", metadata={
-                "reason": "invoice_not_found", "invoice_id": invoice_id,
-                "charge_id": sp.telegram_payment_charge_id, "payer": payer_telegram_id,
-            })
-            await _notify_admin_orphan_payment(message.bot, db, sp, payer_telegram_id)
-            return
-
-        if row["status"] != "created":
-            # Telegram's own at-least-once delivery, or a genuine duplicate —
-            # the UNIQUE charge_id + WHERE status='created' compare-and-set
-            # below makes this a safe no-op either way.
-            return
-
-        if sp.currency != "XTR" or sp.total_amount != row["stars_price"]:
-            db.mark_invoice_paid_but_ambiguous(
-                invoice_id, charge_id=sp.telegram_payment_charge_id,
-                payer_telegram_id=payer_telegram_id, total_amount=sp.total_amount,
-                reason="amount_or_currency_mismatch",
-            )
-            from .stars import notify_admin_stuck_payment
-            await notify_admin_stuck_payment(message.bot, db, db.get_invoice(invoice_id))
-            return
-
-        ok = db.mark_invoice_paid(
-            invoice_id,
-            telegram_payment_charge_id=sp.telegram_payment_charge_id,
-            provider_payment_charge_id=sp.provider_payment_charge_id,
-            payer_telegram_id=payer_telegram_id,
-            total_amount=sp.total_amount,
-        )
-        if ok:
-            await message.answer("Оплата получена! Продлеваем подписку…")
-            if stars_trigger is not None:
-                stars_trigger.set()
 
     @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
     async def msg_call_human(message: Message, state: FSMContext):

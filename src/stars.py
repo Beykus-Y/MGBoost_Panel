@@ -89,27 +89,46 @@ async def notify_user_extended(bot, row: dict):
 
 # --- apply-worker -----------------------------------------------------------
 
-async def _commit_plan(bot, db, marzban, admin_token, row: dict) -> dict | None:
+def _exhaust_before_network(db, row: dict, notifications: list | None) -> bool:
+    """Honor a durable retry budget before starting any new remote call."""
+    if int(row.get("apply_attempts") or 0) < MAX_APPLY_ATTEMPTS:
+        return False
+    if db.mark_invoice_apply_failed(row["id"], "retry_exhausted"):
+        if notifications is not None:
+            notifications.append(("admin", db.get_invoice(row["id"])))
+    return True
+
+
+async def _commit_plan(bot, db, marzban, admin_token, row: dict,
+                       notifications: list | None = None) -> dict | None:
     """Step 2a: paid -> plan_committed. Returns the refreshed row if a plan
     was committed (or already existed), None if the row was routed
     elsewhere (manual_review/apply_failed) or should be retried later."""
     invoice_id = row["id"]
     username = row["marzban_username"]
+    if _exhaust_before_network(db, row, notifications):
+        return None
     try:
         user = await _run_sync(marzban.get_user, username, admin_token)
     except Exception as e:
         if _is_not_found(e):
             if db.mark_invoice_apply_failed(invoice_id, "user_missing"):
-                await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+                if notifications is not None:
+                    notifications.append(("admin", db.get_invoice(invoice_id)))
             return None
-        db.record_apply_attempt_failure(invoice_id, str(e))
+        db.record_apply_attempt_failure(invoice_id, str(e), MAX_APPLY_ATTEMPTS)
+        fresh = db.get_invoice(invoice_id)
+        if fresh and fresh["status"] == "apply_retry_exhausted":
+            if notifications is not None:
+                notifications.append(("admin", fresh))
         return None
 
     ok, reason = _check_stars_eligibility(user)
     if not ok:
         full_reason = f"eligibility_changed_after_payment: {reason}"
         if db.mark_invoice_manual_review(invoice_id, reason=full_reason):
-            await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+            if notifications is not None:
+                notifications.append(("admin", db.get_invoice(invoice_id)))
         return None
 
     base_expire_observed = int(user.get("expire") or 0)
@@ -122,24 +141,28 @@ async def _commit_plan(bot, db, marzban, admin_token, row: dict) -> dict | None:
     return db.get_invoice(invoice_id)
 
 
-async def _resolve_plan(bot, db, marzban, admin_token, row: dict):
+async def _resolve_plan(bot, db, marzban, admin_token, row: dict,
+                        notifications: list | None = None):
     """Step 2b: resolve a plan_committed row via the 3-case recovery
     comparison (§4.3). Always re-fetches first — never trusts local memory
     of "I think the PUT already landed"."""
     invoice_id = row["id"]
     username = row["marzban_username"]
+    if _exhaust_before_network(db, row, notifications):
+        return
     try:
         user = await _run_sync(marzban.get_user, username, admin_token)
     except Exception as e:
         if _is_not_found(e):
             if db.mark_invoice_apply_failed(invoice_id, "user_missing"):
-                await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+                if notifications is not None:
+                    notifications.append(("admin", db.get_invoice(invoice_id)))
             return
-        db.record_apply_attempt_failure(invoice_id, str(e))
+        db.record_apply_attempt_failure(invoice_id, str(e), MAX_APPLY_ATTEMPTS)
         fresh = db.get_invoice(invoice_id)
-        if fresh and fresh["apply_attempts"] >= MAX_APPLY_ATTEMPTS:
-            if db.mark_invoice_apply_failed(invoice_id, "retry_exhausted"):
-                await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+        if fresh and fresh["status"] == "apply_retry_exhausted":
+            if notifications is not None:
+                notifications.append(("admin", fresh))
         return
 
     live_expire = int(user.get("expire") or 0)
@@ -155,7 +178,8 @@ async def _resolve_plan(bot, db, marzban, admin_token, row: dict):
                 metadata={"invoice_id": invoice_id, "days": row["duration_days"],
                           "new_expire": target, "via": "recovery_match"},
             )
-            await notify_user_extended(bot, row)
+            if notifications is not None:
+                notifications.append(("user", row))
         return
 
     # ---- CASE 2: nothing applied yet — safe to (re)attempt the SAME target ----
@@ -163,11 +187,11 @@ async def _resolve_plan(bot, db, marzban, admin_token, row: dict):
         try:
             await _run_sync(marzban.modify_user, username, {"expire": target}, admin_token)
         except Exception as e:
-            db.record_apply_attempt_failure(invoice_id, str(e))
+            db.record_apply_attempt_failure(invoice_id, str(e), MAX_APPLY_ATTEMPTS)
             fresh = db.get_invoice(invoice_id)
-            if fresh and fresh["apply_attempts"] >= MAX_APPLY_ATTEMPTS:
-                if db.mark_invoice_apply_failed(invoice_id, "retry_exhausted"):
-                    await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+            if fresh and fresh["status"] == "apply_retry_exhausted":
+                if notifications is not None:
+                    notifications.append(("admin", fresh))
             return
         if db.mark_invoice_applied(invoice_id, applied_expire=target):
             db.log_audit_event(
@@ -176,13 +200,15 @@ async def _resolve_plan(bot, db, marzban, admin_token, row: dict):
                 metadata={"invoice_id": invoice_id, "days": row["duration_days"],
                           "new_expire": target, "via": "direct_apply"},
             )
-            await notify_user_extended(bot, row)
+            if notifications is not None:
+                notifications.append(("user", row))
         return
 
     # ---- CASE 3: ambiguous — neither base nor target. Do NOT guess. ----
     reason = f"live_expire_mismatch: expected base={base} or target={target}, got {live_expire}"
     if db.mark_invoice_manual_review(invoice_id, reason=reason):
-        await notify_admin_stuck_payment(bot, db, db.get_invoice(invoice_id))
+        if notifications is not None:
+            notifications.append(("admin", db.get_invoice(invoice_id)))
 
 
 async def process_invoice_row(bot, db, marzban, admin_token, row: dict):
@@ -193,16 +219,25 @@ async def process_invoice_row(bot, db, marzban, admin_token, row: dict):
     through."""
     username = row["marzban_username"]
     lock = marzban_user_locks.get(username)
+    notifications = []
     async with lock:
         current = db.get_invoice(row["id"])
-        if current is None:
-            return
-        if current["status"] == "paid":
-            current = await _commit_plan(bot, db, marzban, admin_token, current)
-            if current is None:
-                return
-        if current["status"] == "plan_committed":
-            await _resolve_plan(bot, db, marzban, admin_token, current)
+        if current is not None and current["status"] == "paid":
+            current = await _commit_plan(
+                bot, db, marzban, admin_token, current, notifications=notifications
+            )
+        if current is not None and current["status"] == "plan_committed":
+            await _resolve_plan(
+                bot, db, marzban, admin_token, current, notifications=notifications
+            )
+
+    # Telegram I/O is never part of the shared Marzban read/decide/write
+    # critical section. Durable DB state is already final before notifying.
+    for kind, notification_row in notifications:
+        if kind == "admin":
+            await notify_admin_stuck_payment(bot, db, notification_row)
+        else:
+            await notify_user_extended(bot, notification_row)
 
 
 async def _tick(bot, db, marzban, admin_token):

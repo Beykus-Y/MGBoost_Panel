@@ -8,6 +8,10 @@ from ..http_utils import read_body as _read_body
 from ..security import require_admin_auth
 
 
+REFUND_RESULT_TIMEOUT_SECONDS = 15
+REFUND_RECONCILE_TIMEOUT_SECONDS = 30
+
+
 def _validate_config_data(data):
     """Validate config add/reorder data."""
     if not isinstance(data, dict):
@@ -207,27 +211,23 @@ def _validate_stars_tariff(data):
     if not name or len(name) > 64:
         raise ValueError("name must be 1-64 chars")
 
-    try:
-        duration_days = int(data.get("duration_days"))
-    except (TypeError, ValueError):
-        raise ValueError("duration_days must be a positive integer")
-    if duration_days <= 0:
-        raise ValueError("duration_days must be a positive integer")
+    duration_days = data.get("duration_days")
+    if isinstance(duration_days, bool) or not isinstance(duration_days, int):
+        raise ValueError("duration_days must be an integer")
+    if not 1 <= duration_days <= 3650:
+        raise ValueError("duration_days must be between 1 and 3650")
 
-    try:
-        stars_price = int(data.get("stars_price"))
-    except (TypeError, ValueError):
-        raise ValueError("stars_price must be a positive integer")
-    if stars_price <= 0:
-        raise ValueError("stars_price must be a positive integer")
+    stars_price = data.get("stars_price")
+    if isinstance(stars_price, bool) or not isinstance(stars_price, int):
+        raise ValueError("stars_price must be an integer")
+    if not 1 <= stars_price <= 1_000_000:
+        raise ValueError("stars_price must be between 1 and 1000000")
 
     active = _coerce_bool(data.get("active", True), "active")
 
     sort_order = data.get("sort_order")
     if sort_order not in (None, ""):
-        try:
-            sort_order = int(sort_order)
-        except (TypeError, ValueError):
+        if isinstance(sort_order, bool) or not isinstance(sort_order, int):
             raise ValueError("sort_order must be an integer")
     else:
         sort_order = None
@@ -236,10 +236,9 @@ def _validate_stars_tariff(data):
     if sort_order is not None:
         result["sort_order"] = sort_order
     if data.get("id") not in (None, ""):
-        try:
-            result["id"] = int(data["id"])
-        except (TypeError, ValueError):
+        if isinstance(data["id"], bool) or not isinstance(data["id"], int):
             raise ValueError("id must be an integer")
+        result["id"] = data["id"]
     return result
 
 
@@ -457,7 +456,12 @@ def handle_bot_restart(handler):
     old = getattr(server, "bot_runner", None)
     if old and old.is_alive():
         old.stop()
-        old.join(timeout=5)
+        old.join(timeout=15)
+        if old.is_alive():
+            _json_response(handler, 503, {
+                "error": "Previous bot runner did not stop; a second runner was not started"
+            })
+            return
     factory = getattr(server, "bot_runner_factory", None)
     new_runner = factory() if factory else None
     if new_runner:
@@ -673,6 +677,9 @@ def handle_stars_tariffs_save(handler):
     except (json.JSONDecodeError, ValueError) as e:
         _json_response(handler, 400, {"error": str(e)})
         return
+    if "id" in validated and db.get_stars_tariff(validated["id"]) is None:
+        _json_response(handler, 404, {"error": "Tariff not found"})
+        return
     result = db.save_stars_tariff(validated)
     _json_response(handler, 200, result)
 
@@ -681,6 +688,8 @@ def handle_stars_tariffs_toggle(handler, tariff_id):
     try:
         tariff_id = int(tariff_id)
         data = json.loads(_read_body(handler))
+        if not isinstance(data, dict):
+            raise ValueError("Expected dict")
         active = _coerce_bool(data.get("active"), "active")
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         _json_response(handler, 400, {"error": str(e) or "Invalid payload"})
@@ -730,8 +739,15 @@ def handle_stars_settings_save(handler):
     except json.JSONDecodeError as e:
         _json_response(handler, 400, {"error": str(e)})
         return
-    if "enabled" in data:
-        db.set_setting("stars:enabled", "1" if data.get("enabled") else "0")
+    if not isinstance(data, dict) or "enabled" not in data:
+        _json_response(handler, 400, {"error": "enabled is required"})
+        return
+    try:
+        enabled = _coerce_bool(data["enabled"], "enabled")
+    except ValueError as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    db.set_setting("stars:enabled", "1" if enabled else "0")
     _json_response(handler, 200, {"ok": True})
 
 
@@ -743,6 +759,14 @@ def handle_stars_payments_list(handler):
     query = parse_qs(urlsplit(handler.path).query)
     status = (query.get("status", [None])[0]) or None
     _json_response(handler, 200, db.list_stars_invoices(status=status))
+
+
+def handle_stars_orphan_payments_list(handler):
+    from urllib.parse import parse_qs, urlsplit
+    db = handler.server.db
+    query = parse_qs(urlsplit(handler.path).query)
+    status = (query.get("status", [None])[0]) or None
+    _json_response(handler, 200, db.list_stars_orphan_payments(status=status))
 
 
 def _get_stars_admin_token(handler):
@@ -839,6 +863,73 @@ def handle_stars_payment_requeue(handler, payment_id):
     })
 
 
+def _running_stars_bot(handler):
+    runner = getattr(handler.server, "bot_runner", None)
+    bot = getattr(runner, "bot_instance", None) if runner else None
+    loop = getattr(runner, "_loop", None) if runner else None
+    if not bot or not loop or not loop.is_running():
+        return None, None
+    return bot, loop
+
+
+def _issue_stars_refund(handler, row, payment_id: int, *, orphan: bool = False):
+    db = handler.server.db
+    bot, loop = _running_stars_bot(handler)
+    if bot is None:
+        _json_response(handler, 503, {"error": "Bot is not running — cannot issue a Stars refund"})
+        return
+
+    begin = db.begin_orphan_refund if orphan else db.begin_invoice_refund
+    unknown = db.mark_orphan_refund_unknown if orphan else db.mark_invoice_refund_unknown
+    complete = db.mark_orphan_refunded if orphan else db.mark_invoice_refunded
+
+    # This CAS is committed before the first Telegram API call. Concurrent
+    # and subsequent blind refund requests therefore cannot call Telegram.
+    if not begin(payment_id):
+        _json_response(handler, 409, {"error": "Refund is already pending, unknown, or completed"})
+        return
+
+    future = None
+    refund_coro = bot.refund_star_payment(
+        int(row["payer_telegram_id"]), row["telegram_payment_charge_id"]
+    )
+    try:
+        future = asyncio.run_coroutine_threadsafe(refund_coro, loop)
+        refunded = future.result(timeout=REFUND_RESULT_TIMEOUT_SECONDS)
+    except Exception as e:
+        # A timeout or exception does not prove the remote method failed.
+        # Keep it durably non-repeatable until an operator reconciliation.
+        if future is not None:
+            future.cancel()
+        else:
+            refund_coro.close()
+        unknown(payment_id, f"{type(e).__name__}: {e}")
+        _json_response(handler, 202, {
+            "ok": False,
+            "status": "refund_unknown",
+            "message": "Telegram refund outcome is unknown; blind retry is blocked. Use reconciliation.",
+        })
+        return
+    if refunded is not True:
+        # Bot API documents only True as confirmed success. Any other result
+        # is ambiguous and must never make the payment blindly refundable.
+        unknown(payment_id, "refundStarPayment returned a non-True result")
+        _json_response(handler, 202, {
+            "ok": False,
+            "status": "refund_unknown",
+            "message": "Telegram refund was not positively confirmed; blind retry is blocked.",
+        })
+        return
+
+    ok = complete(payment_id)
+    if not ok:
+        _json_response(handler, 500, {
+            "error": "Refund confirmed by Telegram but local finalization failed; reconcile before any action"
+        })
+        return
+    _json_response(handler, 200, {"ok": True})
+
+
 def handle_stars_payment_refund(handler, payment_id):
     try:
         invoice_id = int(payment_id)
@@ -856,29 +947,107 @@ def handle_stars_payment_refund(handler, payment_id):
     if not row.get("payer_telegram_id") or not row.get("telegram_payment_charge_id"):
         _json_response(handler, 409, {"error": "Invoice has no recorded payer/charge id — nothing to refund"})
         return
+    _issue_stars_refund(handler, row, invoice_id)
 
-    runner = getattr(handler.server, "bot_runner", None)
-    bot = getattr(runner, "bot_instance", None) if runner else None
-    loop = getattr(runner, "_loop", None) if runner else None
-    if not bot or not loop or not loop.is_running():
-        _json_response(handler, 503, {"error": "Bot is not running — cannot issue a Stars refund"})
+
+def handle_stars_orphan_payment_refund(handler, payment_id):
+    try:
+        orphan_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid orphan payment id"})
         return
+    db = handler.server.db
+    row = db.get_stars_orphan_payment(orphan_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Orphan payment not found"})
+        return
+    if row["status"] != "manual_review":
+        _json_response(handler, 409, {"error": f"Cannot refund from status {row['status']}"})
+        return
+    _issue_stars_refund(handler, row, orphan_id, orphan=True)
 
+
+async def _find_confirmed_star_refund(bot, charge_id: str, payer_telegram_id: int):
+    """Return True only for positive proof; None means inconclusive.
+
+    Bot API identifies the refund with the original charge id and exposes
+    it as an outgoing transaction (receiver is populated). We scan a bounded
+    history; absence is never treated as proof that a refund did not happen.
+    """
+    for offset in range(0, 1000, 100):
+        result = await bot.get_star_transactions(offset=offset, limit=100)
+        transactions = list(getattr(result, "transactions", []) or [])
+        for transaction in transactions:
+            if getattr(transaction, "id", None) != charge_id:
+                continue
+            receiver = getattr(transaction, "receiver", None)
+            receiver_user = getattr(receiver, "user", None) if receiver is not None else None
+            receiver_user_id = getattr(receiver_user, "id", None)
+            if receiver_user_id == int(payer_telegram_id):
+                return True
+        if len(transactions) < 100:
+            return None
+    return None
+
+
+def _reconcile_stars_refund(handler, row, payment_id: int, *, orphan: bool = False):
+    if row["status"] not in ("refund_pending", "refund_unknown"):
+        _json_response(handler, 409, {"error": f"Cannot reconcile from status {row['status']}"})
+        return
+    bot, loop = _running_stars_bot(handler)
+    if bot is None:
+        _json_response(handler, 503, {"error": "Bot is not running — cannot reconcile Stars transactions"})
+        return
     future = asyncio.run_coroutine_threadsafe(
-        bot.refund_star_payment(int(row["payer_telegram_id"]), row["telegram_payment_charge_id"]),
+        _find_confirmed_star_refund(
+            bot,
+            row["telegram_payment_charge_id"],
+            int(row["payer_telegram_id"]),
+        ),
         loop,
     )
     try:
-        refunded = future.result(timeout=15)
+        confirmed = future.result(timeout=REFUND_RECONCILE_TIMEOUT_SECONDS)
     except Exception as e:
-        _json_response(handler, 502, {"error": f"refundStarPayment failed: {e}"})
+        future.cancel()
+        _json_response(handler, 502, {"error": f"Could not reconcile Telegram transactions: {e}"})
         return
-    if not refunded:
-        _json_response(handler, 502, {"error": "refundStarPayment returned false"})
+    if not confirmed:
+        _json_response(handler, 200, {
+            "ok": False,
+            "status": row["status"],
+            "message": "Refund was not proven in the scanned Telegram history; state is unchanged and blind retry remains blocked.",
+        })
         return
+    complete = (handler.server.db.mark_orphan_refunded
+                if orphan else handler.server.db.mark_invoice_refunded)
+    if not complete(payment_id, reconciled=True):
+        _json_response(handler, 409, {"error": "Payment state changed concurrently"})
+        return
+    _json_response(handler, 200, {"ok": True, "status": "refunded", "reconciled": True})
 
-    ok = db.mark_invoice_refunded(invoice_id)
-    if not ok:
-        _json_response(handler, 409, {"error": "Refund issued on Telegram side, but local status changed concurrently"})
+
+def handle_stars_payment_reconcile_refund(handler, payment_id):
+    try:
+        invoice_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid payment id"})
         return
-    _json_response(handler, 200, {"ok": True})
+    row = handler.server.db.get_invoice(invoice_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    _reconcile_stars_refund(handler, row, invoice_id)
+
+
+def handle_stars_orphan_payment_reconcile_refund(handler, payment_id):
+    try:
+        orphan_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid orphan payment id"})
+        return
+    row = handler.server.db.get_stars_orphan_payment(orphan_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Orphan payment not found"})
+        return
+    _reconcile_stars_refund(handler, row, orphan_id, orphan=True)

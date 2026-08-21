@@ -290,6 +290,99 @@ def test_commit_plan_happy_path(db):
     assert result["target_expire"] == now + 1000 + 10 * 86400
 
 
+def test_pre_plan_get_user_failures_exhaust_after_five_attempts(db):
+    from src.stars import _tick, MAX_APPLY_ATTEMPTS
+
+    row = _make_paid_invoice(db)
+    marzban = FakeMarzban(users={"alice": {"expire": 1000, "status": "active"}})
+    marzban.explode_get = ConnectionError("backend unavailable")
+    bot = FakeBot()
+    db.set_setting("bot:admin_tg_id", "999")
+
+    async def scenario():
+        for _ in range(MAX_APPLY_ATTEMPTS):
+            await _tick(bot, db, marzban, "tok")
+        assert db.get_invoice(row["id"])["status"] == "apply_retry_exhausted"
+        # A sixth automatic tick must not even call get_user because the
+        # terminal row is no longer selected by get_pending_apply_invoices.
+        await _tick(bot, db, marzban, "tok")
+
+    asyncio.run(scenario())
+    final = db.get_invoice(row["id"])
+    assert final["apply_attempts"] == MAX_APPLY_ATTEMPTS
+    assert len(marzban.get_calls) == MAX_APPLY_ATTEMPTS
+    assert marzban.modify_calls == []
+    assert len(db.get_audit_log(event_type="payment_apply_retry_exhausted")) == 1
+    assert len(bot.sent) == 1
+
+
+@pytest.mark.parametrize("stage", ["paid", "plan_committed"])
+def test_persisted_five_attempts_after_restart_exhausts_without_network(db, stage):
+    from src.stars import _tick, MAX_APPLY_ATTEMPTS
+
+    row = _make_paid_invoice(db)
+    if stage == "plan_committed":
+        assert db.commit_apply_plan(row["id"], 1000, 2000)
+    for attempt in range(MAX_APPLY_ATTEMPTS):
+        assert db.record_apply_attempt_failure(row["id"], f"failure-{attempt}")
+
+    marzban = FakeMarzban(users={
+        "alice": {"username": "alice", "expire": 1000, "status": "active"}
+    })
+    bot = FakeBot()
+    db.set_setting("bot:admin_tg_id", "999")
+
+    asyncio.run(_tick(bot, db, marzban, "tok"))
+
+    final = db.get_invoice(row["id"])
+    assert final["status"] == "apply_retry_exhausted"
+    assert final["apply_attempts"] == MAX_APPLY_ATTEMPTS
+    assert marzban.get_calls == []
+    assert marzban.modify_calls == []
+    assert db.get_pending_apply_invoices() == []
+    assert len(db.get_audit_log(event_type="payment_apply_retry_exhausted")) == 1
+    assert len(bot.sent) == 1
+
+
+def test_four_persisted_failures_allow_fifth_attempt_to_succeed(db):
+    from src.stars import _tick, MAX_APPLY_ATTEMPTS
+
+    row = _make_paid_invoice(db)
+    for attempt in range(MAX_APPLY_ATTEMPTS - 1):
+        assert db.record_apply_attempt_failure(row["id"], f"failure-{attempt}")
+
+    now = int(time.time())
+    marzban = FakeMarzban(users={
+        "alice": {"username": "alice", "expire": now + 1000, "status": "active"}
+    })
+
+    asyncio.run(_tick(FakeBot(), db, marzban, "tok"))
+
+    final = db.get_invoice(row["id"])
+    assert final["status"] == "applied"
+    assert final["apply_attempts"] == MAX_APPLY_ATTEMPTS - 1
+    assert len(marzban.modify_calls) == 1
+
+
+def test_notification_happens_after_username_lock_release(db):
+    from src.marzban_lock import marzban_user_locks
+    from src.stars import process_invoice_row
+
+    now = int(time.time())
+    row = _make_paid_invoice(db)
+    marzban = FakeMarzban(users={
+        "alice": {"username": "alice", "expire": now + 1000, "status": "active"}
+    })
+
+    class LockCheckingBot(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            assert marzban_user_locks.get("alice").locked() is False
+            await super().send_message(chat_id, text, **kwargs)
+
+    asyncio.run(process_invoice_row(LockCheckingBot(), db, marzban, "tok", row))
+    assert db.get_invoice(row["id"])["status"] == "applied"
+
+
 # --- idempotency: duplicate successful_payment delivery -------------------
 
 def test_duplicate_charge_id_is_safe_noop(db):

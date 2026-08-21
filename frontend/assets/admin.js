@@ -220,7 +220,7 @@ function showPage(name){
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
   if(name==='tickets'){loadTickets();}
-  if(name==='stars'){loadStarsTariffs();loadStarsSettings();loadStarsPayments();}
+  if(name==='stars'){loadStarsTariffs();loadStarsSettings();loadStarsPayments();loadStarsOrphans();}
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -1415,9 +1415,10 @@ async function loadStarsTariffs(){
 
 async function addStarsTariff(){
   const name=document.getElementById('new-tariff-name').value.trim();
-  const duration_days=parseInt(document.getElementById('new-tariff-days').value,10);
-  const stars_price=parseInt(document.getElementById('new-tariff-price').value,10);
-  if(!name||!duration_days||!stars_price)return;
+  const duration_days=Number(document.getElementById('new-tariff-days').value);
+  const stars_price=Number(document.getElementById('new-tariff-price').value);
+  if(!name||!Number.isInteger(duration_days)||duration_days<1||duration_days>3650||
+     !Number.isInteger(stars_price)||stars_price<1||stars_price>1000000)return;
   const r=await proxyApi('/admin/stars-tariffs',{method:'POST',body:JSON.stringify({name,duration_days,stars_price,active:true})});
   if(!r.ok)return;
   document.getElementById('new-tariff-name').value='';
@@ -1440,7 +1441,7 @@ async function deleteStarsTariff(id){
 const _STARS_STATUS_COLORS={
   created:'#888',paid:'#4af',plan_committed:'#4af',applied:'#6f6',
   manual_review:'#fa4',apply_failed_user_missing:'#f66',
-  apply_retry_exhausted:'#f66',refunded:'#a4f',
+  apply_retry_exhausted:'#f66',refund_pending:'#fa4',refund_unknown:'#f66',refunded:'#a4f',
 };
 const _STARS_ACTIONABLE=new Set(['manual_review','apply_retry_exhausted']);
 const _STARS_REFUNDABLE=new Set(['applied','manual_review','apply_retry_exhausted','apply_failed_user_missing']);
@@ -1458,10 +1459,15 @@ async function loadStarsPayments(status){
       if(_STARS_ACTIONABLE.has(p.status)){
         actions.push(`<button onclick="starsPaymentAction(${p.id},'recheck')">Проверить</button>`);
         actions.push(`<button onclick="starsPaymentAction(${p.id},'confirm-applied')">Подтвердить</button>`);
-        actions.push(`<button onclick="starsPaymentAction(${p.id},'requeue')">Повторить</button>`);
+        if(p.base_expire_observed!==null&&p.target_expire!==null){
+          actions.push(`<button onclick="starsPaymentAction(${p.id},'requeue')">Повторить</button>`);
+        }
       }
       if(_STARS_REFUNDABLE.has(p.status)){
         actions.push(`<button onclick="starsPaymentAction(${p.id},'refund')">Возврат</button>`);
+      }
+      if(p.status==='refund_pending'||p.status==='refund_unknown'){
+        actions.push(`<button onclick="starsPaymentAction(${p.id},'reconcile-refund')">Сверить возврат</button>`);
       }
       return `<tr>
         <td>#${p.id}</td>
@@ -1488,6 +1494,38 @@ async function starsPaymentAction(id,action){
   if(data.message){alert(data.message);}
   const currentFilter=document.getElementById('stars-payments-filter').value;
   loadStarsPayments(currentFilter);
+}
+
+async function loadStarsOrphans(){
+  const tbody=document.getElementById('stars-orphans-tbody');
+  if(!tbody)return;
+  tbody.innerHTML='<tr><td colspan="8"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  try{
+    const r=await proxyApi('/admin/stars-orphan-payments');
+    const rows=await r.json();
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3)">Непривязанных оплат нет</td></tr>';return;}
+    tbody.innerHTML=rows.map(p=>{
+      const actions=[];
+      if(p.status==='manual_review')actions.push(`<button onclick="starsOrphanAction(${p.id},'refund')">Возврат</button>`);
+      if(p.status==='refund_pending'||p.status==='refund_unknown')actions.push(`<button onclick="starsOrphanAction(${p.id},'reconcile-refund')">Сверить возврат</button>`);
+      return `<tr>
+        <td>#${p.id}</td><td>${p.payer_telegram_id}</td>
+        <td>${p.total_amount} ${esc(p.currency)}</td><td>${esc(p.invoice_payload)}</td>
+        <td>${esc(p.telegram_payment_charge_id)}</td><td>${esc(p.reason)}</td>
+        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
+        <td style="white-space:nowrap">${actions.join(' ')}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="8" style="color:#f66">Ошибка загрузки</td></tr>';}
+}
+
+async function starsOrphanAction(id,action){
+  if(action==='refund'&&!confirm('Выполнить возврат Stars за эту непривязанную оплату?'))return;
+  const r=await proxyApi(`/admin/stars-orphan-payments/${id}/${action}`,{method:'POST'});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.error||'Ошибка');return;}
+  if(data.message)alert(data.message);
+  loadStarsOrphans();
 }
 
 // INIT

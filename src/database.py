@@ -31,6 +31,9 @@ AUDIT_EVENT_PAYMENT_FAILED = "payment_failed"
 AUDIT_EVENT_PAYMENT_PLAN_COMMITTED = "payment_plan_committed"
 AUDIT_EVENT_PAYMENT_MANUAL_REVIEW = "payment_manual_review"
 AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED = "payment_apply_retry_exhausted"
+AUDIT_EVENT_PAYMENT_REQUEUED = "payment_requeued"
+AUDIT_EVENT_ORPHAN_PAYMENT_CAPTURED = "orphan_payment_captured"
+AUDIT_EVENT_REFUND_UNKNOWN = "refund_unknown"
 
 # Stars invoice lifecycle — see §3 of the design doc.
 STARS_INVOICE_TTL_SECONDS = 3600  # 1 hour
@@ -242,6 +245,7 @@ class Database:
                 telegram_payment_charge_id TEXT UNIQUE,
                 provider_payment_charge_id TEXT,
                 total_amount INTEGER,
+                payment_currency TEXT,
 
                 base_expire_observed INTEGER,
                 target_expire INTEGER,
@@ -261,13 +265,40 @@ class Database:
                 paid_at INTEGER,
                 plan_committed_at INTEGER,
                 applied_at INTEGER,
-                refunded_at INTEGER
+                refunded_at INTEGER,
+
+                refund_previous_status TEXT,
+                refund_requested_at INTEGER,
+                refund_unknown_at INTEGER,
+                refund_last_error TEXT,
+                refund_reconciled_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS stars_orphan_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_payment_charge_id TEXT NOT NULL UNIQUE,
+                provider_payment_charge_id TEXT,
+                payer_telegram_id INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                total_amount INTEGER NOT NULL,
+                invoice_payload TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'manual_review',
+                received_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                refund_previous_status TEXT,
+                refund_requested_at INTEGER,
+                refund_unknown_at INTEGER,
+                refund_last_error TEXT,
+                refunded_at INTEGER,
+                refund_reconciled_at INTEGER
             );
 
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
+        self._ensure_stars_invoice_columns()
         self._conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_sub_requests_token_key
                 ON sub_requests(token, request_key);
@@ -295,6 +326,10 @@ class Database:
                 ON stars_invoices(marzban_username);
             CREATE INDEX IF NOT EXISTS idx_stars_invoices_charge_id
                 ON stars_invoices(telegram_payment_charge_id);
+            CREATE INDEX IF NOT EXISTS idx_stars_orphan_payments_status
+                ON stars_orphan_payments(status);
+            CREATE INDEX IF NOT EXISTS idx_stars_orphan_payments_payer
+                ON stars_orphan_payments(payer_telegram_id);
         """)
         self._conn.commit()
 
@@ -333,6 +368,32 @@ class Database:
             for name, column_type in expected.items():
                 if name not in columns:
                     self._conn.execute(f"ALTER TABLE node_settings ADD COLUMN {name} {column_type}")
+            self._conn.commit()
+
+    def _ensure_stars_invoice_columns(self):
+        """Additive migration for installations that already started Phase 2.
+
+        Phase 1 ignores these columns and the orphan table, so this remains
+        compatible with an application-code rollback without a DB rollback.
+        """
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(stars_invoices)").fetchall()
+        }
+        expected = {
+            "payment_currency": "TEXT",
+            "refund_previous_status": "TEXT",
+            "refund_requested_at": "INTEGER",
+            "refund_unknown_at": "INTEGER",
+            "refund_last_error": "TEXT",
+            "refund_reconciled_at": "INTEGER",
+        }
+        with self._lock:
+            for name, column_type in expected.items():
+                if name not in columns:
+                    self._conn.execute(
+                        f"ALTER TABLE stars_invoices ADD COLUMN {name} {column_type}"
+                    )
             self._conn.commit()
 
     def migrate_from_json(self):
@@ -1471,21 +1532,31 @@ class Database:
         provider_payment_charge_id: str | None,
         payer_telegram_id: int,
         total_amount: int,
+        currency: str = "XTR",
     ) -> bool:
         """created -> paid. False means this row/charge was already recorded
         (Telegram's at-least-once delivery, or a genuine duplicate) — a safe
         no-op, never re-notify or re-apply from the caller."""
         now = int(time.time())
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE stars_invoices SET status='paid', "
-                "telegram_payment_charge_id=?, provider_payment_charge_id=?, "
-                "payer_telegram_id=?, total_amount=?, paid_at=? "
-                "WHERE id=? AND status='created' AND telegram_payment_charge_id IS NULL",
-                (telegram_payment_charge_id, provider_payment_charge_id,
-                 payer_telegram_id, total_amount, now, invoice_id),
-            )
-            self._conn.commit()
+            if self._conn.execute(
+                "SELECT 1 FROM stars_orphan_payments WHERE telegram_payment_charge_id=?",
+                (telegram_payment_charge_id,),
+            ).fetchone():
+                return False
+            try:
+                cur = self._conn.execute(
+                    "UPDATE stars_invoices SET status='paid', "
+                    "telegram_payment_charge_id=?, provider_payment_charge_id=?, "
+                    "payer_telegram_id=?, total_amount=?, payment_currency=?, paid_at=? "
+                    "WHERE id=? AND status='created' AND telegram_payment_charge_id IS NULL",
+                    (telegram_payment_charge_id, provider_payment_charge_id,
+                     payer_telegram_id, total_amount, currency, now, invoice_id),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False
             ok = cur.rowcount == 1
         if ok:
             self.log_audit_event(
@@ -1502,6 +1573,8 @@ class Database:
         payer_telegram_id: int,
         total_amount: int,
         reason: str,
+        currency: str = "XTR",
+        provider_payment_charge_id: str | None = None,
     ) -> bool:
         """created -> manual_review directly, recording the payment fields
         that were captured even though the normal `paid` state was skipped —
@@ -1510,14 +1583,25 @@ class Database:
         this must never be silently dropped."""
         now = int(time.time())
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE stars_invoices SET status='manual_review', "
-                "telegram_payment_charge_id=?, payer_telegram_id=?, total_amount=?, "
-                "paid_at=?, manual_review_reason=?, manual_review_at=? "
-                "WHERE id=? AND status='created'",
-                (charge_id, payer_telegram_id, total_amount, now, reason, now, invoice_id),
-            )
-            self._conn.commit()
+            if self._conn.execute(
+                "SELECT 1 FROM stars_orphan_payments WHERE telegram_payment_charge_id=?",
+                (charge_id,),
+            ).fetchone():
+                return False
+            try:
+                cur = self._conn.execute(
+                    "UPDATE stars_invoices SET status='manual_review', "
+                    "telegram_payment_charge_id=?, provider_payment_charge_id=?, "
+                    "payer_telegram_id=?, total_amount=?, payment_currency=?, "
+                    "paid_at=?, manual_review_reason=?, manual_review_at=? "
+                    "WHERE id=? AND status='created'",
+                    (charge_id, provider_payment_charge_id, payer_telegram_id, total_amount,
+                     currency, now, reason, now, invoice_id),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                return False
             ok = cur.rowcount == 1
         if ok:
             self.log_audit_event(
@@ -1620,25 +1704,64 @@ class Database:
                 AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED,
                 telegram_id=row["payer_telegram_id"] if row else None,
                 marzban_username=row["marzban_username"] if row else None,
-                metadata={"invoice_id": invoice_id},
+                metadata={
+                    "invoice_id": invoice_id,
+                    "stage": ("plan_committed" if row and row["target_expire"] is not None
+                              else "before_plan_commit"),
+                    "apply_attempts": row["apply_attempts"] if row else None,
+                    "last_apply_error": row["last_apply_error"] if row else None,
+                },
             )
         return ok
 
-    def record_apply_attempt_failure(self, invoice_id: int, error: str) -> bool:
-        """Records a transient failure attempting to reach/confirm
-        target_expire. Does NOT change status — the row stays 'paid' or
-        'plan_committed' and is retried next tick (or picked up fresh after
-        a crash/restart), fully safe either way."""
+    def record_apply_attempt_failure(
+        self, invoice_id: int, error: str, max_attempts: int | None = None
+    ) -> bool:
+        """Durably record one transient apply failure.
+
+        When max_attempts is supplied, the increment and transition to
+        apply_retry_exhausted happen in the same SQLite statement.
+        """
         now = int(time.time())
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE stars_invoices SET apply_attempts=apply_attempts+1, "
-                "last_apply_error=?, last_apply_attempt_at=? "
-                "WHERE id=? AND status IN ('paid','plan_committed')",
-                (error[:500] if error else None, now, invoice_id),
-            )
+            if max_attempts is None:
+                cur = self._conn.execute(
+                    "UPDATE stars_invoices SET apply_attempts=apply_attempts+1, "
+                    "last_apply_error=?, last_apply_attempt_at=? "
+                    "WHERE id=? AND status IN ('paid','plan_committed')",
+                    (error[:500] if error else None, now, invoice_id),
+                )
+            else:
+                # The failure counter and exhaustion transition are one
+                # SQLite statement, closing the crash window between them.
+                cur = self._conn.execute(
+                    "UPDATE stars_invoices SET apply_attempts=apply_attempts+1, "
+                    "last_apply_error=?, last_apply_attempt_at=?, "
+                    "status=CASE WHEN apply_attempts+1>=? "
+                    "THEN 'apply_retry_exhausted' ELSE status END "
+                    "WHERE id=? AND status IN ('paid','plan_committed')",
+                    (error[:500] if error else None, now, max_attempts, invoice_id),
+                )
             self._conn.commit()
-            return cur.rowcount == 1
+            ok = cur.rowcount == 1
+            row = self._conn.execute(
+                "SELECT * FROM stars_invoices WHERE id=?", (invoice_id,)
+            ).fetchone() if ok else None
+        if ok and row and row["status"] == "apply_retry_exhausted":
+            row = dict(row)
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED,
+                telegram_id=row["payer_telegram_id"],
+                marzban_username=row["marzban_username"],
+                metadata={
+                    "invoice_id": invoice_id,
+                    "stage": ("plan_committed" if row["target_expire"] is not None
+                              else "before_plan_commit"),
+                    "apply_attempts": row["apply_attempts"],
+                    "last_apply_error": row["last_apply_error"],
+                },
+            )
+        return ok
 
     def list_stars_invoices(self, status: str | None = None, limit: int = 200) -> list:
         with self._lock:
@@ -1679,26 +1802,83 @@ class Database:
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE stars_invoices SET status='plan_committed', resolved_by_admin_at=? "
-                "WHERE id=? AND status IN ('manual_review','apply_retry_exhausted')",
+                "WHERE id=? AND status IN ('manual_review','apply_retry_exhausted') "
+                "AND base_expire_observed IS NOT NULL AND target_expire IS NOT NULL",
+                (now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_REQUEUED,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id,
+                          "base_expire_observed": row["base_expire_observed"],
+                          "target_expire": row["target_expire"]},
+            )
+        return ok
+
+    def begin_invoice_refund(self, invoice_id: int) -> bool:
+        """Durably claim the one allowed remote refund attempt."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET refund_previous_status=status, "
+                "status='refund_pending', refund_requested_at=?, refund_last_error=NULL "
+                "WHERE id=? AND status IN "
+                "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing')",
                 (now, invoice_id),
             )
             self._conn.commit()
             return cur.rowcount == 1
 
-    def mark_invoice_refunded(self, invoice_id: int) -> bool:
-        """Operator action: 'Refund'. WHERE status IN ('applied',
-        'manual_review','apply_retry_exhausted','apply_failed_user_missing')
-        -> 'refunded'. The caller is responsible for having already called
-        refundStarPayment(payer_telegram_id, telegram_payment_charge_id)
-        successfully before invoking this — this method only records the
-        outcome locally."""
+    def mark_invoice_refund_known_failed(self, invoice_id: int, error: str) -> bool:
+        """Restore the prior actionable state only for an explicit False.
+
+        Exceptions and timeouts are not proof of failure and must use
+        mark_invoice_refund_unknown instead.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status=refund_previous_status, "
+                "refund_last_error=? WHERE id=? AND status='refund_pending' "
+                "AND refund_previous_status IS NOT NULL",
+                ((error or "explicit_false")[:500], invoice_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def mark_invoice_refund_unknown(self, invoice_id: int, error: str) -> bool:
         now = int(time.time())
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE stars_invoices SET status='refunded', refunded_at=?, resolved_by_admin_at=? "
-                "WHERE id=? AND status IN "
-                "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing')",
-                (now, now, invoice_id),
+                "UPDATE stars_invoices SET status='refund_unknown', refund_unknown_at=?, "
+                "refund_last_error=? WHERE id=? AND status='refund_pending'",
+                (now, (error or "unknown remote outcome")[:500], invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_REFUND_UNKNOWN,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id, "error": (error or "")[:500]},
+            )
+        return ok
+
+    def mark_invoice_refunded(self, invoice_id: int, reconciled: bool = False) -> bool:
+        """Record a confirmed Telegram refund; never changes VPN expiry."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='refunded', refunded_at=?, "
+                "resolved_by_admin_at=?, refund_reconciled_at=? "
+                "WHERE id=? AND status IN ('refund_pending','refund_unknown')",
+                (now, now, now if reconciled else None, invoice_id),
             )
             self._conn.commit()
             ok = cur.rowcount == 1
@@ -1708,6 +1888,155 @@ class Database:
                 AUDIT_EVENT_REFUND,
                 telegram_id=row["payer_telegram_id"] if row else None,
                 marzban_username=row["marzban_username"] if row else None,
-                metadata={"invoice_id": invoice_id},
+                metadata={"invoice_id": invoice_id, "reconciled": reconciled},
+            )
+        return ok
+
+    # ---------------------------------------------------------- orphan payments
+
+    def record_stars_orphan_payment(
+        self,
+        telegram_payment_charge_id: str,
+        provider_payment_charge_id: str | None,
+        payer_telegram_id: int,
+        currency: str,
+        total_amount: int,
+        invoice_payload: str,
+        reason: str,
+    ) -> tuple[dict | None, bool]:
+        """Capture an otherwise-unmatched successful_payment exactly once."""
+        now = int(time.time())
+        # Keep Telegram's trusted financial identifier byte-for-byte intact.
+        # Only payload/display/audit previews are length-bounded.
+        charge_id = str(telegram_payment_charge_id)
+        payload = str(invoice_payload or "")[:256]
+        with self._lock:
+            # Charge identity is global across both ledgers at the service
+            # layer. A duplicate update with a malformed/different payload
+            # must not create a second refundable financial record.
+            if self._conn.execute(
+                "SELECT 1 FROM stars_invoices WHERE telegram_payment_charge_id=?",
+                (charge_id,),
+            ).fetchone():
+                return None, False
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO stars_orphan_payments "
+                "(telegram_payment_charge_id, provider_payment_charge_id, "
+                "payer_telegram_id, currency, total_amount, invoice_payload, reason, "
+                "status, received_at) VALUES (?,?,?,?,?,?,?,'manual_review',?)",
+                (charge_id, provider_payment_charge_id, payer_telegram_id,
+                 str(currency or "")[:16], int(total_amount), payload,
+                 str(reason or "unknown")[:500], now),
+            )
+            self._conn.commit()
+            created = cur.rowcount == 1
+            row = self._conn.execute(
+                "SELECT * FROM stars_orphan_payments WHERE telegram_payment_charge_id=?",
+                (charge_id,),
+            ).fetchone()
+        result = dict(row)
+        if created:
+            self.log_audit_event(
+                AUDIT_EVENT_ORPHAN_PAYMENT_CAPTURED,
+                telegram_id=payer_telegram_id,
+                metadata={"orphan_payment_id": result["id"], "charge_id": charge_id[:256],
+                          "reason": result["reason"]},
+            )
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_FAILED,
+                telegram_id=payer_telegram_id,
+                metadata={"orphan_payment_id": result["id"], "charge_id": charge_id[:256],
+                          "reason": result["reason"]},
+            )
+        return result, created
+
+    def get_stars_orphan_payment(self, orphan_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM stars_orphan_payments WHERE id=?", (orphan_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_stars_orphan_by_charge_id(self, charge_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM stars_orphan_payments WHERE telegram_payment_charge_id=?",
+                (charge_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_stars_orphan_payments(self, status: str | None = None, limit: int = 200) -> list:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM stars_orphan_payments WHERE status=? "
+                    "ORDER BY id DESC LIMIT ?", (status, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM stars_orphan_payments ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def begin_orphan_refund(self, orphan_id: int) -> bool:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_orphan_payments SET refund_previous_status=status, "
+                "status='refund_pending', refund_requested_at=?, refund_last_error=NULL "
+                "WHERE id=? AND status='manual_review'",
+                (now, orphan_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def mark_orphan_refund_known_failed(self, orphan_id: int, error: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_orphan_payments SET status=refund_previous_status, "
+                "refund_last_error=? WHERE id=? AND status='refund_pending' "
+                "AND refund_previous_status IS NOT NULL",
+                ((error or "explicit_false")[:500], orphan_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def mark_orphan_refund_unknown(self, orphan_id: int, error: str) -> bool:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_orphan_payments SET status='refund_unknown', "
+                "refund_unknown_at=?, refund_last_error=? "
+                "WHERE id=? AND status='refund_pending'",
+                (now, (error or "unknown remote outcome")[:500], orphan_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_stars_orphan_payment(orphan_id)
+            self.log_audit_event(
+                AUDIT_EVENT_REFUND_UNKNOWN,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                metadata={"orphan_payment_id": orphan_id, "error": (error or "")[:500]},
+            )
+        return ok
+
+    def mark_orphan_refunded(self, orphan_id: int, reconciled: bool = False) -> bool:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_orphan_payments SET status='refunded', refunded_at=?, "
+                "resolved_at=?, refund_reconciled_at=? "
+                "WHERE id=? AND status IN ('refund_pending','refund_unknown')",
+                (now, now, now if reconciled else None, orphan_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_stars_orphan_payment(orphan_id)
+            self.log_audit_event(
+                AUDIT_EVENT_REFUND,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                metadata={"orphan_payment_id": orphan_id, "reconciled": reconciled},
             )
         return ok

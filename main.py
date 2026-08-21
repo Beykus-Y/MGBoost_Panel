@@ -17,7 +17,8 @@ if __name__ == "__main__":
     bot_runner = make_bot_runner()
     if bot_runner:
         bot_runner.start()
-        print(f"[Bot] Запущен в фоне, канал: {bot_runner.channel_id}, прокси: {bot_runner.proxy_url}")
+        proxy_state = "enabled" if bot_runner.proxy_url else "disabled"
+        print(f"[Bot] Запущен в фоне, Telegram proxy: {proxy_state}")
     else:
         print("[Bot] bot:token не задан в БД — мониторинг не запущен")
 

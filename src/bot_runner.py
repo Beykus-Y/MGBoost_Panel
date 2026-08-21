@@ -1,5 +1,9 @@
 import asyncio
+import logging
 import threading
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_proxy_url(host, port, user, password) -> str | None:
@@ -41,15 +45,36 @@ class BotRunner(threading.Thread):
     def stop(self):
         self._stop_event.set()
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            # Wake the loop; run_all observes _stop_event and performs an
+            # orderly polling/worker shutdown. Never stop run_until_complete
+            # from underneath its main coroutine.
+            self._loop.call_soon_threadsafe(lambda: None)
 
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._run_bot())
+        except Exception:
+            logger.exception("Bot runner stopped with an error")
         finally:
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+            self._loop.run_until_complete(self._loop.shutdown_default_executor())
             self._loop.close()
+            self._loop = None
+            self._bot_ref.clear()
+            from .marzban_lock import marzban_user_locks
+            try:
+                marzban_user_locks.reset_after_loop_shutdown()
+            except RuntimeError:
+                logger.exception("Marzban lock registry was still in use at bot shutdown")
 
     async def _run_bot(self):
         from .bot_monitor import run_all

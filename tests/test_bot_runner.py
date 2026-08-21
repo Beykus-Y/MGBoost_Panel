@@ -85,3 +85,83 @@ def test_bot_runner_from_db_returns_none_if_no_token():
 
     from src.bot_runner import BotRunner
     assert BotRunner.from_db(db) is None
+
+
+def test_bot_runner_cooperative_shutdown_and_restart_processes_pending_payments(caplog):
+    import asyncio
+    import importlib
+
+    tmp = tempfile.mkdtemp()
+    os.environ["DATA_DIR"] = tmp
+    import src.config as cfg
+    importlib.reload(cfg)
+    cfg.DATA_DIR = tmp
+    import src.database as db_mod
+    importlib.reload(db_mod)
+    db_mod.DB_PATH = os.path.join(tmp, "db.sqlite3")
+    db = db_mod.Database()
+
+    class Marzban:
+        def __init__(self):
+            now = int(time.time())
+            self.users = {
+                "alice": {"username": "alice", "expire": now + 1000, "status": "active"},
+                "bob": {"username": "bob", "expire": now + 2000, "status": "active"},
+            }
+            self.modify_calls = []
+
+        def get_user(self, username, token):
+            return dict(self.users[username])
+
+        def modify_user(self, username, payload, token):
+            self.modify_calls.append((username, dict(payload)))
+            self.users[username].update(payload)
+
+    class Bot:
+        async def send_message(self, chat_id, text, **kwargs):
+            pass
+
+    marzban = Marzban()
+
+    def paid(username, charge):
+        inv = db.create_stars_invoice(111, username, None, "t", 1, 10)
+        db.mark_invoice_paid(inv["id"], charge, None, 111, 10)
+        return inv
+
+    first_invoice = paid("alice", "runner-charge-1")
+
+    from src.bot_runner import BotRunner
+    from src.stars import _tick
+
+    class PaymentRunner(BotRunner):
+        def __init__(self, started):
+            super().__init__("fake", "@test", None, db, marzban)
+            self.started_event = started
+
+        async def _run_bot(self):
+            await _tick(Bot(), db, marzban, "tok")
+            self.started_event.set()
+            while not self._stop_event.is_set():
+                await asyncio.sleep(0.01)
+
+    first_started = threading.Event()
+    first = PaymentRunner(first_started)
+    first.start()
+    assert first_started.wait(timeout=3)
+    first.stop()
+    first.join(timeout=3)
+    assert not first.is_alive()
+    assert db.get_invoice(first_invoice["id"])["status"] == "applied"
+
+    second_invoice = paid("bob", "runner-charge-2")
+    second_started = threading.Event()
+    second = PaymentRunner(second_started)
+    second.start()
+    assert second_started.wait(timeout=3)
+    second.stop()
+    second.join(timeout=3)
+    assert not second.is_alive()
+    assert db.get_invoice(second_invoice["id"])["status"] == "applied"
+    assert [call[0] for call in marzban.modify_calls] == ["alice", "bob"]
+    assert "Event loop stopped before Future completed" not in caplog.text
+    db._conn.close()

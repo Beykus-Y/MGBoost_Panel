@@ -14,8 +14,8 @@
 
 ## Требования
 
-- Python 3.8+
-- `pip install -r requirements.txt` (только `python-dotenv`)
+- Python 3.10+
+- `pip install -r requirements.txt`
 
 ## Установка
 

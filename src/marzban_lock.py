@@ -29,5 +29,17 @@ class PerUsernameLock:
                 self._locks[marzban_username] = lock
             return lock
 
+    def reset_after_loop_shutdown(self):
+        """Drop loop-bound lock objects after their runner fully stopped.
+
+        Callers must only use this after all tasks on the old loop have been
+        awaited/cancelled. A locked entry means lifecycle cleanup is still
+        incomplete and is deliberately rejected.
+        """
+        with self._registry_lock:
+            if any(lock.locked() for lock in self._locks.values()):
+                raise RuntimeError("cannot reset Marzban locks while a lock is held")
+            self._locks.clear()
+
 
 marzban_user_locks = PerUsernameLock()  # module-level singleton

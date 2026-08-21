@@ -152,9 +152,8 @@ async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading
 
 
 async def _wait_stop(stop_event: threading.Event):
-    loop = asyncio.get_event_loop()
     while not stop_event.is_set():
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
 
 
 async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, marzban,
@@ -167,7 +166,7 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
         logger.error("aiogram не установлен — бот не запустится")
         return
 
-    from .bot_support import setup_support_handlers
+    from .bot_support import PaymentDurabilityError, setup_support_handlers
     from .stars import apply_pending_payments_loop
 
     if proxy_url:
@@ -197,20 +196,41 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
         apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_event=stars_trigger)
     )
     stop_watcher = asyncio.create_task(_wait_stop(stop_event))
+    # With background handler tasks aiogram advances getUpdates offset before
+    # a payment has been durably stored. Sequential handling lets the special
+    # durability failure escape first, leaving the update for redelivery.
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, handle_signals=False, handle_as_tasks=False)
+    )
 
     try:
+        await asyncio.wait(
+            (polling_task, stop_watcher),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_watcher.done() and not polling_task.done():
+            try:
+                await dp.stop_polling()
+            except RuntimeError:
+                # stop may win the race before start_polling initialized;
+                # cancellation is the cooperative exit in that case.
+                polling_task.cancel()
+        polling_result = (await asyncio.gather(polling_task, return_exceptions=True))[0]
+        if isinstance(polling_result, PaymentDurabilityError):
+            logger.critical(
+                "Telegram polling stopped because a successful payment could not be persisted"
+            )
+    finally:
+        for task in (monitor_task, stars_task, stop_watcher, polling_task):
+            if not task.done():
+                task.cancel()
         await asyncio.gather(
-            dp.start_polling(bot, handle_signals=False),
-            monitor_task,
-            stars_task,
-            stop_watcher,
+            monitor_task, stars_task, stop_watcher, polling_task,
             return_exceptions=True,
         )
-    finally:
-        await dp.stop_polling()
         try:
             await bot.session.close()
         except Exception:
             pass
-        if bot_ref:
+        if bot_ref is not None:
             bot_ref.clear()

@@ -266,6 +266,8 @@ def test_mark_invoice_refunded_from_applied(db):
     db.mark_invoice_paid(inv["id"], "c1", None, 222, 320)
     db.commit_apply_plan(inv["id"], 0, 1000)
     db.mark_invoice_applied(inv["id"], applied_expire=1000)
+    assert db.begin_invoice_refund(inv["id"]) is True
+    assert db.get_invoice(inv["id"])["status"] == "refund_pending"
     assert db.mark_invoice_refunded(inv["id"]) is True
     row = db.get_invoice(inv["id"])
     assert row["status"] == "refunded"
@@ -290,6 +292,7 @@ def test_created_by_and_payer_telegram_id_are_independent(db):
     assert row["payer_telegram_id"] == 999
     db.commit_apply_plan(inv["id"], 0, 1000)
     db.mark_invoice_applied(inv["id"], applied_expire=1000)
+    db.begin_invoice_refund(inv["id"])
     db.mark_invoice_refunded(inv["id"])
     refund_events = db.get_audit_log(event_type="refund")
     assert refund_events[0]["telegram_id"] == 999  # payer, not creator
@@ -316,3 +319,75 @@ def test_get_pending_apply_invoices_excludes_terminal_states(db):
     db.commit_apply_plan(inv["id"], 0, 1000)
     db.mark_invoice_applied(inv["id"], applied_expire=1000)
     assert db.get_pending_apply_invoices() == []
+
+
+def test_orphan_charge_is_durable_and_unique(db):
+    first, created_first = db.record_stars_orphan_payment(
+        "orphan-charge", "provider", 777, "XTR", 123, "bad", "invalid_invoice_payload"
+    )
+    second, created_second = db.record_stars_orphan_payment(
+        "orphan-charge", "provider", 777, "XTR", 123, "bad", "duplicate"
+    )
+    assert created_first is True
+    assert created_second is False
+    assert first["id"] == second["id"]
+    assert len(db.list_stars_orphan_payments()) == 1
+    assert len(db.get_audit_log(event_type="orphan_payment_captured")) == 1
+
+
+def test_orphan_long_charge_ids_are_stored_fully_and_remain_distinct(db):
+    prefix = "x" * 256
+    first_id = prefix + "-first"
+    second_id = prefix + "-second"
+
+    first, first_created = db.record_stars_orphan_payment(
+        first_id, None, 777, "XTR", 10, "bad", "invalid_payload"
+    )
+    second, second_created = db.record_stars_orphan_payment(
+        second_id, None, 777, "XTR", 10, "bad", "invalid_payload"
+    )
+
+    assert first_created is True and second_created is True
+    assert first["telegram_payment_charge_id"] == first_id
+    assert second["telegram_payment_charge_id"] == second_id
+    assert len(db.list_stars_orphan_payments()) == 2
+
+
+def test_charge_identity_cannot_exist_in_both_normal_and_orphan_ledgers(db):
+    normal = _make_invoice(db)
+    assert db.mark_invoice_paid(normal["id"], "global-charge-1", None, 111, 320)
+    orphan, created = db.record_stars_orphan_payment(
+        "global-charge-1", None, 111, "XTR", 320, "bad", "invalid_payload"
+    )
+    assert orphan is None and created is False
+
+    orphan, created = db.record_stars_orphan_payment(
+        "global-charge-2", None, 111, "XTR", 320, "bad", "invalid_payload"
+    )
+    assert created is True
+    other = _make_invoice(db)
+    assert db.mark_invoice_paid(other["id"], "global-charge-2", None, 111, 320) is False
+    assert db.get_invoice(other["id"])["status"] == "created"
+
+
+def test_refund_unknown_is_non_repeatable_until_reconciled(db):
+    inv = _make_invoice(db)
+    db.mark_invoice_paid(inv["id"], "refund-unknown", None, 222, 320)
+    db.commit_apply_plan(inv["id"], 1000, 2000)
+    db.mark_invoice_applied(inv["id"], 2000)
+    assert db.begin_invoice_refund(inv["id"]) is True
+    assert db.begin_invoice_refund(inv["id"]) is False
+    assert db.mark_invoice_refund_unknown(inv["id"], "timeout") is True
+    assert db.begin_invoice_refund(inv["id"]) is False
+    assert db.get_invoice(inv["id"])["status"] == "refund_unknown"
+
+
+def test_requeue_requires_immutable_plan(db):
+    inv = _make_invoice(db)
+    db.mark_invoice_paid(inv["id"], "preplan", None, 222, 320)
+    db.mark_invoice_manual_review(inv["id"], "eligibility_changed_after_payment")
+    assert db.resolve_manual_review_requeue(inv["id"]) is False
+    row = db.get_invoice(inv["id"])
+    assert row["status"] == "manual_review"
+    assert row["base_expire_observed"] is None
+    assert row["target_expire"] is None
