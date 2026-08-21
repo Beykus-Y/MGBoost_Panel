@@ -185,7 +185,7 @@ def test_execute_get_nodes_status(db):
     states = {1: {"up": True, "last_check": None}, 2: {"up": False, "last_check": None}}
     names = {1: "Estonia", 2: "Selectel"}
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         execute_tool("get_nodes_status", {}, db=db, marzban=None,
                      telegram_id=111, node_states=states, node_names=names)
     )
@@ -199,7 +199,7 @@ def test_execute_get_ticket_history_empty(db):
     from src.bot_support import execute_tool
     import asyncio
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         execute_tool("get_ticket_history", {}, db=db, marzban=None,
                      telegram_id=999, node_states={}, node_names={})
     )
@@ -215,7 +215,7 @@ def test_execute_get_ticket_history_with_data(db):
     db.add_ticket_message(t1, "ai", "Ответ 1")
     db.update_ticket_status(t1, "closed")
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         execute_tool("get_ticket_history", {}, db=db, marzban=None,
                      telegram_id=111, node_states={}, node_names={})
     )
@@ -226,7 +226,7 @@ def test_execute_escalate_to_human(db):
     from src.bot_support import execute_tool
     import asyncio
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         execute_tool("escalate_to_human", {"reason": "Не могу решить проблему"},
                      db=db, marzban=None, telegram_id=111, node_states={}, node_names={})
     )
@@ -242,7 +242,7 @@ def test_ask_openrouter_with_tools_no_key(db):
     from src.bot_support import ask_openrouter_with_tools
     import asyncio
 
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         ask_openrouter_with_tools(
             api_key="", model="openai/gpt-4o-mini",
             messages=[{"role": "user", "content": "test"}],
@@ -251,3 +251,57 @@ def test_ask_openrouter_with_tools_no_key(db):
         )
     )
     assert isinstance(result, str)
+
+
+# --- _build_management_link / PUBLIC_HOST config-error handling ---
+
+def test_build_management_link_fails_closed_when_public_host_unset(db, monkeypatch):
+    """If PUBLIC_HOST is unset/empty, the bot must not build a broken or
+    hardcoded-domain link — it must return None so the caller can tell the
+    user the feature is unavailable, and it must log a clear error."""
+    import asyncio
+    from src import bot_support
+    import src.config as cfg
+
+    monkeypatch.setattr(cfg, "PUBLIC_HOST", "")
+
+    class _NoopMarzban:
+        pass
+
+    caught = []
+    monkeypatch.setattr(
+        bot_support.logger, "error", lambda msg, *a, **kw: caught.append(msg)
+    )
+
+    link = asyncio.run(
+        bot_support._build_management_link(db, _NoopMarzban(), 111, "alice")
+    )
+    assert link is None
+    assert any("PUBLIC_HOST" in m for m in caught)
+
+
+def test_build_management_link_never_calls_marzban_when_configured(db, monkeypatch):
+    """The management link must be buildable from nothing but PUBLIC_HOST +
+    a freshly issued mgmt code — no Marzban admin-API round trip (the old
+    token reverse-lookup) is needed at all."""
+    import asyncio
+    from src import bot_support
+    import src.config as cfg
+
+    monkeypatch.setattr(cfg, "PUBLIC_HOST", "example.test")
+
+    class _ExplodingMarzban:
+        def get_admin_token_from_env(self):
+            raise AssertionError("marzban must not be called to build a management link")
+
+        def get_token_for_username(self, *a, **kw):
+            raise AssertionError("marzban must not be called to build a management link")
+
+    link = asyncio.run(
+        bot_support._build_management_link(db, _ExplodingMarzban(), 111, "alice")
+    )
+    # Fragment, not query string — never sent to the server, never in
+    # proxy access logs / Referer headers.
+    assert link.startswith("https://example.test/lk/#mgmt=")
+    assert "?mgmt=" not in link
+    assert "token=" not in link

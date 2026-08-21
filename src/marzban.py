@@ -65,6 +65,17 @@ class MarzbanClient:
             print(f"[Marzban] Could not resolve username for token: {e}")
             return None
 
+    # NOTE: an earlier version of this client had a get_token_for_username()
+    # reverse lookup (marzban_username -> subscription_url -> token) used
+    # only to prefill the bot's device-management deep link. It was removed
+    # because it's no longer needed: the LK page's management flow now
+    # resolves everything (including read-only info/usage/devices) from the
+    # management-session cookie once the one-time `mgmt` code is exchanged,
+    # so the subscription token never has to be reconstituted and
+    # transmitted for that flow. See src/routes/lk.py's
+    # _resolve_username_from_session and src/bot_support.py's
+    # _build_management_link.
+
     def get_token(self, username, password):
         url = f"{self.base_url}/api/admin/token"
         body = f"username={username}&password={password}".encode()

@@ -48,38 +48,111 @@ function skeleton(n = 3) {
   return Array.from({ length: n }, () => '<div class="skeleton"></div>').join('');
 }
 
+// Reasons the backend returns for a missing/invalid management session —
+// these mutating calls no longer work with just the subscription token.
+const MGMT_SESSION_REASONS = new Set([
+  'management_session_required',
+  'insufficient_scope',
+  'session_username_mismatch',
+]);
+const MGMT_SESSION_MESSAGE =
+  'Нужна ссылка для управления устройствами. Откройте бота и нажмите «🔧 Управление устройствами», ' +
+  'чтобы получить новую (действует 15 минут).';
+
+class ApiError extends Error {
+  constructor(message, reason) {
+    super(message);
+    this.reason = reason;
+  }
+}
+
+async function _throwApiError(res) {
+  const err = await res.json().catch(() => ({}));
+  if (err.reason && MGMT_SESSION_REASONS.has(err.reason)) {
+    throw new ApiError(MGMT_SESSION_MESSAGE, err.reason);
+  }
+  throw new ApiError(err.error || `HTTP ${res.status}`, err.reason);
+}
+
 async function apiFetch(path) {
   const token = getToken();
-  const res = await fetch(`/lk/api/${path}?token=${encodeURIComponent(token)}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `HTTP ${res.status}`);
-  }
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  // credentials: 'include' so that when there's no token (pure
+  // management-session flow, reached via the bot's mgmt deep link) the
+  // HttpOnly management-session cookie rides along and the backend can
+  // resolve the username from the session instead. Harmless when a token
+  // is present too — the backend always prefers the token in that case.
+  const res = await fetch(`/lk/api/${path}${qs}`, { credentials: 'include' });
+  if (!res.ok) await _throwApiError(res);
   return res.json();
 }
 
 async function apiDelete(path) {
   const token = getToken();
-  const res = await fetch(`/lk/api/${path}?token=${encodeURIComponent(token)}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `HTTP ${res.status}`);
-  }
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  // credentials: 'include' so the HttpOnly management-session cookie
+  // (set by exchangeMgmtCode()) rides along — mutating actions are
+  // authorized by that cookie server-side, not by the token in the URL.
+  // When there's no token at all, the cookie is also how the backend
+  // resolves which username this request is for.
+  const res = await fetch(`/lk/api/${path}${qs}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!res.ok) await _throwApiError(res);
   return res.json();
 }
 
 async function apiPatch(path, data) {
   const token = getToken();
-  const res = await fetch(`/lk/api/${path}?token=${encodeURIComponent(token)}`, {
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  const res = await fetch(`/lk/api/${path}${qs}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify(data),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `HTTP ${res.status}`);
-  }
+  if (!res.ok) await _throwApiError(res);
   return res.json();
+}
+
+// Exchange a one-time `mgmt` code (from a bot-issued deep link) for a
+// management session cookie. The code arrives in the URL *fragment*
+// (`#mgmt=<code>`), never a query string: the browser never transmits the
+// fragment part of a URL to the server, so it can't end up in reverse-proxy
+// access logs, browser history sync, or a Referer header. We read it
+// client-side, POST it to the exchange endpoint's body (never the URL),
+// and immediately clear the fragment via history.replaceState — before any
+// dashboard data is rendered — so a reload/share/back-navigation of the
+// resulting URL can't re-expose or attempt to reuse a spent code.
+async function exchangeMgmtCode() {
+  const hash = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+  const params = new URLSearchParams(hash);
+  const code = params.get('mgmt');
+
+  // Clear the fragment immediately, before doing anything else (including
+  // the network request) — the one-time code must not linger in the
+  // visible URL a moment longer than necessary.
+  if (code) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+
+  if (!code) return;
+
+  try {
+    const res = await fetch('/lk/api/mgmt/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ code }),
+    });
+    if (res.ok) {
+      window._hasMgmtSession = true;
+    }
+  } catch {
+    // Network error — treated the same as "no session"; mutating actions
+    // will surface the standard MGMT_SESSION_MESSAGE if attempted.
+  }
 }
 
 function renderTokenForm() {
@@ -366,11 +439,16 @@ function toggleInstructions() {
 }
 
 // Init
-(function init() {
+(async function init() {
+  await exchangeMgmtCode();
   const token = getToken();
-  if (!token) {
+  if (!token && !window._hasMgmtSession) {
     renderTokenForm();
   } else {
+    // Either a normal ?token= link, or a management deep-link whose mgmt
+    // code was just exchanged for a session cookie — renderDashboard's
+    // apiFetch calls resolve the username from whichever is present
+    // (token takes priority; the session cookie is the fallback).
     renderDashboard(token);
   }
 })();

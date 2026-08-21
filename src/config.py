@@ -4,6 +4,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MARZBAN_URL = os.getenv("MARZBAN_URL", "http://127.0.0.1:8000")
+# Public hostname used to build links sent outside of an HTTP request context
+# (e.g. Telegram bot messages), where there is no incoming Host header to
+# read from. Required — no hardcoded domain default. Deployments that omit
+# it get an empty string here; callers that need it (see
+# bot_support._build_management_link) must check for that and fail closed
+# with a clear error rather than silently building a broken/wrong-domain
+# link.
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "")
 LISTEN_HOST = os.getenv("LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8001"))
 DATA_DIR = os.getenv("DATA_DIR", "./data")

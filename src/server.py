@@ -56,6 +56,7 @@ from .routes.lk import (
     handle_lk_device_rename,
     handle_lk_devices,
     handle_lk_info,
+    handle_lk_mgmt_exchange,
     handle_lk_page,
     handle_lk_usage,
 )
@@ -69,6 +70,7 @@ _ROUTES = [
     ("GET",    re.compile(r"^/lk/api/info$"),                   lambda h: handle_lk_info(h)),
     ("GET",    re.compile(r"^/lk/api/usage$"),                  lambda h: handle_lk_usage(h)),
     ("GET",    re.compile(r"^/lk/api/devices$"),                lambda h: handle_lk_devices(h)),
+    ("POST",   re.compile(r"^/lk/api/mgmt/exchange$"),           lambda h: handle_lk_mgmt_exchange(h)),
     ("DELETE", re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_delete(h, device_id)),
     ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
     ("GET",    re.compile(r"^/(?:.*?/)?assets/(?P<path>.+)$"),  lambda h, path: handle_static_asset(h, path)),

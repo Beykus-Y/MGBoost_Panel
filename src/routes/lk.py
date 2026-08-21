@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from collections import defaultdict
 
@@ -15,6 +16,17 @@ _RATE_LIMIT_MAX = 30
 _last_cleanup = time.time()
 _ADMIN_TOKEN_TTL = 3600
 _admin_token_cache: list = [None, 0.0]
+
+# Cooldown between consecutive mutating device actions for the same
+# marzban_username — defense in depth against automated abuse even by a
+# legitimately-authorized management session. In-memory is fine: this is a
+# single-process http.server, same as the rate limiter above.
+_MUTATION_COOLDOWN_SECONDS = 3
+_mutation_cooldown: dict = {}
+
+MGMT_COOKIE_NAME = "mgmt_session"
+_MGMT_SCOPE_DEVICES = "devices:manage"
+_MGMT_CODE_RE = re.compile(r"^[A-Za-z0-9_\-]{16,64}$")
 
 
 def _get_admin_token(user: str, password: str):
@@ -73,25 +85,138 @@ def _json_ok(handler, data):
     handler.send_response(200)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
-    
+    # These responses can carry per-user account/device data (or, for the
+    # exchange endpoint below, a session-establishing Set-Cookie) — make
+    # sure no intermediate cache/proxy retains a copy.
+    handler.send_header("Cache-Control", "no-store")
+
     # Fix CORS: don't rely on Host header which can be spoofed
     origin = handler.headers.get("Origin", "")
     if origin in ALLOWED_ORIGINS:
         handler.send_header("Access-Control-Allow-Origin", origin)
     # Optionally allow credentials if needed
     # handler.send_header("Access-Control-Allow-Credentials", "true")
-    
+
     handler.end_headers()
     handler.wfile.write(body)
 
 
-def _error(handler, status, message):
-    body = json.dumps({"error": message}).encode("utf-8")
+def _error(handler, status, message, reason=None):
+    payload = {"error": message}
+    if reason:
+        # Machine-readable reason so the frontend can distinguish
+        # "need a management link" from a generic failure without
+        # string-matching the human-readable message.
+        payload["reason"] = reason
+    body = json.dumps(payload).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _json_ok_with_cookie(handler, data, cookie_name, cookie_value, max_age):
+    """Same as _json_ok but also sets an HttpOnly session cookie."""
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    # This response carries a session-establishing Set-Cookie — an
+    # intermediate cache/proxy must never retain (and potentially replay)
+    # a copy of it.
+    handler.send_header("Cache-Control", "no-store")
+
+    origin = handler.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        handler.send_header("Access-Control-Allow-Origin", origin)
+
+    cookie_attrs = f"{cookie_name}={cookie_value}; Path=/lk; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+    handler.send_header("Set-Cookie", cookie_attrs)
+
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _get_mgmt_cookie(handler) -> str | None:
+    cookie_header = handler.headers.get("Cookie", "") or ""
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith(f"{MGMT_COOKIE_NAME}="):
+            return part[len(MGMT_COOKIE_NAME) + 1:]
+    return None
+
+
+def _resolve_username_from_session(handler) -> str | None:
+    """Resolve marzban_username purely from a valid management-session
+    cookie, with no subscription token involved at all. Used as a fallback
+    when a request carries no ?token= — this is what lets the bot's
+    management deep-link operate off nothing but the one-time `mgmt` code
+    exchange, so the backend never needs to reconstitute and transmit the
+    user's subscription token just to build a convenience link. Returns
+    None if there is no session, it's expired, or it lacks the required
+    scope — callers must not assume this call alone is authorization for a
+    mutation; mutating handlers still call _require_mgmt_session()
+    afterward as the single source of truth for that check."""
+    raw_session_id = _get_mgmt_cookie(handler)
+    if not raw_session_id:
+        return None
+    db = handler.server.db
+    session = db.get_mgmt_session(raw_session_id)
+    if not session:
+        return None
+    scopes = (session.get("scope") or "").split(",")
+    if _MGMT_SCOPE_DEVICES not in scopes:
+        return None
+    return session.get("marzban_username")
+
+
+def _require_mgmt_session(handler, expected_username: str):
+    """Validate the management-session cookie for a mutating request.
+
+    Every field used for authorization (telegram_id, marzban_username,
+    scope) is read back from the server-side session record looked up by
+    the (hashed) cookie value — never trusted from anything the frontend
+    passed directly in the request body/query.
+
+    Returns the session dict on success, or None after already writing an
+    error response (401/403 with a machine-readable `reason`) to `handler`.
+    """
+    raw_session_id = _get_mgmt_cookie(handler)
+    if not raw_session_id:
+        _error(handler, 401, "Management session required", reason="management_session_required")
+        return None
+
+    db = handler.server.db
+    session = db.get_mgmt_session(raw_session_id)
+    if not session:
+        _error(handler, 401, "Management session expired or invalid", reason="management_session_required")
+        return None
+
+    scopes = (session.get("scope") or "").split(",")
+    if _MGMT_SCOPE_DEVICES not in scopes:
+        _error(handler, 403, "Session lacks required scope", reason="insufficient_scope")
+        return None
+
+    if session.get("marzban_username") != expected_username:
+        # A management session for one marzban_username must never
+        # authorize a mutation under a different username's context, even
+        # if the request otherwise references that other username.
+        _error(handler, 403, "Session does not match this subscription", reason="session_username_mismatch")
+        return None
+
+    return session
+
+
+def _check_mutation_cooldown(handler, username: str) -> bool:
+    now = time.time()
+    last = _mutation_cooldown.get(username, 0.0)
+    if now - last < _MUTATION_COOLDOWN_SECONDS:
+        _error(handler, 429, "Please wait a moment before trying again", reason="cooldown_active")
+        return False
+    _mutation_cooldown[username] = now
+    return True
 
 
 def handle_lk_page(handler):
@@ -131,14 +256,19 @@ def handle_lk_info(handler):
         return
 
     token = _get_token_from_query(handler)
-    if not token:
-        _error(handler, 400, "Missing token")
-        return
-
-    username = _client.get_username_for_token(token)
-    if not username:
-        _error(handler, 404, "User not found")
-        return
+    if token:
+        username = _client.get_username_for_token(token)
+        if not username:
+            _error(handler, 404, "User not found")
+            return
+    else:
+        # No token: fall back to a valid management-session cookie so the
+        # bot's management deep-link (mgmt code only, no ?token=) still
+        # renders this read-only card.
+        username = _resolve_username_from_session(handler)
+        if not username:
+            _error(handler, 400, "Missing token", reason="management_session_required")
+            return
 
     try:
         admin_user = os.environ.get("MARZBAN_ADMIN_USER", "admin")
@@ -158,7 +288,13 @@ def handle_lk_info(handler):
         used_traffic = user_data.get("used_traffic", 0)
         data_limit = user_data.get("data_limit")
 
-        subscription_url = f"https://{handler.headers.get('Host', '')}/sub/{token}"
+        # subscription_url intentionally omitted (None) when the request
+        # has no token of its own (pure management-session flow) — we
+        # never reconstitute/distribute the subscription token server-side
+        # just to populate this convenience field.
+        subscription_url = (
+            f"https://{handler.headers.get('Host', '')}/sub/{token}" if token else None
+        )
 
         _json_ok(handler, {
             "username": username,
@@ -180,14 +316,16 @@ def handle_lk_usage(handler):
         return
 
     token = _get_token_from_query(handler)
-    if not token:
-        _error(handler, 400, "Missing token")
-        return
-
-    username = _client.get_username_for_token(token)
-    if not username:
-        _error(handler, 404, "User not found")
-        return
+    if token:
+        username = _client.get_username_for_token(token)
+        if not username:
+            _error(handler, 404, "User not found")
+            return
+    else:
+        username = _resolve_username_from_session(handler)
+        if not username:
+            _error(handler, 400, "Missing token", reason="management_session_required")
+            return
 
     try:
         admin_user = os.environ.get("MARZBAN_ADMIN_USER", "admin")
@@ -224,14 +362,16 @@ def handle_lk_devices(handler):
         return
 
     token = _get_token_from_query(handler)
-    if not token:
-        _error(handler, 400, "Missing token")
-        return
-
-    username = _client.get_username_for_token(token)
-    if not username:
-        _error(handler, 404, "User not found")
-        return
+    if token:
+        username = _client.get_username_for_token(token)
+        if not username:
+            _error(handler, 404, "User not found")
+            return
+    else:
+        username = _resolve_username_from_session(handler)
+        if not username:
+            _error(handler, 400, "Missing token", reason="management_session_required")
+            return
 
     db = handler.server.db
     devices = db.get_user_devices(username)
@@ -251,13 +391,30 @@ def handle_lk_device_delete(handler, device_id):
         return
 
     token = _get_token_from_query(handler)
-    if not token:
-        _error(handler, 400, "Missing token")
-        return
+    if token:
+        username = _client.get_username_for_token(token)
+        if not username:
+            _error(handler, 404, "User not found")
+            return
+    else:
+        # No token in this request: fall back to resolving username purely
+        # from the management-session cookie (see
+        # _resolve_username_from_session), so the bot's management link
+        # never needs to carry a subscription token at all. The mandatory
+        # _require_mgmt_session() check right below still independently
+        # re-validates the session (scope/expiry/username) regardless of
+        # how username was derived — that call is the single source of
+        # truth for mutation authorization, not this fallback.
+        username = _resolve_username_from_session(handler)
+        if not username:
+            _error(handler, 400, "Missing token", reason="management_session_required")
+            return
 
-    username = _client.get_username_for_token(token)
-    if not username:
-        _error(handler, 404, "User not found")
+    # Mutating action: subscription token alone is no longer sufficient —
+    # requires a valid management session bound to this same username.
+    if not _require_mgmt_session(handler, username):
+        return
+    if not _check_mutation_cooldown(handler, username):
         return
 
     try:
@@ -266,6 +423,9 @@ def handle_lk_device_delete(handler, device_id):
         _error(handler, 400, "Invalid device id")
         return
 
+    # deactivate_device itself filters WHERE id=? AND username=?, so a
+    # device belonging to a different marzban_username can never be
+    # touched even if a device id from another account were guessed.
     ok = handler.server.db.deactivate_device(did, username)
     if not ok:
         _error(handler, 404, "Device not found")
@@ -281,13 +441,26 @@ def handle_lk_device_rename(handler, device_id):
         return
 
     token = _get_token_from_query(handler)
-    if not token:
-        _error(handler, 400, "Missing token")
-        return
+    if token:
+        username = _client.get_username_for_token(token)
+        if not username:
+            _error(handler, 404, "User not found")
+            return
+    else:
+        # No token: fall back to resolving username purely from the
+        # management-session cookie — see handle_lk_device_delete for the
+        # rationale. _require_mgmt_session() below is still the single
+        # source of truth for mutation authorization.
+        username = _resolve_username_from_session(handler)
+        if not username:
+            _error(handler, 400, "Missing token", reason="management_session_required")
+            return
 
-    username = _client.get_username_for_token(token)
-    if not username:
-        _error(handler, 404, "User not found")
+    # Mutating action: subscription token alone is no longer sufficient —
+    # requires a valid management session bound to this same username.
+    if not _require_mgmt_session(handler, username):
+        return
+    if not _check_mutation_cooldown(handler, username):
         return
 
     try:
@@ -311,3 +484,41 @@ def handle_lk_device_rename(handler, device_id):
         return
 
     _json_ok(handler, {"ok": True})
+
+
+def handle_lk_mgmt_exchange(handler):
+    """Exchange a one-time device-management code (issued by the bot) for
+    a management session, delivered as an HttpOnly cookie. Single-use: the
+    code is atomically marked used at exchange time (see
+    Database.exchange_mgmt_code), so a second attempt with the same code
+    always fails."""
+    ip = _get_real_ip(handler)
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+
+    try:
+        data = json.loads(_read_body(handler))
+    except (ValueError, json.JSONDecodeError):
+        _error(handler, 400, "Invalid body")
+        return
+
+    code = str(data.get("code", "")).strip()
+    if not code or not _MGMT_CODE_RE.match(code):
+        _error(handler, 400, "Invalid or missing code", reason="invalid_code")
+        return
+
+    db = handler.server.db
+    result = db.exchange_mgmt_code(code)
+    if not result:
+        _error(handler, 401, "Code invalid, expired, or already used", reason="invalid_or_expired_code")
+        return
+
+    ttl_seconds = max(1, result["expires_at"] - int(time.time()))
+    _json_ok_with_cookie(
+        handler,
+        {"ok": True, "username": result["marzban_username"]},
+        MGMT_COOKIE_NAME,
+        result["session_id"],
+        max_age=ttl_seconds,
+    )

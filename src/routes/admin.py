@@ -408,17 +408,24 @@ def handle_bot_restart(handler):
 
 def handle_bot_settings_get(handler):
     db = handler.server.db
+    token = db.get_setting("bot:token") or ""
+    proxy_pass = db.get_setting("bot:proxy_pass") or ""
+    openrouter_api_key = db.get_setting("bot:openrouter_api_key") or ""
     _json_response(handler, 200, {
         "enabled": db.get_setting("bot:enabled") == "1",
-        "token": db.get_setting("bot:token") or "",
+        # Secrets: never returned in any form (not even a masked fragment) —
+        # only a boolean presence flag. The frontend shows "настроено" when
+        # *_set is true and leaves the field blank; typing a new value
+        # replaces it, leaving it blank on save keeps the existing secret.
+        "token_set": bool(token),
         "channel_id": db.get_setting("bot:channel_id") or "@MGBoost_News",
         "proxy_enabled": db.get_setting("bot:proxy_enabled") == "1",
         "proxy_host": db.get_setting("bot:proxy_host") or "",
         "proxy_port": int(db.get_setting("bot:proxy_port") or 1080),
         "proxy_user": db.get_setting("bot:proxy_user") or "socks",
-        "proxy_pass": db.get_setting("bot:proxy_pass") or "",
+        "proxy_pass_set": bool(proxy_pass),
         "support_enabled": db.get_setting("bot:support_enabled", "1") == "1",
-        "openrouter_api_key": db.get_setting("bot:openrouter_api_key") or "",
+        "openrouter_api_key_set": bool(openrouter_api_key),
         "openrouter_model": db.get_setting("bot:openrouter_model") or "openai/gpt-4o-mini",
         "admin_tg_id": db.get_setting("bot:admin_tg_id") or "",
         "support_faq": db.get_setting("bot:support_faq") or "",

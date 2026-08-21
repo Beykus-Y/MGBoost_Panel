@@ -86,7 +86,8 @@ def test_get_bot_settings_returns_defaults(db):
     assert h._response_code == 200
     data = h.json_response()
     assert data["enabled"] is False
-    assert data["token"] == ""
+    assert data["token_set"] is False
+    assert "token" not in data
     assert data["channel_id"] == "@MGBoost_News"
     assert data["proxy_enabled"] is False
 
@@ -128,9 +129,81 @@ def test_get_bot_settings_reflects_saved_values(db):
     handle_bot_settings_get(h)
     data = h.json_response()
     assert data["enabled"] is True
-    assert data["token"] == "999:XYZ"
+    assert "token" not in data
+    assert "token_masked" not in data
+    assert data["token_set"] is True
     assert data["channel_id"] == "@Chan"
     assert data["proxy_enabled"] is False
+
+
+def test_bot_settings_get_never_leaks_raw_secrets(db):
+    """Item 5 / item 3: bot token, proxy password, and OpenRouter key must
+    never come back from GET /admin/bot-settings in any form — not
+    plaintext, and not even a masked trailing-chars fragment. Only boolean
+    *_set presence flags are allowed."""
+    from src.routes.admin import handle_bot_settings_get, handle_bot_settings_save
+    secrets = {
+        "token": "123456:SUPERSECRETTOKEN",
+        "proxy_pass": "supersecretproxypass",
+        "openrouter_api_key": "sk-or-v1-supersecretkey",
+    }
+    payload = json.dumps(secrets).encode()
+    handle_bot_settings_save(FakeHandler(db, body=payload))
+
+    h = FakeHandler(db)
+    handle_bot_settings_get(h)
+    data = h.json_response()
+    raw_body = h.wfile._buf.decode()
+
+    for field in ("token", "proxy_pass", "openrouter_api_key"):
+        assert field not in data
+        assert f"{field}_masked" not in data
+
+    # No substring (even a short masked fragment) of any real secret value
+    # may appear anywhere in the response body.
+    # Note: length-4 fragments are skipped because trivially short fragments
+    # (e.g. "pass") can coincidentally match field names like
+    # "proxy_pass_set" — that's a false positive, not a real leak.
+    for secret_value in secrets.values():
+        for length in (6, 8):
+            fragment = secret_value[-length:]
+            assert fragment not in raw_body, f"leaked fragment {fragment!r} of secret"
+
+    assert data["token_set"] is True
+    assert data["proxy_pass_set"] is True
+    assert data["openrouter_api_key_set"] is True
+    assert "token_masked" not in data
+    assert "proxy_pass_masked" not in data
+    assert "openrouter_api_key_masked" not in data
+
+
+def test_bot_settings_get_reports_unset_secrets(db):
+    from src.routes.admin import handle_bot_settings_get
+    h = FakeHandler(db)
+    handle_bot_settings_get(h)
+    data = h.json_response()
+    assert data["token_set"] is False
+    assert data["proxy_pass_set"] is False
+    assert data["openrouter_api_key_set"] is False
+    assert "token_masked" not in data
+
+
+def test_bot_settings_save_omitting_secret_keeps_existing_value(db):
+    """POST without the secret field means 'keep the existing secret as-is' —
+    this is how the frontend behaves when the admin didn't type a new value."""
+    from src.routes.admin import handle_bot_settings_save
+    handle_bot_settings_save(FakeHandler(db, body=json.dumps({
+        "token": "123:ORIGINAL", "openrouter_api_key": "sk-original",
+    }).encode()))
+
+    # Save again, only touching an unrelated field, omitting the secrets.
+    handle_bot_settings_save(FakeHandler(db, body=json.dumps({
+        "channel_id": "@NewChannel",
+    }).encode()))
+
+    assert db.get_setting("bot:token") == "123:ORIGINAL"
+    assert db.get_setting("bot:openrouter_api_key") == "sk-original"
+    assert db.get_setting("bot:channel_id") == "@NewChannel"
 
 
 # ---------------------------------------------------------------------------

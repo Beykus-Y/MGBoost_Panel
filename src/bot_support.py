@@ -319,7 +319,10 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
 
     def kb_main():
         return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")]],
+            keyboard=[
+                [KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")],
+                [KeyboardButton(text="🔧 Управление устройствами")],
+            ],
             resize_keyboard=True,
         )
 
@@ -418,6 +421,28 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         except Exception as e:
             logger.error(f"Ошибка получения подписки: {e}")
             await message.answer("Не удалось получить информацию о подписке.")
+
+    @dp.message(SupportStates.in_dialog, F.text == "🔧 Управление устройствами")
+    async def msg_manage_devices(message: Message, state: FSMContext):
+        tg_user = db.get_tg_user(message.from_user.id)
+        if not tg_user:
+            await state.set_state(SupportStates.waiting_link)
+            await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
+            return
+
+        link = await _build_management_link(db, marzban, message.from_user.id, tg_user["marzban_username"])
+        if link is None:
+            await message.answer(
+                "⚠️ Управление устройствами временно недоступно из-за ошибки конфигурации сервера. "
+                "Мы уже знаем о проблеме — попробуйте позже или обратитесь к оператору.",
+            )
+            return
+        await message.answer(
+            "🔧 Ссылка для управления устройствами (действует 15 минут, одноразовая):\n\n"
+            f"{link}\n\n"
+            "Откройте её в браузере, чтобы переименовывать или отключать устройства. "
+            "Если ссылка истечёт — запросите новую здесь же.",
+        )
 
     @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
     async def msg_call_human(message: Message, state: FSMContext):
@@ -577,3 +602,43 @@ async def _run_sync(func, *args):
     import asyncio
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, func, *args)
+
+
+async def _build_management_link(db, marzban, telegram_id: int, username: str) -> str | None:
+    """Build a one-time device-management deep link into the web LK for the
+    given (telegram_id, username) binding. Never embeds a permanent bearer
+    credential, and never carries the raw subscription token: the `mgmt`
+    code is single-use and expires in ~15 minutes (see
+    Database.create_mgmt_code). Once exchanged for a session cookie, the LK
+    page's read-only info/usage/devices views *and* the mutating device
+    actions all operate purely off that session (see
+    _resolve_username_from_session / _require_mgmt_session in
+    src/routes/lk.py) — so there is no need to reconstitute and transmit
+    the user's subscription token here at all, unlike an earlier version of
+    this function that did a Marzban admin-API reverse lookup
+    (username -> subscription_url -> token) just to prefill the link.
+
+    Returns None — never a broken or wrong-domain link — if PUBLIC_HOST is
+    not configured. Callers must handle that by telling the user the
+    feature is temporarily unavailable, not by falling back to a
+    hardcoded domain."""
+    from .config import PUBLIC_HOST
+
+    if not PUBLIC_HOST:
+        logger.error(
+            "Configuration error: PUBLIC_HOST is not set — cannot build a "
+            "device-management deep link. Set the PUBLIC_HOST environment "
+            "variable (see .env.example) to fix this."
+        )
+        return None
+
+    code = db.create_mgmt_code(telegram_id, username)
+    # The one-time code is delivered via a URL *fragment*, never a query
+    # string: fragments are never sent to the server in the HTTP request
+    # (browser-local only), so the code can't leak into reverse-proxy
+    # access logs, browser history entries that get synced/shared, or a
+    # Referer header sent to a third-party resource loaded by the page.
+    # The frontend (frontend/assets/lk.js) reads location.hash, POSTs the
+    # code to /lk/api/mgmt/exchange in the request body, then immediately
+    # clears the fragment via history.replaceState.
+    return f"https://{PUBLIC_HOST}/lk/#mgmt={code}"

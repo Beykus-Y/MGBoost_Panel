@@ -1205,13 +1205,19 @@ async function loadBotSettings(){
     if(!r.ok)return;
     const d=await r.json();
     document.getElementById('bot-enabled').checked=!!d.enabled;
-    document.getElementById('bot-token').value=d.token||'';
+    // Secrets are never sent back in plaintext — leave the field blank and
+    // show a masked hint via placeholder; only a newly-typed value is saved.
+    const tokenEl=document.getElementById('bot-token');
+    tokenEl.value='';
+    tokenEl.placeholder=d.token_set?'•••• настроено':'123456:ABCDEF...';
     document.getElementById('bot-channel').value=d.channel_id||'@MGBoost_News';
     document.getElementById('bot-proxy-enabled').checked=!!d.proxy_enabled;
     document.getElementById('bot-proxy-host').value=d.proxy_host||'';
     document.getElementById('bot-proxy-port').value=d.proxy_port||1080;
     document.getElementById('bot-proxy-user').value=d.proxy_user||'socks';
-    document.getElementById('bot-proxy-pass').value=d.proxy_pass||'';
+    const proxyPassEl=document.getElementById('bot-proxy-pass');
+    proxyPassEl.value='';
+    proxyPassEl.placeholder=d.proxy_pass_set?'•••• настроено':'telegram';
     toggleBotProxy();
   }catch(e){console.warn('loadBotSettings',e);}
 }
@@ -1219,19 +1225,25 @@ async function saveBotSettings(){
   const status=document.getElementById('bot-settings-status');
   status.textContent='Сохранение...';
   try{
-    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify({
+    const payload={
       enabled:document.getElementById('bot-enabled').checked,
-      token:document.getElementById('bot-token').value.trim(),
       channel_id:document.getElementById('bot-channel').value.trim()||'@MGBoost_News',
       proxy_enabled:document.getElementById('bot-proxy-enabled').checked,
       proxy_host:document.getElementById('bot-proxy-host').value.trim(),
       proxy_port:parseInt(document.getElementById('bot-proxy-port').value)||1080,
       proxy_user:document.getElementById('bot-proxy-user').value.trim()||'socks',
-      proxy_pass:document.getElementById('bot-proxy-pass').value.trim(),
-    })});
+    };
+    // Only send secret fields if the admin actually typed a new value —
+    // omitting the key means "keep the existing secret as-is".
+    const newToken=document.getElementById('bot-token').value.trim();
+    if(newToken)payload.token=newToken;
+    const newProxyPass=document.getElementById('bot-proxy-pass').value.trim();
+    if(newProxyPass)payload.proxy_pass=newProxyPass;
+    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify(payload)});
     if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
     status.style.color='#6f6';status.textContent='Сохранено';
     setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+    loadBotSettings();
   }catch(e){status.style.color='';status.textContent='Ошибка';}
 }
 
@@ -1255,7 +1267,9 @@ async function loadSupportSettings(){
     if(!r.ok)return;
     const d=await r.json();
     document.getElementById('bot-support-enabled').checked=!!d.support_enabled;
-    document.getElementById('bot-openrouter-key').value=d.openrouter_api_key||'';
+    const keyEl=document.getElementById('bot-openrouter-key');
+    keyEl.value='';
+    keyEl.placeholder=d.openrouter_api_key_set?'•••• настроено':'sk-or-v1-...';
     document.getElementById('bot-openrouter-model').value=d.openrouter_model||'openai/gpt-4o-mini';
     document.getElementById('bot-admin-tg-id').value=d.admin_tg_id||'';
     document.getElementById('bot-support-faq').value=d.support_faq||'';
@@ -1265,16 +1279,21 @@ async function saveSupportSettings(){
   const status=document.getElementById('support-settings-status');
   status.textContent='Сохранение...';
   try{
-    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify({
+    const payload={
       support_enabled:document.getElementById('bot-support-enabled').checked,
-      openrouter_api_key:document.getElementById('bot-openrouter-key').value.trim(),
       openrouter_model:document.getElementById('bot-openrouter-model').value.trim()||'openai/gpt-4o-mini',
       admin_tg_id:document.getElementById('bot-admin-tg-id').value.trim(),
       support_faq:document.getElementById('bot-support-faq').value,
-    })});
+    };
+    // Only send the key if the admin actually typed a new one — omitting
+    // it means "keep the existing key as-is".
+    const newKey=document.getElementById('bot-openrouter-key').value.trim();
+    if(newKey)payload.openrouter_api_key=newKey;
+    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify(payload)});
     if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
     status.style.color='#6f6';status.textContent='Сохранено';
     setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+    loadSupportSettings();
   }catch(e){status.style.color='';status.textContent='Ошибка';}
 }
 

@@ -1,10 +1,41 @@
+import hashlib
 import json
+import logging
 import os
+import secrets
 import sqlite3
 import time
 import threading
 
 from .config import DATA_DIR
+
+logger = logging.getLogger(__name__)
+
+# --- audit log event types ------------------------------------------------
+# Free-text column (see `audit_log` table below) so new event types can be
+# added later without a schema change. These constants document the
+# taxonomy currently in use plus ones reserved for a future payments phase.
+AUDIT_EVENT_TG_BOUND = "tg_bound"                # first bind of a telegram_id to a marzban_username
+AUDIT_EVENT_TG_REBOUND = "tg_rebound"            # telegram_id moved from one marzban_username to another
+AUDIT_EVENT_DEVICE_RENAMED = "device_renamed"
+AUDIT_EVENT_DEVICE_DEACTIVATED = "device_deactivated"
+AUDIT_EVENT_MGMT_CODE_ISSUED = "mgmt_code_issued"        # one-time device-management code generated
+AUDIT_EVENT_MGMT_SESSION_CREATED = "mgmt_session_created"  # one-time code successfully exchanged
+# Reserved for a future payments phase (Telegram Stars) — not emitted yet,
+# listed here so the taxonomy/shape is already accounted for:
+#   invoice_created, payment_successful, subscription_extended,
+#   refund, payment_failed
+
+# Device-management one-time code / session lifetimes.
+MGMT_CODE_TTL_SECONDS = 900      # 15 minutes
+MGMT_SESSION_TTL_SECONDS = 900   # 15 minutes — does not silently renew
+MGMT_SCOPE_DEVICES = "devices:manage"
+
+
+def _hash_secret(raw: str) -> str:
+    """SHA-256 hex digest, used to store one-time codes / session ids the
+    same way a password reset token would be stored — never the raw value."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 DB_PATH = os.path.join(DATA_DIR, "db.sqlite3")
 EXTRA_CONFIGS_JSON = os.path.join(DATA_DIR, "extra_configs.json")
@@ -141,6 +172,37 @@ class Database:
                 ts INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                telegram_id INTEGER,
+                marzban_username TEXT,
+                target TEXT,
+                metadata_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mgmt_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash TEXT NOT NULL UNIQUE,
+                telegram_id INTEGER NOT NULL,
+                marzban_username TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS mgmt_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_hash TEXT NOT NULL UNIQUE,
+                telegram_id INTEGER NOT NULL,
+                marzban_username TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -152,6 +214,16 @@ class Database:
                 ON sub_requests(username, timestamp);
             CREATE INDEX IF NOT EXISTS idx_user_devices_username
                 ON user_devices(username, is_active);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_telegram_id
+                ON audit_log(telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_username
+                ON audit_log(marzban_username);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
+                ON audit_log(event_type, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_mgmt_codes_expires
+                ON mgmt_codes(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_mgmt_sessions_expires
+                ON mgmt_sessions(expires_at);
         """)
         self._conn.commit()
 
@@ -294,9 +366,10 @@ class Database:
     # --- extra_configs ---
 
     def get_extra_configs(self):
-        rows = self._conn.execute(
-            "SELECT id, name, uri, enabled, sort_order FROM extra_configs WHERE scope='global' ORDER BY sort_order, id"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, name, uri, enabled, sort_order FROM extra_configs WHERE scope='global' ORDER BY sort_order, id"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def add_extra_config(self, name, uri, enabled=True):
@@ -375,23 +448,25 @@ class Database:
 
     def save_node_filters(self, filters_dict):
         """Replace all node filters with filters_dict {username: {all, allowed_configs}}."""
-        self._conn.execute("DELETE FROM node_filters")
-        for username, filt in filters_dict.items():
-            if "hosts" in filt or "allowed_ips" in filt:
-                filter_all, allowed = 1, "[]"
-            else:
-                filter_all = 1 if filt.get("all", True) else 0
-                allowed = json.dumps(filt.get("allowed_configs") or [])
-            self._conn.execute(
-                "INSERT INTO node_filters (username, filter_all, allowed_configs) VALUES (?,?,?)",
-                (username, filter_all, allowed),
-            )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM node_filters")
+            for username, filt in filters_dict.items():
+                if "hosts" in filt or "allowed_ips" in filt:
+                    filter_all, allowed = 1, "[]"
+                else:
+                    filter_all = 1 if filt.get("all", True) else 0
+                    allowed = json.dumps(filt.get("allowed_configs") or [])
+                self._conn.execute(
+                    "INSERT INTO node_filters (username, filter_all, allowed_configs) VALUES (?,?,?)",
+                    (username, filter_all, allowed),
+                )
+            self._conn.commit()
 
     def get_node_filter(self, username):
-        row = self._conn.execute(
-            "SELECT filter_all, allowed_configs FROM node_filters WHERE username=?", (username,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT filter_all, allowed_configs FROM node_filters WHERE username=?", (username,)
+            ).fetchone()
         if not row:
             return None
         return {"all": bool(row["filter_all"]), "allowed_configs": json.loads(row["allowed_configs"] or "[]")}
@@ -399,32 +474,35 @@ class Database:
     # --- hysteria_stats ---
 
     def get_hysteria_stats(self):
-        rows = self._conn.execute("SELECT token, upload, download FROM hysteria_stats").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT token, upload, download FROM hysteria_stats").fetchall()
         return {r["token"]: {"upload": r["upload"], "download": r["download"]} for r in rows}
 
     def get_hysteria_traffic(self, token):
-        row = self._conn.execute(
-            "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+            ).fetchone()
         if not row:
             return 0, 0
         return row["upload"], row["download"]
 
     def update_hysteria_stats(self, token, upload_delta, download_delta):
-        existing = self._conn.execute(
-            "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
-        ).fetchone()
-        if existing:
-            self._conn.execute(
-                "UPDATE hysteria_stats SET upload=upload+?, download=download+? WHERE token=?",
-                (upload_delta, download_delta, token),
-            )
-        else:
-            self._conn.execute(
-                "INSERT INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
-                (token, upload_delta, download_delta),
-            )
-        self._conn.commit()
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+            ).fetchone()
+            if existing:
+                self._conn.execute(
+                    "UPDATE hysteria_stats SET upload=upload+?, download=download+? WHERE token=?",
+                    (upload_delta, download_delta, token),
+                )
+            else:
+                self._conn.execute(
+                    "INSERT INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
+                    (token, upload_delta, download_delta),
+                )
+            self._conn.commit()
 
     # --- sub_requests ---
 
@@ -512,17 +590,19 @@ class Database:
             self._conn.commit()
 
     def get_device_history(self, token: str, limit: int = 10) -> list:
-        rows = self._conn.execute(
-            f"SELECT {self._device_select_columns()} FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
-            (token, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {self._device_select_columns()} FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
+                (token, limit),
+            ).fetchall()
         return [self._device_row_to_dict(r) for r in rows]
 
     def get_device_history_by_username(self, username: str, limit: int = 10) -> list:
-        rows = self._conn.execute(
-            f"SELECT {self._device_select_columns()} FROM sub_requests WHERE username=? ORDER BY timestamp DESC LIMIT ?",
-            (username, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {self._device_select_columns()} FROM sub_requests WHERE username=? ORDER BY timestamp DESC LIMIT ?",
+                (username, limit),
+            ).fetchall()
         return [self._device_row_to_dict(r) for r in rows]
 
     def get_last_devices_by_usernames(self, usernames):
@@ -531,15 +611,16 @@ class Database:
             return {}
 
         placeholders = ",".join("?" for _ in cleaned)
-        rows = self._conn.execute(
-            f"""
-            SELECT username, {self._device_select_columns()}
-            FROM sub_requests
-            WHERE username IN ({placeholders})
-            ORDER BY timestamp DESC
-            """,
-            cleaned,
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT username, {self._device_select_columns()}
+                FROM sub_requests
+                WHERE username IN ({placeholders})
+                ORDER BY timestamp DESC
+                """,
+                cleaned,
+            ).fetchall()
 
         result = {}
         for row in rows:
@@ -553,17 +634,19 @@ class Database:
     # --- settings ---
 
     def get_setting(self, key: str, default=None):
-        row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         if not row:
             return default
         return row["value"]
 
     def set_setting(self, key: str, value: str):
-        self._conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
-            (key, value),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+                (key, value),
+            )
+            self._conn.commit()
 
     # --- device limits ---
 
@@ -715,6 +798,9 @@ class Database:
                 (row["request_key"], username),
             )
             self._conn.commit()
+        self.log_audit_event(
+            AUDIT_EVENT_DEVICE_DEACTIVATED, marzban_username=username, target=str(device_id),
+        )
         return True
 
     def rename_device(self, device_id: int, username: str, display_name: str) -> bool:
@@ -724,7 +810,13 @@ class Database:
                 (display_name[:50], device_id, username),
             )
             self._conn.commit()
-        return result.rowcount > 0
+        ok = result.rowcount > 0
+        if ok:
+            self.log_audit_event(
+                AUDIT_EVENT_DEVICE_RENAMED, marzban_username=username, target=str(device_id),
+                metadata={"new_name": display_name[:50]},
+            )
+        return ok
 
     def admin_remove_device(self, device_id: int) -> bool:
         """Admin: remove device completely and release its hwid_lock."""
@@ -746,9 +838,10 @@ class Database:
 
     def get_node_quiet_hours(self, node_id) -> list:
         node_key = self._node_key(node_id)
-        row = self._conn.execute(
-            "SELECT monitor_quiet_hours FROM node_settings WHERE node_key=?", (node_key,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT monitor_quiet_hours FROM node_settings WHERE node_key=?", (node_key,)
+            ).fetchone()
         if not row:
             return []
         return json.loads(row["monitor_quiet_hours"] or "[]")
@@ -786,29 +879,31 @@ class Database:
         return result
 
     def get_node_settings(self) -> dict:
-        rows = self._conn.execute(
-            """
-            SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
-                   monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
-                   importance, can_remove, note, updated_at
-            FROM node_settings
-            ORDER BY node_name, node_key
-            """
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
+                       monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
+                       importance, can_remove, note, updated_at
+                FROM node_settings
+                ORDER BY node_name, node_key
+                """
+            ).fetchall()
         return {row["node_key"]: self._node_settings_row_to_dict(row) for row in rows}
 
     def get_node_setting(self, node_id):
         node_key = self._node_key(node_id)
-        row = self._conn.execute(
-            """
-            SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
-                   monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
-                   importance, can_remove, note, updated_at
-            FROM node_settings
-            WHERE node_key=?
-            """,
-            (node_key,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT node_key, node_id, node_name, node_address, billing_group, provider, location,
+                       monthly_cost, currency, traffic_included_gb, traffic_price_per_tb,
+                       importance, can_remove, note, updated_at
+                FROM node_settings
+                WHERE node_key=?
+                """,
+                (node_key,),
+            ).fetchone()
         return self._node_settings_row_to_dict(row) if row else None
 
     def save_node_setting(self, data: dict) -> dict:
@@ -868,6 +963,69 @@ class Database:
 
         return self.get_node_setting(node_id)
 
+    # ------------------------------------------------------------------ audit_log
+
+    def log_audit_event(
+        self,
+        event_type: str,
+        telegram_id: int | None = None,
+        marzban_username: str | None = None,
+        target: str | None = None,
+        metadata: dict | None = None,
+    ):
+        """Append an audit log entry. Never raises — a logging failure must
+        never break the primary action that triggered it; on failure the
+        error is written to the application logger instead.
+
+        Never pass secret values (tokens, passwords, API keys) in `metadata`.
+        """
+        try:
+            metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True) if metadata else None
+            with self._lock:
+                self._conn.execute(
+                    "INSERT INTO audit_log (timestamp, event_type, telegram_id, marzban_username, target, metadata_json)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (int(time.time()), event_type, telegram_id, marzban_username, target, metadata_json),
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.error(f"audit_log write failed (event_type={event_type}): {e}")
+
+    def get_audit_log(
+        self,
+        event_type: str | None = None,
+        telegram_id: int | None = None,
+        marzban_username: str | None = None,
+        limit: int = 100,
+    ) -> list:
+        query = "SELECT * FROM audit_log WHERE 1=1"
+        params: list = []
+        if event_type:
+            query += " AND event_type=?"
+            params.append(event_type)
+        if telegram_id is not None:
+            query += " AND telegram_id=?"
+            params.append(telegram_id)
+        if marzban_username:
+            query += " AND marzban_username=?"
+            params.append(marzban_username)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        result = []
+        for r in rows:
+            entry = dict(r)
+            metadata_json = entry.pop("metadata_json", None)
+            entry["metadata"] = {}
+            if metadata_json:
+                try:
+                    entry["metadata"] = json.loads(metadata_json)
+                except (TypeError, ValueError):
+                    entry["metadata"] = {}
+            result.append(entry)
+        return result
+
     # ------------------------------------------------------------------ tg_users
 
     def get_tg_user(self, telegram_id: int) -> dict | None:
@@ -878,14 +1036,35 @@ class Database:
         return dict(row) if row else None
 
     def save_tg_user(self, telegram_id: int, marzban_username: str):
+        """Upsert the (single, current) binding for this telegram_id.
+
+        Note: this is intentionally M:1 — multiple telegram_ids may bind to
+        the same marzban_username at the same time (shared subscription).
+        Each telegram_id stores exactly one current binding.
+        """
         now = int(time.time())
         with self._lock:
+            existing = self._conn.execute(
+                "SELECT marzban_username FROM tg_users WHERE telegram_id = ?", (telegram_id,)
+            ).fetchone()
+            old_username = existing["marzban_username"] if existing else None
             self._conn.execute(
                 "INSERT INTO tg_users (telegram_id, marzban_username, registered_at) VALUES (?,?,?)"
                 " ON CONFLICT(telegram_id) DO UPDATE SET marzban_username=excluded.marzban_username",
                 (telegram_id, marzban_username, now),
             )
             self._conn.commit()
+
+        if old_username is None:
+            self.log_audit_event(
+                AUDIT_EVENT_TG_BOUND, telegram_id=telegram_id, marzban_username=marzban_username,
+            )
+        elif old_username != marzban_username:
+            self.log_audit_event(
+                AUDIT_EVENT_TG_REBOUND, telegram_id=telegram_id, marzban_username=marzban_username,
+                metadata={"old_username": old_username, "new_username": marzban_username},
+            )
+        return {"rebound": old_username is not None and old_username != marzban_username, "old_username": old_username}
 
     # ------------------------------------------------------------------ tickets
 
@@ -958,3 +1137,116 @@ class Database:
                 (ticket_id, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ device management sessions
+    #
+    # Two-step flow used by the Telegram bot to grant a browser session the
+    # right to mutate (rename/deactivate) devices on a marzban_username the
+    # requesting telegram_id is currently bound to:
+    #   1. create_mgmt_code()  — bot issues a one-time code, TTL ~15 min,
+    #      bound to (telegram_id, marzban_username) at issuance. Only the
+    #      SHA-256 hash is stored, mirroring how a password-reset token
+    #      would be stored.
+    #   2. exchange_mgmt_code() — web frontend exchanges the code exactly
+    #      once for an opaque session id (also stored only as a hash). The
+    #      code is atomically marked used so a second exchange attempt
+    #      always fails, even under a race.
+    #   3. get_mgmt_session() — backend route handlers look up the session
+    #      by its (hashed) cookie value on every mutating request; nothing
+    #      about identity/scope/username is ever trusted from the request
+    #      body/query itself.
+
+    def create_mgmt_code(
+        self,
+        telegram_id: int,
+        marzban_username: str,
+        scope: str = MGMT_SCOPE_DEVICES,
+        ttl_seconds: int = MGMT_CODE_TTL_SECONDS,
+    ) -> str:
+        """Issue a one-time device-management code. Returns the raw code
+        (only returned once — callers must not persist it themselves)."""
+        raw_code = secrets.token_urlsafe(24)
+        code_hash = _hash_secret(raw_code)
+        now = int(time.time())
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO mgmt_codes (code_hash, telegram_id, marzban_username, scope, created_at, expires_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (code_hash, telegram_id, marzban_username, scope, now, now + ttl_seconds),
+            )
+            self._conn.commit()
+        # Never log the raw code — only that one was issued.
+        self.log_audit_event(
+            AUDIT_EVENT_MGMT_CODE_ISSUED, telegram_id=telegram_id, marzban_username=marzban_username,
+            metadata={"scope": scope, "ttl_seconds": ttl_seconds},
+        )
+        return raw_code
+
+    def exchange_mgmt_code(
+        self, raw_code: str, session_ttl_seconds: int = MGMT_SESSION_TTL_SECONDS
+    ) -> dict | None:
+        """Validate + single-use-consume a one-time code and issue a
+        management session. Returns None if the code is unknown, expired,
+        or already used. Returns {session_id (raw), telegram_id,
+        marzban_username, scope, expires_at} on success."""
+        if not raw_code:
+            return None
+        code_hash = _hash_secret(raw_code)
+        now = int(time.time())
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM mgmt_codes WHERE code_hash=?", (code_hash,)
+            ).fetchone()
+            if not row:
+                return None
+            if row["used_at"] is not None or row["expires_at"] < now:
+                return None
+            # Atomically mark used — guards against a race where two
+            # concurrent exchange attempts both pass the checks above.
+            cur = self._conn.execute(
+                "UPDATE mgmt_codes SET used_at=? WHERE id=? AND used_at IS NULL",
+                (now, row["id"]),
+            )
+            if cur.rowcount == 0:
+                self._conn.commit()
+                return None
+
+            raw_session = secrets.token_urlsafe(32)
+            session_hash = _hash_secret(raw_session)
+            expires_at = now + session_ttl_seconds
+            self._conn.execute(
+                "INSERT INTO mgmt_sessions (session_hash, telegram_id, marzban_username, scope, created_at, expires_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (session_hash, row["telegram_id"], row["marzban_username"], row["scope"], now, expires_at),
+            )
+            self._conn.commit()
+
+        self.log_audit_event(
+            AUDIT_EVENT_MGMT_SESSION_CREATED, telegram_id=row["telegram_id"],
+            marzban_username=row["marzban_username"], metadata={"scope": row["scope"]},
+        )
+        return {
+            "session_id": raw_session,
+            "telegram_id": row["telegram_id"],
+            "marzban_username": row["marzban_username"],
+            "scope": row["scope"],
+            "expires_at": expires_at,
+        }
+
+    def get_mgmt_session(self, raw_session_id: str) -> dict | None:
+        """Look up a management session by its raw (unhashed) cookie value.
+        Returns None if unknown or expired. Never returns/accepts the
+        session id itself as authoritative for anything but the lookup key
+        — callers must use the returned telegram_id/marzban_username/scope,
+        never values passed separately by the client."""
+        if not raw_session_id:
+            return None
+        session_hash = _hash_secret(raw_session_id)
+        now = int(time.time())
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM mgmt_sessions WHERE session_hash=?", (session_hash,)
+            ).fetchone()
+        if not row or row["expires_at"] < now:
+            return None
+        return dict(row)
