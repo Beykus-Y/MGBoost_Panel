@@ -7,9 +7,16 @@ logger = logging.getLogger(__name__)
 
 
 def build_proxy_url(host, port, user, password) -> str | None:
-    if not host:
+    if not all(isinstance(value, str) and value.strip()
+               for value in (host, str(port) if port is not None else "", user, password)):
         return None
-    return f"socks5h://{user}:{password}@{host}:{port}"
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    return f"socks5h://{user.strip()}:{password}@{host.strip()}:{port}"
 
 
 class BotRunner(threading.Thread):
@@ -30,12 +37,24 @@ class BotRunner(threading.Thread):
         if not token:
             return None
         channel_id = db.get_setting("bot:channel_id", "@MGBoost_News")
-        proxy_url = build_proxy_url(
-            db.get_setting("bot:proxy_host"),
-            db.get_setting("bot:proxy_port", "1080"),
-            db.get_setting("bot:proxy_user", "socks"),
-            db.get_setting("bot:proxy_pass", ""),
-        )
+        proxy_setting = db.get_setting("bot:proxy_enabled", "0")
+        if proxy_setting not in ("0", "1"):
+            logger.error("Telegram proxy setting is invalid; Telegram bot will not start")
+            return None
+        proxy_url = None
+        if proxy_setting == "1":
+            proxy_url = build_proxy_url(
+                db.get_setting("bot:proxy_host"),
+                db.get_setting("bot:proxy_port", "1080"),
+                db.get_setting("bot:proxy_user", "socks"),
+                db.get_setting("bot:proxy_pass", ""),
+            )
+            if proxy_url is None:
+                logger.error(
+                    "Telegram proxy is enabled but configuration is incomplete; "
+                    "Telegram bot will not start"
+                )
+                return None
         return cls(bot_token=token, channel_id=channel_id, proxy_url=proxy_url, db=db, marzban=marzban)
 
     @property

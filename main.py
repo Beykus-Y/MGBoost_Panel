@@ -20,7 +20,7 @@ if __name__ == "__main__":
         proxy_state = "enabled" if bot_runner.proxy_url else "disabled"
         print(f"[Bot] Запущен в фоне, Telegram proxy: {proxy_state}")
     else:
-        print("[Bot] bot:token не задан в БД — мониторинг не запущен")
+        print("[Bot] Telegram bot not started; check bot configuration")
 
     server = Server(db)
     server.run(LISTEN_HOST, LISTEN_PORT, bot_runner=bot_runner, bot_runner_factory=make_bot_runner)
