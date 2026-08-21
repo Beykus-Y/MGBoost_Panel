@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import time
 
 from ..http_utils import json_response as _json_response
 from ..http_utils import read_body as _read_body
@@ -178,6 +180,67 @@ def _validate_node_setting(data):
         "can_remove": can_remove,
         "note": short_text("note", 512),
     }
+
+
+def _coerce_bool(value, field_name):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.lower() not in ("true", "false"):
+            raise ValueError(f"{field_name} must be boolean or string 'true'/'false'")
+        return value.lower() == "true"
+    if isinstance(value, int):
+        if value not in (0, 1):
+            raise ValueError(f"{field_name} must be 0 or 1")
+        return bool(value)
+    raise ValueError(f"{field_name} must be boolean")
+
+
+def _validate_stars_tariff(data):
+    """Mirrors _validate_node_setting's style. Stars are always whole
+    numbers (Bot API LabeledPrice.amount is an integer), so both
+    duration_days and stars_price must be positive ints."""
+    if not isinstance(data, dict):
+        raise ValueError("Expected dict")
+
+    name = str(data.get("name") or "").strip()
+    if not name or len(name) > 64:
+        raise ValueError("name must be 1-64 chars")
+
+    try:
+        duration_days = int(data.get("duration_days"))
+    except (TypeError, ValueError):
+        raise ValueError("duration_days must be a positive integer")
+    if duration_days <= 0:
+        raise ValueError("duration_days must be a positive integer")
+
+    try:
+        stars_price = int(data.get("stars_price"))
+    except (TypeError, ValueError):
+        raise ValueError("stars_price must be a positive integer")
+    if stars_price <= 0:
+        raise ValueError("stars_price must be a positive integer")
+
+    active = _coerce_bool(data.get("active", True), "active")
+
+    sort_order = data.get("sort_order")
+    if sort_order not in (None, ""):
+        try:
+            sort_order = int(sort_order)
+        except (TypeError, ValueError):
+            raise ValueError("sort_order must be an integer")
+    else:
+        sort_order = None
+
+    result = {"name": name, "duration_days": duration_days, "stars_price": stars_price, "active": active}
+    if sort_order is not None:
+        result["sort_order"] = sort_order
+    if data.get("id") not in (None, ""):
+        try:
+            result["id"] = int(data["id"])
+        except (TypeError, ValueError):
+            raise ValueError("id must be an integer")
+    return result
 
 
 def handle_configs_list(handler):
@@ -592,4 +655,230 @@ def handle_ticket_reply(handler, ticket_id):
         return
     db.add_ticket_message(tid, "human", text)
     _send_ticket_notification(handler, ticket["telegram_id"], text)
+    _json_response(handler, 200, {"ok": True})
+
+
+# --- Telegram Stars: tariffs (settings, admin-managed, no seeded defaults) ---
+
+def handle_stars_tariffs_list(handler):
+    db = handler.server.db
+    _json_response(handler, 200, db.get_stars_tariffs())
+
+
+def handle_stars_tariffs_save(handler):
+    db = handler.server.db
+    try:
+        data = json.loads(_read_body(handler))
+        validated = _validate_stars_tariff(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    result = db.save_stars_tariff(validated)
+    _json_response(handler, 200, result)
+
+
+def handle_stars_tariffs_toggle(handler, tariff_id):
+    try:
+        tariff_id = int(tariff_id)
+        data = json.loads(_read_body(handler))
+        active = _coerce_bool(data.get("active"), "active")
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        _json_response(handler, 400, {"error": str(e) or "Invalid payload"})
+        return
+    handler.server.db.toggle_stars_tariff(tariff_id, active)
+    _json_response(handler, 200, {"ok": True})
+
+
+def handle_stars_tariffs_delete(handler, tariff_id):
+    try:
+        tariff_id = int(tariff_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid tariff id"})
+        return
+    handler.server.db.delete_stars_tariff(tariff_id)
+    _json_response(handler, 200, {"ok": True})
+
+
+def handle_stars_tariffs_reorder(handler):
+    db = handler.server.db
+    try:
+        items = json.loads(_read_body(handler))
+        if not isinstance(items, list):
+            raise ValueError("Expected list")
+        ordered_ids = []
+        for item in items:
+            if isinstance(item, dict) and "id" in item:
+                ordered_ids.append(int(item["id"]))
+            else:
+                ordered_ids.append(int(item))
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        _json_response(handler, 400, {"error": str(e) or "Invalid payload"})
+        return
+    db.reorder_stars_tariffs(ordered_ids)
+    _json_response(handler, 200, {"ok": True})
+
+
+def handle_stars_settings_get(handler):
+    db = handler.server.db
+    _json_response(handler, 200, {"enabled": db.get_setting("stars:enabled") == "1"})
+
+
+def handle_stars_settings_save(handler):
+    db = handler.server.db
+    try:
+        data = json.loads(_read_body(handler))
+    except json.JSONDecodeError as e:
+        _json_response(handler, 400, {"error": str(e)})
+        return
+    if "enabled" in data:
+        db.set_setting("stars:enabled", "1" if data.get("enabled") else "0")
+    _json_response(handler, 200, {"ok": True})
+
+
+# --- Telegram Stars: payments ledger (read-only + operator actions, §4.4/§9) ---
+
+def handle_stars_payments_list(handler):
+    from urllib.parse import parse_qs, urlsplit
+    db = handler.server.db
+    query = parse_qs(urlsplit(handler.path).query)
+    status = (query.get("status", [None])[0]) or None
+    _json_response(handler, 200, db.list_stars_invoices(status=status))
+
+
+def _get_stars_admin_token(handler):
+    from ..marzban import MarzbanClient
+    client = MarzbanClient()
+    try:
+        return client.get_admin_token_from_env(), client
+    except Exception:
+        return None, client
+
+
+def handle_stars_payment_recheck(handler, payment_id):
+    try:
+        invoice_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid payment id"})
+        return
+    db = handler.server.db
+    row = db.get_invoice(invoice_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    admin_token, client = _get_stars_admin_token(handler)
+    if not admin_token:
+        _json_response(handler, 503, {"error": "Marzban admin credentials are not configured"})
+        return
+    try:
+        user = client.get_user(row["marzban_username"], admin_token)
+    except Exception as e:
+        _json_response(handler, 502, {"error": f"Could not load Marzban user: {e}"})
+        return
+    _json_response(handler, 200, {"invoice": row, "live_expire": user.get("expire"), "live_status": user.get("status")})
+
+
+def handle_stars_payment_confirm_applied(handler, payment_id):
+    try:
+        invoice_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid payment id"})
+        return
+    db = handler.server.db
+    row = db.get_invoice(invoice_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    if row["status"] not in ("manual_review", "apply_retry_exhausted"):
+        _json_response(handler, 409, {"error": f"Cannot confirm-applied from status {row['status']}"})
+        return
+    admin_token, client = _get_stars_admin_token(handler)
+    if not admin_token:
+        _json_response(handler, 503, {"error": "Marzban admin credentials are not configured"})
+        return
+    try:
+        user = client.get_user(row["marzban_username"], admin_token)
+    except Exception as e:
+        _json_response(handler, 502, {"error": f"Could not load Marzban user: {e}"})
+        return
+    live_expire = int(user.get("expire") or 0)
+    ok = db.resolve_manual_review_confirm_applied(invoice_id, applied_expire=live_expire)
+    if not ok:
+        _json_response(handler, 409, {"error": "Payment status changed concurrently, no action taken"})
+        return
+    db.log_audit_event(
+        "subscription_extended", marzban_username=row["marzban_username"],
+        telegram_id=row["payer_telegram_id"],
+        metadata={"invoice_id": invoice_id, "new_expire": live_expire, "via": "admin_confirm_applied"},
+    )
+    _json_response(handler, 200, {"ok": True, "applied_expire": live_expire})
+
+
+def handle_stars_payment_requeue(handler, payment_id):
+    try:
+        invoice_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid payment id"})
+        return
+    db = handler.server.db
+    row = db.get_invoice(invoice_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    ok = db.resolve_manual_review_requeue(invoice_id)
+    if not ok:
+        _json_response(handler, 409, {"error": f"Cannot requeue from status {row['status']}"})
+        return
+    # No fast-path trigger available here (the apply-worker's asyncio.Event
+    # lives inside the bot thread, not reachable from the server object) —
+    # the worker's own 30s poll will pick this row up; requeue is not a
+    # latency-sensitive admin action. The message field tells the operator
+    # this explicitly rather than leaving the ~30s delay unexplained.
+    _json_response(handler, 200, {
+        "ok": True,
+        "message": "Платёж поставлен в очередь и будет повторно обработан автоматически в течение ~30 секунд.",
+    })
+
+
+def handle_stars_payment_refund(handler, payment_id):
+    try:
+        invoice_id = int(payment_id)
+    except (ValueError, TypeError):
+        _json_response(handler, 400, {"error": "Invalid payment id"})
+        return
+    db = handler.server.db
+    row = db.get_invoice(invoice_id)
+    if not row:
+        _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    if row["status"] not in ("applied", "manual_review", "apply_retry_exhausted", "apply_failed_user_missing"):
+        _json_response(handler, 409, {"error": f"Cannot refund from status {row['status']}"})
+        return
+    if not row.get("payer_telegram_id") or not row.get("telegram_payment_charge_id"):
+        _json_response(handler, 409, {"error": "Invoice has no recorded payer/charge id — nothing to refund"})
+        return
+
+    runner = getattr(handler.server, "bot_runner", None)
+    bot = getattr(runner, "bot_instance", None) if runner else None
+    loop = getattr(runner, "_loop", None) if runner else None
+    if not bot or not loop or not loop.is_running():
+        _json_response(handler, 503, {"error": "Bot is not running — cannot issue a Stars refund"})
+        return
+
+    future = asyncio.run_coroutine_threadsafe(
+        bot.refund_star_payment(int(row["payer_telegram_id"]), row["telegram_payment_charge_id"]),
+        loop,
+    )
+    try:
+        refunded = future.result(timeout=15)
+    except Exception as e:
+        _json_response(handler, 502, {"error": f"refundStarPayment failed: {e}"})
+        return
+    if not refunded:
+        _json_response(handler, 502, {"error": "refundStarPayment returned false"})
+        return
+
+    ok = db.mark_invoice_refunded(invoice_id)
+    if not ok:
+        _json_response(handler, 409, {"error": "Refund issued on Telegram side, but local status changed concurrently"})
+        return
     _json_response(handler, 200, {"ok": True})

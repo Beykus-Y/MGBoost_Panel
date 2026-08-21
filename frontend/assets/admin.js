@@ -220,6 +220,7 @@ function showPage(name){
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
   if(name==='tickets'){loadTickets();}
+  if(name==='stars'){loadStarsTariffs();loadStarsSettings();loadStarsPayments();}
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -1377,6 +1378,117 @@ function _tsAgo(ts){
 }
 function _fmtDate(ts){return new Date(ts*1000).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
 function _esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// TELEGRAM STARS
+async function loadStarsSettings(){
+  try{
+    const r=await proxyApi('/admin/stars-settings');
+    const data=await r.json();
+    document.getElementById('stars-enabled').checked=!!data.enabled;
+  }catch(e){}
+}
+async function saveStarsSettings(){
+  const enabled=document.getElementById('stars-enabled').checked;
+  await proxyApi('/admin/stars-settings',{method:'POST',body:JSON.stringify({enabled})});
+}
+
+async function loadStarsTariffs(){
+  const tbody=document.getElementById('stars-tariffs-tbody');
+  tbody.innerHTML='<tr><td colspan="5"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  try{
+    const r=await proxyApi('/admin/stars-tariffs');
+    const tariffs=await r.json();
+    if(!tariffs.length){
+      tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text3)">Тарифы ещё не настроены — добавьте первый тариф</td></tr>';
+      return;
+    }
+    tbody.innerHTML=tariffs.map(t=>`
+      <tr>
+        <td>${esc(t.name)}</td>
+        <td>${t.duration_days}</td>
+        <td>${t.stars_price} ⭐️</td>
+        <td><input type="checkbox" ${t.active?'checked':''} onchange="toggleStarsTariff(${t.id},this.checked)" style="width:auto" /></td>
+        <td><button onclick="deleteStarsTariff(${t.id})">Удалить</button></td>
+      </tr>`).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="5" style="color:#f66">Ошибка загрузки</td></tr>';}
+}
+
+async function addStarsTariff(){
+  const name=document.getElementById('new-tariff-name').value.trim();
+  const duration_days=parseInt(document.getElementById('new-tariff-days').value,10);
+  const stars_price=parseInt(document.getElementById('new-tariff-price').value,10);
+  if(!name||!duration_days||!stars_price)return;
+  const r=await proxyApi('/admin/stars-tariffs',{method:'POST',body:JSON.stringify({name,duration_days,stars_price,active:true})});
+  if(!r.ok)return;
+  document.getElementById('new-tariff-name').value='';
+  document.getElementById('new-tariff-days').value='';
+  document.getElementById('new-tariff-price').value='';
+  loadStarsTariffs();
+}
+
+async function toggleStarsTariff(id,active){
+  const r=await proxyApi(`/admin/stars-tariffs/${id}/toggle`,{method:'POST',body:JSON.stringify({active})});
+  if(!r.ok)loadStarsTariffs();
+}
+
+async function deleteStarsTariff(id){
+  if(!confirm('Удалить тариф? На уже созданные счета это не повлияет.'))return;
+  await proxyApi(`/admin/stars-tariffs/${id}`,{method:'DELETE'});
+  loadStarsTariffs();
+}
+
+const _STARS_STATUS_COLORS={
+  created:'#888',paid:'#4af',plan_committed:'#4af',applied:'#6f6',
+  manual_review:'#fa4',apply_failed_user_missing:'#f66',
+  apply_retry_exhausted:'#f66',refunded:'#a4f',
+};
+const _STARS_ACTIONABLE=new Set(['manual_review','apply_retry_exhausted']);
+const _STARS_REFUNDABLE=new Set(['applied','manual_review','apply_retry_exhausted','apply_failed_user_missing']);
+
+async function loadStarsPayments(status){
+  const tbody=document.getElementById('stars-payments-tbody');
+  tbody.innerHTML='<tr><td colspan="10"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  try{
+    const qs=status?`?status=${status}`:'';
+    const r=await proxyApi('/admin/stars-payments'+qs);
+    const rows=await r.json();
+    if(!rows.length){tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--text3)">Платежей нет</td></tr>';return;}
+    tbody.innerHTML=rows.map(p=>{
+      const actions=[];
+      if(_STARS_ACTIONABLE.has(p.status)){
+        actions.push(`<button onclick="starsPaymentAction(${p.id},'recheck')">Проверить</button>`);
+        actions.push(`<button onclick="starsPaymentAction(${p.id},'confirm-applied')">Подтвердить</button>`);
+        actions.push(`<button onclick="starsPaymentAction(${p.id},'requeue')">Повторить</button>`);
+      }
+      if(_STARS_REFUNDABLE.has(p.status)){
+        actions.push(`<button onclick="starsPaymentAction(${p.id},'refund')">Возврат</button>`);
+      }
+      return `<tr>
+        <td>#${p.id}</td>
+        <td>${esc(p.marzban_username)}</td>
+        <td>${esc(p.tariff_name)} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
+        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
+        <td>${p.created_by_telegram_id}</td>
+        <td>${p.payer_telegram_id??'—'}</td>
+        <td>${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
+        <td>${p.applied_expire??'—'}</td>
+        <td style="font-size:11px;color:var(--text3);max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(p.manual_review_reason||'')}</td>
+        <td style="white-space:nowrap">${actions.join(' ')}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="10" style="color:#f66">Ошибка загрузки</td></tr>';}
+}
+
+async function starsPaymentAction(id,action){
+  if(action==='confirm-applied'&&!confirm('Подтвердить: зафиксировать текущее значение expire в Marzban как результат этого платежа?'))return;
+  if(action==='refund'&&!confirm('Выполнить возврат Stars за этот платёж?'))return;
+  const r=await proxyApi(`/admin/stars-payments/${id}/${action}`,{method:'POST'});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.error||'Ошибка');return;}
+  if(data.message){alert(data.message);}
+  const currentFilter=document.getElementById('stars-payments-filter').value;
+  loadStarsPayments(currentFilter);
+}
 
 // INIT
 if(TOKEN){

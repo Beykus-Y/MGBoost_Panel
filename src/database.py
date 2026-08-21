@@ -21,10 +21,19 @@ AUDIT_EVENT_DEVICE_RENAMED = "device_renamed"
 AUDIT_EVENT_DEVICE_DEACTIVATED = "device_deactivated"
 AUDIT_EVENT_MGMT_CODE_ISSUED = "mgmt_code_issued"        # one-time device-management code generated
 AUDIT_EVENT_MGMT_SESSION_CREATED = "mgmt_session_created"  # one-time code successfully exchanged
-# Reserved for a future payments phase (Telegram Stars) — not emitted yet,
-# listed here so the taxonomy/shape is already accounted for:
-#   invoice_created, payment_successful, subscription_extended,
-#   refund, payment_failed
+
+# Phase 2 — Telegram Stars payments (see selara-tg-bridge phase2_stars_design.md).
+AUDIT_EVENT_INVOICE_CREATED = "invoice_created"
+AUDIT_EVENT_PAYMENT_SUCCESSFUL = "payment_successful"
+AUDIT_EVENT_SUBSCRIPTION_EXTENDED = "subscription_extended"
+AUDIT_EVENT_REFUND = "refund"
+AUDIT_EVENT_PAYMENT_FAILED = "payment_failed"
+AUDIT_EVENT_PAYMENT_PLAN_COMMITTED = "payment_plan_committed"
+AUDIT_EVENT_PAYMENT_MANUAL_REVIEW = "payment_manual_review"
+AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED = "payment_apply_retry_exhausted"
+
+# Stars invoice lifecycle — see §3 of the design doc.
+STARS_INVOICE_TTL_SECONDS = 3600  # 1 hour
 
 # Device-management one-time code / session lifetimes.
 MGMT_CODE_TTL_SECONDS = 900      # 15 minutes
@@ -203,6 +212,58 @@ class Database:
                 expires_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS stars_tariffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                duration_days INTEGER NOT NULL,
+                stars_price INTEGER NOT NULL,
+                active INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            -- IMPORTANT: this table is created EMPTY. No default row is ever
+            -- inserted here or anywhere else — see Phase 2 design doc §9.
+
+            CREATE TABLE IF NOT EXISTS stars_invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                created_by_telegram_id INTEGER NOT NULL,
+                payer_telegram_id INTEGER,
+
+                marzban_username TEXT NOT NULL,
+                tariff_id INTEGER,
+                tariff_name TEXT NOT NULL,
+                duration_days INTEGER NOT NULL,
+                stars_price INTEGER NOT NULL,
+
+                status TEXT NOT NULL DEFAULT 'created',
+
+                telegram_payment_charge_id TEXT UNIQUE,
+                provider_payment_charge_id TEXT,
+                total_amount INTEGER,
+
+                base_expire_observed INTEGER,
+                target_expire INTEGER,
+
+                apply_attempts INTEGER DEFAULT 0,
+                last_apply_error TEXT,
+                last_apply_attempt_at INTEGER,
+                applied_expire INTEGER,
+
+                manual_review_reason TEXT,
+                manual_review_at INTEGER,
+                resolved_by_admin_at INTEGER,
+
+                expires_at INTEGER NOT NULL,
+
+                created_at INTEGER NOT NULL,
+                paid_at INTEGER,
+                plan_committed_at INTEGER,
+                applied_at INTEGER,
+                refunded_at INTEGER
+            );
+
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -224,6 +285,16 @@ class Database:
                 ON mgmt_codes(expires_at);
             CREATE INDEX IF NOT EXISTS idx_mgmt_sessions_expires
                 ON mgmt_sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_stars_invoices_status
+                ON stars_invoices(status);
+            CREATE INDEX IF NOT EXISTS idx_stars_invoices_created_by
+                ON stars_invoices(created_by_telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_stars_invoices_payer
+                ON stars_invoices(payer_telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_stars_invoices_username
+                ON stars_invoices(marzban_username);
+            CREATE INDEX IF NOT EXISTS idx_stars_invoices_charge_id
+                ON stars_invoices(telegram_payment_charge_id);
         """)
         self._conn.commit()
 
@@ -1250,3 +1321,393 @@ class Database:
         if not row or row["expires_at"] < now:
             return None
         return dict(row)
+
+    # ------------------------------------------------------------------ stars_tariffs
+    #
+    # Admin-managed tariff catalog for Telegram Stars payments. The table is
+    # created empty (see _create_tables) and no code path ever seeds a
+    # default row — the owner creates tariffs manually via the admin panel
+    # (Phase 2 design doc §9).
+
+    def get_stars_tariffs(self) -> list:
+        """All tariffs (admin view), including inactive ones."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM stars_tariffs ORDER BY sort_order, id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_stars_tariffs(self) -> list:
+        """Active tariffs only (bot purchase-flow view). Empty by default."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM stars_tariffs WHERE active=1 ORDER BY sort_order, id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_stars_tariff(self, tariff_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM stars_tariffs WHERE id=?", (tariff_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_stars_tariff(self, data: dict) -> dict:
+        """Create (no 'id') or update (with 'id') a tariff. Never touches
+        already-created stars_invoices rows — those snapshot their own
+        tariff fields by value at invoice-creation time (§9)."""
+        now = int(time.time())
+        tariff_id = data.get("id")
+        with self._lock:
+            if tariff_id:
+                self._conn.execute(
+                    "UPDATE stars_tariffs SET name=?, duration_days=?, stars_price=?, "
+                    "active=?, sort_order=?, updated_at=? WHERE id=?",
+                    (
+                        data["name"], data["duration_days"], data["stars_price"],
+                        1 if data.get("active", True) else 0, data.get("sort_order", 0),
+                        now, tariff_id,
+                    ),
+                )
+            else:
+                max_order = self._conn.execute(
+                    "SELECT COALESCE(MAX(sort_order),0) FROM stars_tariffs"
+                ).fetchone()[0]
+                cur = self._conn.execute(
+                    "INSERT INTO stars_tariffs (name, duration_days, stars_price, active, "
+                    "sort_order, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        data["name"], data["duration_days"], data["stars_price"],
+                        1 if data.get("active", True) else 0,
+                        data.get("sort_order", max_order + 1), now, now,
+                    ),
+                )
+                tariff_id = cur.lastrowid
+            self._conn.commit()
+        return self.get_stars_tariff(tariff_id)
+
+    def delete_stars_tariff(self, tariff_id: int):
+        with self._lock:
+            self._conn.execute("DELETE FROM stars_tariffs WHERE id=?", (tariff_id,))
+            self._conn.commit()
+
+    def toggle_stars_tariff(self, tariff_id: int, active: bool):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE stars_tariffs SET active=? WHERE id=?", (1 if active else 0, tariff_id)
+            )
+            self._conn.commit()
+
+    def reorder_stars_tariffs(self, ordered_ids: list):
+        with self._lock:
+            for i, tid in enumerate(ordered_ids):
+                self._conn.execute("UPDATE stars_tariffs SET sort_order=? WHERE id=?", (i, tid))
+            self._conn.commit()
+
+    # ------------------------------------------------------------------ stars_invoices
+    #
+    # See Phase 2 design doc §3/§4 for the full state machine and the
+    # crash-safe durability rationale. Every state transition below is a
+    # single `UPDATE ... WHERE status IN (...)` compare-and-set, mirroring
+    # exchange_mgmt_code above — cur.rowcount == 0 always means "someone/
+    # something else already moved this row", never an error to retry.
+
+    @staticmethod
+    def _stars_invoice_row_to_dict(row) -> dict | None:
+        return dict(row) if row else None
+
+    def create_stars_invoice(
+        self,
+        created_by_telegram_id: int,
+        marzban_username: str,
+        tariff_id: int | None,
+        tariff_name: str,
+        duration_days: int,
+        stars_price: int,
+        ttl_seconds: int = STARS_INVOICE_TTL_SECONDS,
+    ) -> dict:
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO stars_invoices (
+                    created_by_telegram_id, marzban_username, tariff_id, tariff_name,
+                    duration_days, stars_price, status, expires_at, created_at
+                ) VALUES (?,?,?,?,?,?,'created',?,?)
+                """,
+                (
+                    created_by_telegram_id, marzban_username, tariff_id, tariff_name,
+                    duration_days, stars_price, now + ttl_seconds, now,
+                ),
+            )
+            self._conn.commit()
+            invoice_id = cur.lastrowid
+        self.log_audit_event(
+            AUDIT_EVENT_INVOICE_CREATED, telegram_id=created_by_telegram_id,
+            marzban_username=marzban_username,
+            metadata={"invoice_id": invoice_id, "tariff_name": tariff_name,
+                      "duration_days": duration_days, "stars_price": stars_price},
+        )
+        return self.get_invoice(invoice_id)
+
+    def get_invoice(self, invoice_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM stars_invoices WHERE id=?", (invoice_id,)
+            ).fetchone()
+        return self._stars_invoice_row_to_dict(row)
+
+    def get_invoice_by_charge_id(self, charge_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM stars_invoices WHERE telegram_payment_charge_id=?", (charge_id,)
+            ).fetchone()
+        return self._stars_invoice_row_to_dict(row)
+
+    def mark_invoice_paid(
+        self,
+        invoice_id: int,
+        telegram_payment_charge_id: str,
+        provider_payment_charge_id: str | None,
+        payer_telegram_id: int,
+        total_amount: int,
+    ) -> bool:
+        """created -> paid. False means this row/charge was already recorded
+        (Telegram's at-least-once delivery, or a genuine duplicate) — a safe
+        no-op, never re-notify or re-apply from the caller."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='paid', "
+                "telegram_payment_charge_id=?, provider_payment_charge_id=?, "
+                "payer_telegram_id=?, total_amount=?, paid_at=? "
+                "WHERE id=? AND status='created' AND telegram_payment_charge_id IS NULL",
+                (telegram_payment_charge_id, provider_payment_charge_id,
+                 payer_telegram_id, total_amount, now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_SUCCESSFUL, telegram_id=payer_telegram_id,
+                metadata={"invoice_id": invoice_id, "total_amount": total_amount,
+                          "charge_id": telegram_payment_charge_id},
+            )
+        return ok
+
+    def mark_invoice_paid_but_ambiguous(
+        self,
+        invoice_id: int,
+        charge_id: str,
+        payer_telegram_id: int,
+        total_amount: int,
+        reason: str,
+    ) -> bool:
+        """created -> manual_review directly, recording the payment fields
+        that were captured even though the normal `paid` state was skipped —
+        used when successful_payment's own re-validation (currency/amount)
+        disagrees with the invoice row (§4.1/§8.2). Money already moved, so
+        this must never be silently dropped."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='manual_review', "
+                "telegram_payment_charge_id=?, payer_telegram_id=?, total_amount=?, "
+                "paid_at=?, manual_review_reason=?, manual_review_at=? "
+                "WHERE id=? AND status='created'",
+                (charge_id, payer_telegram_id, total_amount, now, reason, now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_MANUAL_REVIEW, telegram_id=payer_telegram_id,
+                metadata={"invoice_id": invoice_id, "reason": reason, "total_amount": total_amount},
+            )
+        return ok
+
+    def get_pending_apply_invoices(self) -> list:
+        """Rows the apply-worker still needs to act on, ordered so that for
+        any given marzban_username the earliest (head-of-line) row comes
+        first — later rows for the same username are naturally left parked
+        (never picked up) until the head resolves to a terminal state or
+        genuinely-safe-to-retry-next-tick state (§5.1)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM stars_invoices WHERE status IN ('paid','plan_committed') "
+                "ORDER BY marzban_username, id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def commit_apply_plan(self, invoice_id: int, base_expire_observed: int, target_expire: int) -> bool:
+        """paid -> plan_committed. The single most important write in this
+        design — durably records the ABSOLUTE target before any Marzban
+        mutation is attempted (§4.2)."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='plan_committed', "
+                "base_expire_observed=?, target_expire=?, plan_committed_at=? "
+                "WHERE id=? AND status='paid'",
+                (base_expire_observed, target_expire, now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_PLAN_COMMITTED,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id, "base_expire_observed": base_expire_observed,
+                          "target_expire": target_expire},
+            )
+        return ok
+
+    def mark_invoice_applied(self, invoice_id: int, applied_expire: int) -> bool:
+        """plan_committed -> applied. Terminal, success."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='applied', applied_expire=?, applied_at=? "
+                "WHERE id=? AND status='plan_committed'",
+                (applied_expire, now, invoice_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def mark_invoice_manual_review(self, invoice_id: int, reason: str) -> bool:
+        """paid or plan_committed -> manual_review. Used both by the
+        eligibility re-check at plan-commit time (from 'paid') and by the
+        3-case recovery comparison's ambiguous case 3 (from
+        'plan_committed') — §4.2."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='manual_review', "
+                "manual_review_reason=?, manual_review_at=? "
+                "WHERE id=? AND status IN ('paid','plan_committed')",
+                (reason, now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_MANUAL_REVIEW,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id, "reason": reason},
+            )
+        return ok
+
+    def mark_invoice_apply_failed(self, invoice_id: int, reason: str) -> bool:
+        """paid or plan_committed -> apply_failed_user_missing /
+        apply_retry_exhausted, depending on `reason` ('user_missing' or
+        'retry_exhausted'). Terminal-ish, needs operator action."""
+        status = "apply_failed_user_missing" if reason == "user_missing" else "apply_retry_exhausted"
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE stars_invoices SET status='{status}' "
+                "WHERE id=? AND status IN ('paid','plan_committed')",
+                (invoice_id,),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok and status == "apply_retry_exhausted":
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id},
+            )
+        return ok
+
+    def record_apply_attempt_failure(self, invoice_id: int, error: str) -> bool:
+        """Records a transient failure attempting to reach/confirm
+        target_expire. Does NOT change status — the row stays 'paid' or
+        'plan_committed' and is retried next tick (or picked up fresh after
+        a crash/restart), fully safe either way."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET apply_attempts=apply_attempts+1, "
+                "last_apply_error=?, last_apply_attempt_at=? "
+                "WHERE id=? AND status IN ('paid','plan_committed')",
+                (error[:500] if error else None, now, invoice_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def list_stars_invoices(self, status: str | None = None, limit: int = 200) -> list:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM stars_invoices WHERE status=? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM stars_invoices ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_manual_review_confirm_applied(self, invoice_id: int, applied_expire: int) -> bool:
+        """Operator action: 'Confirm applied'. WHERE status IN
+        ('manual_review','apply_retry_exhausted') -> 'applied'. The caller
+        (admin route) is responsible for performing the fresh get_user
+        itself and passing that live value in as `applied_expire` — this
+        method does no Marzban I/O (§4.4)."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='applied', applied_expire=?, "
+                "applied_at=?, resolved_by_admin_at=? "
+                "WHERE id=? AND status IN ('manual_review','apply_retry_exhausted')",
+                (applied_expire, now, now, invoice_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def resolve_manual_review_requeue(self, invoice_id: int) -> bool:
+        """Operator action: 'Requeue'. WHERE status IN
+        ('manual_review','apply_retry_exhausted') -> 'plan_committed' — the
+        worker retries with the SAME previously-committed target_expire,
+        never a recomputed one."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='plan_committed', resolved_by_admin_at=? "
+                "WHERE id=? AND status IN ('manual_review','apply_retry_exhausted')",
+                (now, invoice_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def mark_invoice_refunded(self, invoice_id: int) -> bool:
+        """Operator action: 'Refund'. WHERE status IN ('applied',
+        'manual_review','apply_retry_exhausted','apply_failed_user_missing')
+        -> 'refunded'. The caller is responsible for having already called
+        refundStarPayment(payer_telegram_id, telegram_payment_charge_id)
+        successfully before invoking this — this method only records the
+        outcome locally."""
+        now = int(time.time())
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE stars_invoices SET status='refunded', refunded_at=?, resolved_by_admin_at=? "
+                "WHERE id=? AND status IN "
+                "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing')",
+                (now, now, invoice_id),
+            )
+            self._conn.commit()
+            ok = cur.rowcount == 1
+        if ok:
+            row = self.get_invoice(invoice_id)
+            self.log_audit_event(
+                AUDIT_EVENT_REFUND,
+                telegram_id=row["payer_telegram_id"] if row else None,
+                marzban_username=row["marzban_username"] if row else None,
+                metadata={"invoice_id": invoice_id},
+            )
+        return ok

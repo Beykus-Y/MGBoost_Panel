@@ -168,6 +168,7 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
         return
 
     from .bot_support import setup_support_handlers
+    from .stars import apply_pending_payments_loop
 
     if proxy_url:
         proxy = proxy_url.replace("socks5h://", "socks5://")
@@ -182,13 +183,18 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
 
     shared_states: dict = {}
     shared_names: dict = {}
+    stars_trigger = asyncio.Event()
 
     dp = Dispatcher(storage=MemoryStorage())
-    setup_support_handlers(dp, db, marzban, node_states=shared_states, node_names=shared_names)
+    setup_support_handlers(dp, db, marzban, node_states=shared_states, node_names=shared_names,
+                            stars_trigger=stars_trigger)
 
     monitor_task = asyncio.create_task(
         _monitor_loop(bot, channel_id, db, marzban, stop_event,
                       shared_states=shared_states, shared_names=shared_names)
+    )
+    stars_task = asyncio.create_task(
+        apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_event=stars_trigger)
     )
     stop_watcher = asyncio.create_task(_wait_stop(stop_event))
 
@@ -196,6 +202,7 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
         await asyncio.gather(
             dp.start_polling(bot, handle_signals=False),
             monitor_task,
+            stars_task,
             stop_watcher,
             return_exceptions=True,
         )

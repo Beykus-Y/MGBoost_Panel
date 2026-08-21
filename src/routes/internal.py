@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -6,6 +7,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..http_utils import error_response, json_response, read_body
 from ..marzban import MarzbanClient
+from ..marzban_lock import marzban_user_locks
 
 _client = MarzbanClient()
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,128}$")
@@ -178,6 +180,66 @@ def _validate_renew_payload(data):
     return payload
 
 
+def _get_bot_loop(handler):
+    """The bot thread's own asyncio event loop, if the bot is currently
+    running — the one place an asyncio.Lock naturally lives in this
+    process (mirrors admin.py's _send_ticket_notification cross-thread
+    pattern, applied to lock acquire/release instead of a notification
+    send). Returns None if the bot isn't running, e.g. disabled/stopped —
+    in that case there is no other in-process writer to coordinate with,
+    so callers degrade to a no-op lock rather than failing the request."""
+    runner = getattr(getattr(handler, "server", None), "bot_runner", None)
+    if not runner:
+        return None
+    loop = getattr(runner, "_loop", None)
+    if not loop or not loop.is_running():
+        return None
+    return loop
+
+
+class _NullLockCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _CrossThreadLockCtx:
+    def __init__(self, lock, loop):
+        self._lock = lock
+        self._loop = loop
+
+    def __enter__(self):
+        asyncio.run_coroutine_threadsafe(self._lock.acquire(), self._loop).result(timeout=10)
+        return self
+
+    def __exit__(self, *exc):
+        # release() is synchronous once scheduled on the owning loop; we
+        # don't need to wait for the result to unblock this thread, but we
+        # do want to surface a scheduling failure rather than silently
+        # leaking a held lock.
+        asyncio.run_coroutine_threadsafe(self._release(), self._loop).result(timeout=10)
+        return False
+
+    async def _release(self):
+        self._lock.release()
+
+
+def _lock_marzban_username(handler, username: str):
+    """Acquire the shared per-username critical-section lock (see
+    marzban_lock.py, design doc §5.2) for the full span of this handler's
+    read-decide-write sequence against Marzban, so the Stars apply-worker
+    (running inside the bot thread's loop) cannot interleave with this
+    external renewal. Returns a context manager; a no-op one if the bot
+    thread isn't running (nothing else in-process to race against)."""
+    loop = _get_bot_loop(handler)
+    if loop is None:
+        return _NullLockCtx()
+    lock = marzban_user_locks.get(username)
+    return _CrossThreadLockCtx(lock, loop)
+
+
 def handle_internal_status(handler):
     db = handler.server.db
     admin_token = _get_admin_token(handler)
@@ -312,27 +374,28 @@ def handle_internal_user_renew(handler, username):
         return
 
     update_payload = {}
-    if "add_days" in payload:
-        try:
-            user = _client.get_user(username, admin_token)
-        except Exception as exc:
-            _marzban_error(handler, exc, f"Could not load user {username}")
-            return
-        current_expire = user.get("expire") or 0
-        base = max(int(current_expire or 0), int(time.time()))
-        update_payload["expire"] = base + payload["add_days"] * 86400
-    if "expire" in payload:
-        update_payload["expire"] = payload["expire"]
-    if "data_limit" in payload:
-        update_payload["data_limit"] = payload["data_limit"] or None
-    if "status" in payload:
-        update_payload["status"] = payload["status"]
+    with _lock_marzban_username(handler, username):
+        if "add_days" in payload:
+            try:
+                user = _client.get_user(username, admin_token)
+            except Exception as exc:
+                _marzban_error(handler, exc, f"Could not load user {username}")
+                return
+            current_expire = user.get("expire") or 0
+            base = max(int(current_expire or 0), int(time.time()))
+            update_payload["expire"] = base + payload["add_days"] * 86400
+        if "expire" in payload:
+            update_payload["expire"] = payload["expire"]
+        if "data_limit" in payload:
+            update_payload["data_limit"] = payload["data_limit"] or None
+        if "status" in payload:
+            update_payload["status"] = payload["status"]
 
-    try:
-        user = _client.modify_user(username, update_payload, admin_token)
-    except Exception as exc:
-        _marzban_error(handler, exc, f"Could not renew user {username}")
-        return
+        try:
+            user = _client.modify_user(username, update_payload, admin_token)
+        except Exception as exc:
+            _marzban_error(handler, exc, f"Could not renew user {username}")
+            return
 
     json_response(handler, 200, user)
 

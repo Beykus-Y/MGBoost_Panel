@@ -293,7 +293,8 @@ def build_system_prompt(db) -> str:
     return SYSTEM_PROMPT + "\n\n" + DEFAULT_FAQ
 
 
-def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None):
+def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None,
+                            stars_trigger=None):
     try:
         from aiogram import F
         from aiogram.filters import CommandStart, StateFilter
@@ -304,13 +305,17 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             InlineKeyboardButton,
             InlineKeyboardMarkup,
             KeyboardButton,
+            LabeledPrice,
             Message,
+            PreCheckoutQuery,
             ReplyKeyboardMarkup,
             ReplyKeyboardRemove,
         )
     except ImportError:
         logger.error("aiogram не установлен — поддержка не запустится")
         return
+
+    from .stars import _check_stars_eligibility
 
     class SupportStates(StatesGroup):
         waiting_link = State()
@@ -322,9 +327,20 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             keyboard=[
                 [KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")],
                 [KeyboardButton(text="🔧 Управление устройствами")],
+                [KeyboardButton(text="⭐️ Продлить подписку")],
             ],
             resize_keyboard=True,
         )
+
+    def kb_tariffs(tariffs: list):
+        rows = [
+            [InlineKeyboardButton(
+                text=f"{t['name']} — {t['duration_days']} дн. — {t['stars_price']} ⭐️",
+                callback_data=f"stars_buy:{t['id']}",
+            )]
+            for t in tariffs
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def kb_waiting():
         return ReplyKeyboardMarkup(
@@ -443,6 +459,183 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             "Откройте её в браузере, чтобы переименовывать или отключать устройства. "
             "Если ссылка истечёт — запросите новую здесь же.",
         )
+
+    @dp.message(SupportStates.in_dialog, F.text == "⭐️ Продлить подписку")
+    async def msg_stars_menu(message: Message, state: FSMContext):
+        tg_user = db.get_tg_user(message.from_user.id)
+        if not tg_user:
+            await state.set_state(SupportStates.waiting_link)
+            await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
+            return
+
+        if db.get_setting("stars:enabled") != "1":
+            await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
+            return
+
+        tariffs = db.get_active_stars_tariffs()
+        if not tariffs:
+            await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
+            return
+
+        try:
+            admin_token = await _run_sync(marzban.get_admin_token_from_env)
+            user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
+        except Exception as e:
+            logger.error(f"Ошибка получения подписки для Stars-меню: {e}")
+            await message.answer("Не удалось получить информацию о подписке. Попробуйте позже.")
+            return
+
+        ok, reason = _check_stars_eligibility(user_info)
+        if not ok:
+            if reason == "unlimited":
+                await message.answer("У вас безлимитный тариф — покупка через Stars недоступна.")
+            else:
+                await message.answer("Ваша подписка приостановлена — обратитесь в поддержку.")
+            return
+
+        await message.answer("Выберите тариф:", reply_markup=kb_tariffs(tariffs))
+
+    @dp.callback_query(F.data.startswith("stars_buy:"))
+    async def cb_stars_buy(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        tg_user = db.get_tg_user(call.from_user.id)
+        if not tg_user:
+            await call.message.answer("Нужно сначала привязать подписку.")
+            return
+
+        if db.get_setting("stars:enabled") != "1":
+            await call.message.answer("Продление через Stars временно недоступно.")
+            return
+
+        try:
+            tariff_id = int(call.data.split(":", 1)[1])
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+
+        tariff = db.get_stars_tariff(tariff_id)
+        if not tariff or not tariff.get("active"):
+            await call.message.answer("Тариф больше не доступен.")
+            return
+
+        username = tg_user["marzban_username"]
+
+        # Defense-in-depth re-check: a stale button tap after the account's
+        # state changed between menu render and tap (§8 step 4).
+        try:
+            admin_token = await _run_sync(marzban.get_admin_token_from_env)
+            user_info = await _run_sync(marzban.get_user, username, admin_token)
+        except Exception as e:
+            logger.error(f"Ошибка проверки перед созданием счёта: {e}")
+            await call.message.answer("Не удалось создать счёт. Попробуйте позже.")
+            return
+
+        ok, reason = _check_stars_eligibility(user_info)
+        if not ok:
+            if reason == "unlimited":
+                await call.message.answer("У вас безлимитный тариф — покупка через Stars недоступна.")
+            else:
+                await call.message.answer("Ваша подписка приостановлена — обратитесь в поддержку.")
+            return
+
+        invoice = db.create_stars_invoice(
+            created_by_telegram_id=tg_user["telegram_id"],
+            marzban_username=username,
+            tariff_id=tariff["id"],
+            tariff_name=tariff["name"],
+            duration_days=tariff["duration_days"],
+            stars_price=tariff["stars_price"],
+        )
+
+        try:
+            await call.message.bot.send_invoice(
+                chat_id=call.from_user.id,
+                title=f"Продление подписки ({username})",
+                description=f"{tariff['name']} — {tariff['duration_days']} дней",
+                payload=str(invoice["id"]),
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(label=tariff["name"], amount=tariff["stars_price"])],
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить счёт: {e}")
+            await call.message.answer("Не удалось создать счёт. Попробуйте позже.")
+
+    @dp.pre_checkout_query()
+    async def on_pre_checkout(query: PreCheckoutQuery):
+        try:
+            invoice_id = int(query.invoice_payload)
+        except (ValueError, TypeError):
+            await query.answer(ok=False, error_message="Неверные данные счёта.")
+            return
+        row = db.get_invoice(invoice_id)
+        if row is None:
+            await query.answer(ok=False, error_message="Счёт не найден.")
+            return
+        if row["status"] != "created":
+            await query.answer(ok=False, error_message="Счёт уже недействителен.")
+            return
+        if query.currency != "XTR":
+            await query.answer(ok=False, error_message="Неподдерживаемая валюта.")
+            return
+        if query.total_amount != row["stars_price"]:
+            await query.answer(ok=False, error_message="Сумма не совпадает.")
+            return
+        if int(time.time()) > row["expires_at"]:
+            await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
+            return
+        await query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def on_successful_payment(message: Message, state: FSMContext):
+        sp = message.successful_payment
+        try:
+            invoice_id = int(sp.invoice_payload)
+        except (ValueError, TypeError):
+            db.log_audit_event("payment_failed", metadata={
+                "reason": "invalid_payload", "charge_id": sp.telegram_payment_charge_id,
+                "payer": message.from_user.id,
+            })
+            return
+
+        payer_telegram_id = message.from_user.id
+
+        row = db.get_invoice(invoice_id)
+        if row is None:
+            db.log_audit_event("payment_failed", metadata={
+                "reason": "invoice_not_found", "invoice_id": invoice_id,
+                "charge_id": sp.telegram_payment_charge_id, "payer": payer_telegram_id,
+            })
+            await _notify_admin_orphan_payment(message.bot, db, sp, payer_telegram_id)
+            return
+
+        if row["status"] != "created":
+            # Telegram's own at-least-once delivery, or a genuine duplicate —
+            # the UNIQUE charge_id + WHERE status='created' compare-and-set
+            # below makes this a safe no-op either way.
+            return
+
+        if sp.currency != "XTR" or sp.total_amount != row["stars_price"]:
+            db.mark_invoice_paid_but_ambiguous(
+                invoice_id, charge_id=sp.telegram_payment_charge_id,
+                payer_telegram_id=payer_telegram_id, total_amount=sp.total_amount,
+                reason="amount_or_currency_mismatch",
+            )
+            from .stars import notify_admin_stuck_payment
+            await notify_admin_stuck_payment(message.bot, db, db.get_invoice(invoice_id))
+            return
+
+        ok = db.mark_invoice_paid(
+            invoice_id,
+            telegram_payment_charge_id=sp.telegram_payment_charge_id,
+            provider_payment_charge_id=sp.provider_payment_charge_id,
+            payer_telegram_id=payer_telegram_id,
+            total_amount=sp.total_amount,
+        )
+        if ok:
+            await message.answer("Оплата получена! Продлеваем подписку…")
+            if stars_trigger is not None:
+                stars_trigger.set()
 
     @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
     async def msg_call_human(message: Message, state: FSMContext):
@@ -570,6 +763,24 @@ async def _notify_admin(bot, db, telegram_id: int, username: str | None):
         )
     except Exception as e:
         logger.warning(f"Не удалось уведомить admin: {e}")
+
+
+async def _notify_admin_orphan_payment(bot, db, sp, payer_telegram_id: int):
+    """A successful_payment arrived for an invoice_id we have no row for at
+    all (should be unreachable given invoice_payload is always our own
+    row id, but money has moved — never silently drop it)."""
+    admin_tg_id = db.get_setting("bot:admin_tg_id")
+    if not admin_tg_id:
+        return
+    try:
+        await bot.send_message(
+            int(admin_tg_id),
+            "⚠️ Платёж Stars без соответствующего счёта в БД!\n"
+            f"charge_id: {sp.telegram_payment_charge_id}\n"
+            f"payer: {payer_telegram_id}, amount: {sp.total_amount}",
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить admin об orphan-платеже: {e}")
 
 
 async def notify_ticket_closed(bot, telegram_id: int, state_storage=None):

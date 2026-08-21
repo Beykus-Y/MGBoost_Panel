@@ -42,6 +42,9 @@
     <div class="nav-item" onclick="showPage('tickets')" data-page="tickets">
       <span class="nav-icon">🎫</span> Тикеты
     </div>
+    <div class="nav-item" onclick="showPage('stars')" data-page="stars">
+      <span class="nav-icon">⭐️</span> Stars
+    </div>
     <div class="nav-item" onclick="showPage('settings')" data-page="settings">
       <span class="nav-icon">⚙</span> Настройки
     </div>
@@ -239,6 +242,84 @@
               <tr><td colspan="6"><div class="loading"><span class="spinner"></span></div></td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TELEGRAM STARS -->
+    <div class="page" id="page-stars">
+      <div class="page-header">
+        <span class="page-title">Telegram Stars</span>
+      </div>
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('tab-stars-tariffs',this)">Тарифы</div>
+        <div class="tab" onclick="switchTab('tab-stars-payments',this)">Платежи</div>
+      </div>
+
+      <div class="tab-content active" id="tab-stars-tariffs">
+        <div class="card">
+          <div class="card-title">Оплата через Stars</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <label style="margin:0">Включить оплату через Telegram Stars</label>
+            <input type="checkbox" id="stars-enabled" onchange="saveStarsSettings()" style="width:auto" />
+          </div>
+          <div style="font-size:12px;color:var(--text3)">
+            По умолчанию выключено. Пока не добавлен хотя бы один тариф, кнопка «⭐️ Продлить подписку» в боте недоступна пользователям.
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Тарифы</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Название</th><th>Дней</th><th>Цена, ⭐️</th><th>Активен</th><th></th></tr>
+              </thead>
+              <tbody id="stars-tariffs-tbody">
+                <tr><td colspan="5"><div class="loading"><span class="spinner"></span></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="form-row" style="margin-top:14px">
+            <div><label>Название</label><input type="text" id="new-tariff-name" maxlength="64" placeholder="1 месяц" style="width:100%" /></div>
+            <div><label>Дней</label><input type="number" id="new-tariff-days" min="1" style="width:100%" /></div>
+            <div><label>Цена, ⭐️</label><input type="number" id="new-tariff-price" min="1" style="width:100%" /></div>
+          </div>
+          <button class="primary" style="margin-top:10px" onclick="addStarsTariff()">Добавить тариф</button>
+          <div style="font-size:12px;color:var(--text3);margin-top:8px">
+            Цены — на усмотрение оператора, справочно: 350 ₽ по курсу Fragment (~$0.013/★) — около 320 ⭐️. Изменение или удаление тарифа не влияет на уже созданные счета (снапшот).
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-stars-payments">
+        <div class="card">
+          <div class="page-actions" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+            <select id="stars-payments-filter" onchange="loadStarsPayments(this.value)" style="width:220px">
+              <option value="">Все статусы</option>
+              <option value="created">created</option>
+              <option value="paid">paid</option>
+              <option value="plan_committed">plan_committed</option>
+              <option value="applied">applied</option>
+              <option value="manual_review">manual_review</option>
+              <option value="apply_failed_user_missing">apply_failed_user_missing</option>
+              <option value="apply_retry_exhausted">apply_retry_exhausted</option>
+              <option value="refunded">refunded</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th><th>Username</th><th>Тариф</th><th>Статус</th>
+                  <th>created_by</th><th>payer</th>
+                  <th>base→target</th><th>applied</th><th>Причина</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="stars-payments-tbody">
+                <tr><td colspan="10"><div class="loading"><span class="spinner"></span></div></td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
