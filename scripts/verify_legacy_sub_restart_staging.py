@@ -220,6 +220,18 @@ def main():
                 assert filin_status == 201
                 filin_created = True
                 filin_identity = identity_snapshot(filin_user)
+                filin_old_url = filin_user.get("subscription_url") or ""
+                filin_old_token = filin_old_url.rstrip("/").rsplit("/", 1)[-1]
+                filin_uuid = (filin_user.get("proxies") or {}).get("vless", {}).get("id")
+                if not filin_old_token or filin_old_token == filin_old_url or not filin_uuid:
+                    raise AssertionError("Synthetic Filin user lacks legacy identity")
+
+                # Marzban's current subscription_url contains a timestamped
+                # legacy token and may advance when expire is updated.  Force
+                # that boundary and verify the user-facing contract instead:
+                # the already-issued alias must keep resolving to the same
+                # UUID/config, so no client reconfiguration is required.
+                time.sleep(1.05)
                 renew_status, renewed = filin_request(
                     f"http://127.0.0.1:{listen_port}", "POST",
                     f"/internal/v1/users/{filin_name}/renew",
@@ -236,7 +248,30 @@ def main():
                         f"status={renew_status}, data_limit={renewed.get('data_limit')!r}, "
                         f"response_keys={sorted(renewed)}"
                     )
-                assert identity_snapshot(marzban.get_user(filin_name, admin_token)) == filin_identity
+                filin_identity_after = identity_snapshot(
+                    marzban.get_user(filin_name, admin_token)
+                )
+                protected_fields = ("proxies", "inbounds")
+                if any(
+                    filin_identity_after.get(key) != filin_identity.get(key)
+                    for key in protected_fields
+                ):
+                    changed_fields = sorted(
+                        key for key in protected_fields
+                        if filin_identity.get(key) != filin_identity_after.get(key)
+                    )
+                    raise AssertionError(
+                        "Filin renew changed protected identity fields: "
+                        f"{changed_fields}"
+                    )
+                old_alias_body, _ = marzban.get_sub(
+                    filin_old_token, {"User-Agent": "Happ/PH1-07"}
+                )
+                old_alias_decoded = base64.b64decode(old_alias_body).decode("utf-8")
+                if filin_uuid not in old_alias_decoded:
+                    raise AssertionError(
+                        "Legacy Filin alias stopped resolving the original UUID after renew"
+                    )
                 delete_status, deleted = filin_request(
                     f"http://127.0.0.1:{listen_port}", "DELETE",
                     f"/internal/v1/users/{filin_name}", None,

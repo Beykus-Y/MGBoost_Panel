@@ -315,11 +315,13 @@ Stars и RUB — независимые утверждённые retail price ta
 **Implemented/deployed:** application request/error logs redact `/sub/{token}` and all query values; LK accepts legacy query bookmarks once, removes the bearer from browser URL state and uses a same-origin header for subsequent API calls; subscription/LK responses set `no-store` and `no-referrer`; browser subscription external links use `noreferrer`. `sub_requests`, `user_devices` and `hysteria_stats` keys use stable `sha256:<hex>` references. Controlled production migration atomically converted 198 raw request rows and 71 raw device rows (Hysteria rows: 0), leaving 0 raw rows, without rotating/revoking Marzban bearers or changing device identity. Daily root-only AES-256 GnuPG encrypted backups perform immediate isolated decrypt/checksum/SQLite quick-check and enforce 90-day controlled retention; timer is enabled. Exactly one encrypted quarantine snapshot passed restore verification and is retained 180 days. Nginx sensitive routes/HTTP redirects log a fixed redacted target without query/Referer/User-Agent; nginx and journald sensitive retention is 30 days.
 **Acceptance evidence/tests:** full regression `391 passed, 1 skipped`; `systemd-analyze verify` accepted backup units. Two encrypted DB artifacts (pre/post migration) and the one quarantine artifact passed isolated restore; keys/artifacts are `0600 root:root`. Fake bearer exercised legacy `/sub`, old LK query and new LK header flows; strict post-cutover byte-tail scan found 0 raw matches in nginx access/error/sensitive logs and application journal, 0 raw active DB rows and 0 raw matches in the encrypted artifact. One earlier known bearer match was timestamped before quarantine/nginx cutover and remains classified retained legacy evidence. Final production gate: 6/6 broker reads, frozen legacy alias/config/UUID/expiry, admin/LK/Stars/Filin and nginx/systemd healthy; exact masked snapshot matched for 25 users, 71 device rows and 71 HWID locks with 0 fetch errors/warnings and 0 Marzban mutation operations. UUID, subscription URL/token, HWID, expiry, tariff and functional config changes caused by deployment: 0. User credential rotation/reissue remains Phase 4.
 
-## [ ] PH1-07 — Patch applicable dependency DoS via staging — P2
+## [~] PH1-07 — Patch applicable dependency DoS via staging — P2
 
 **Scope:** Marzban `python-multipart 0.0.7`, MGBoost `aiohttp 3.10.11`, transitive inventory.
 **Accept/tests:** patched immutable build; advisory payload/load/soak; Telegram/OpenRouter/proxy integration.
 **Migration/rollback:** staging only first; no production in-place package upgrade; previous image digest retained.
+**Implemented/staging verified 2026-08-24:** exact Marzban 0.8.4 base digest overlays only hash-pinned `python-multipart 0.0.32`; MGBoost target is a separate hash-locked/root-owned Python 3.10 runtime with `aiohttp 3.14.3`, `aiogram 3.30.0` and `aiohttp-socks 0.12.0`. Local suite `396 passed, 1 skipped`; isolated Python 3.10 suite `395 passed, 2 skipped`; both target locks have 0 known advisories. All-10 broker operations, legacy alias/UUID/config continuity across forced renewal timestamp boundary, MGBoost/broker restart, Filin and 100-login/parser load passed against baseline and target localhost-only VLESS containers. Telegram `getMe` through current SOCKS proxy passed. OpenRouter completion returned the same pre-existing HTTP 403 on old/new runtimes, so no dependency regression exists but external authorization remains residual. Runbook/evidence: `docs/PHASE1_DEPENDENCY_HARDENING.md`.
+**Remaining before `[x]`:** production masked pre-state, immutable venv/image cutover, service/config gate, exact post-state comparison and rollback verification. PH1-08 must not start before this gate passes.
 
 ## [ ] PH1-08 — Remove password from Marzban login notifications — P2
 
@@ -516,9 +518,9 @@ Stars и RUB — независимые утверждённые retail price ta
 
 ## [ ] PH5-02 — 30/60-day entitlement and WL-period semantics
 
-**Depends:** PH5-01, PH6 period interface. **Policy:** 60d = two sequential 30d WL periods; Non-WL unlimited.
-**Accept:** purchase creates expiry/schedule without resetting WL on plain expiry admin action.
-**Tests:** boundary, second period starts once/fresh; timezone semantics explicit.
+**Depends:** PH5-01, PH6 period interface. **Policy:** 60d = two sequential 30d WL periods; Non-WL unlimited. По OPD-40/DL-044 повторная покупка того же plan — renewal с формулой `max(current_expiry, now) + purchased_duration`; накопленный срок создаёт последовательные 30-day WL periods, а не объединённый base quota.
+**Accept:** purchase создаёт expiry/schedule без сброса WL на plain expiry admin action; active subscription продлевается от current expiry, expired — от текущего момента; каждая успешно оплаченная покупка добавляет duration ровно один раз.
+**Tests:** boundary, second/следующие periods стартуют ровно один раз со fresh base quota; active/expired formula; repeated equal durations; timezone semantics explicit.
 **Rollback:** immutable scheduled periods/invoice snapshot preserved.
 
 ## [ ] PH5-03 — Versioned WL package catalog
@@ -538,8 +540,8 @@ Stars и RUB — независимые утверждённые retail price ta
 ## [ ] PH5-05 — Stars purchase + renewal
 
 **Depends:** PH5-01/04; сохранить текущие payer/currency/amount/CAS/refund/reconcile strengths.
-**Scope:** distinguish purchase/renewal, product version, outbox entitlement and child expiry sync.
-**Accept/tests:** no double grant; mismatches manual-review; crash recovery.
+**Scope:** distinguish purchase/renewal, product version, outbox entitlement and child expiry sync. Повторная покупка того же plan всегда renewal; покупка другого plan проходит PH5-06 и не использует stacking.
+**Accept/tests:** atomic/idempotent apply; repeated и concurrent successful payments каждого добавляют срок ровно один раз; duplicate callback не даёт double grant; crash/retry восстанавливает единственный apply; mismatches manual-review.
 **Migration:** old invoices остаются expire-only snapshots, не переинтерпретируются.
 
 ## [ ] PH5-06 — Upgrade/downgrade engine
@@ -573,9 +575,9 @@ Stars и RUB — независимые утверждённые retail price ta
 ## [ ] PH5-10 — Manual external-payment renewal of the same parent account
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
-**Scope:** admin-confirmed external payment extends the existing parent entitlement, synchronizes active child expiry, preserves slots/HWIDs/current WL period и UUID без revoke причины.
+**Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
 **Accept:** retry cannot create new parent/root user or double-add days; admin actor/payment/reference/channel recorded.
-**Tests:** concurrent Stars/admin/manual renew, duplicate reference, 12 children, remote partial failure.
+**Tests:** repeated same-duration purchase, concurrent Stars/admin/manual renew, duplicate callback/reference, crash/retry, 12 children, remote partial failure; каждый unique successful payment применяется ровно один раз.
 **Rollback:** durable target and reconciliation/compensation; never subtract guessed days or restore stale child state.
 
 # Phase 6 — WL quota
@@ -1091,6 +1093,13 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - C: заранее выданные recovery codes.
 - **Выбрано пользователем:** A. После successful rebind старый Telegram binding немедленно revoked. Parent account, plan, expiry, WL periods, traffic history, slots, HWIDs, child users и UUID сохраняются. HWID или possession subscription URL недостаточны как proof ownership. Rebind получает immutable audit с old/new Telegram ID, admin actor, reason и timestamp. При suspected compromise admin одновременно вращает opaque subscription token; при обычной смене Telegram token и UUID автоматически не меняются. Self-service recovery/codes не входят в rollout и требуют отдельного будущего решения.
 
+## OPD-40 — Subscription stacking одного plan — CLOSED 2026-08-24
+
+- A: повторная покупка того же plan является renewal и атомарно добавляет duration к `max(current_expiry, now)`; одинаковые durations можно покупать многократно.
+- B: новая покупка заменяет current expiry на duration от момента оплаты — теряется уже оплаченный остаток.
+- C: stacking запрещён до окончания текущей subscription — проще ledger, но блокирует легальное раннее продление.
+- **Выбрано пользователем:** A. Каждая unique successful payment добавляет срок ровно один раз; duplicate callback/retry не добавляет повторно. Накопленный срок не объединяет WL base quota: создаются последовательные 30-day WL periods. Отдельные WL packages продолжают rollover по OPD-02–04/DL-025. Покупка другого plan не является stacking и проходит upgrade/downgrade policy PH5-06.
+
 # Decision Log
 
 Каждая запись содержит дату, вопрос, варианты, выбранное, кто выбрал, почему и связи.
@@ -1486,6 +1495,16 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Почему:** уменьшить credential blast radius, не связывая emergency security с рискованной migration существующих VPN clients.
 - **Execution evidence:** `docs/PHASE1_BACKWARD_COMPATIBILITY.md`; production baseline/cutover 25 users/25 UUID, 71 active device/lock rows; `tests/test_phase1_legacy_compat.py`, `tests/test_marzban_broker.py` и два reproducible staging scripts. На 2026-08-24 all-10 direct-vs-broker staging, production read-only operations, outage/recovery/restart, Filin HMAC и exact legacy `/sub` contract gates пройдены; PH1-05 развернут с verdict SAFE TO DEPLOY FOR EXISTING USERS.
 - **Связано:** PH1-01/02/05/06, PH2-04, Phase 3/4, Filin HMAC integration, deployment/rollback runbooks.
+
+## DL-044 — Same-plan subscription stacking and renewal
+
+- **Дата:** 2026-08-24.
+- **Вопрос:** как повторная покупка того же plan влияет на expiry и последовательные WL periods.
+- **Варианты:** additive renewal от `max(current_expiry, now)`; replacement expiry от момента оплаты; запрет stacking до окончания subscription.
+- **Выбрано:** повторная покупка того же plan — renewal по формуле `max(current_expiry, now) + purchased_duration`. Одинаковые durations разрешено покупать несколько раз; каждая unique successful payment применяется атомарно и ровно один раз. Накопленный срок создаёт последовательные 30-day WL base periods, не единый quota pool. Package rollover не меняется. Другой plan обрабатывается только как upgrade/downgrade.
+- **Кто:** пользователь.
+- **Почему:** сохранить уже оплаченный срок, разрешить ранние и повторные продления и не нарушить утверждённую 30-day WL-period модель.
+- **Связано:** OPD-40, PH5-02/05/06/10, PH6-02/08; обязательные tests — repeated payment, concurrent payment, duplicate callback и crash/retry.
 
 # Contradictions and migration hazards
 

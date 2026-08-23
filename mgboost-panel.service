@@ -8,7 +8,7 @@ Type=simple
 User=mgboost
 Group=mgboost
 WorkingDirectory=/opt/MGBoost_Panel
-ExecStart=/usr/bin/python3 /opt/MGBoost_Panel/main.py
+ExecStart=/opt/mgboost-venvs/ph1-07/bin/python /opt/MGBoost_Panel/main.py
 EnvironmentFile=/opt/MGBoost_Panel/.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=on-failure
