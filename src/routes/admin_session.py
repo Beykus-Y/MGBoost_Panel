@@ -1,9 +1,10 @@
 import json
 
-from ..http_utils import read_body
+from ..http_utils import client_ip, read_body
 from ..marzban import MarzbanClient
 from ..security import (
     admin_session_cookie,
+    _ADMIN_LOGIN_LIMITER,
     create_admin_session,
     get_admin_session,
     get_admin_session_id,
@@ -15,13 +16,18 @@ from ..security import (
 _client = MarzbanClient()
 
 
-def _session_response(handler, status: int, data: dict, *, cookie: str | None = None):
+def _session_response(
+    handler, status: int, data: dict, *, cookie: str | None = None,
+    retry_after: int | None = None,
+):
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")
     if cookie is not None:
         handler.send_header("Set-Cookie", cookie)
+    if retry_after is not None:
+        handler.send_header("Retry-After", str(max(1, int(retry_after))))
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -63,6 +69,16 @@ def handle_admin_session_login(handler):
         _session_response(handler, 400, {"error": "Invalid credentials"})
         return
 
+    source_ip = client_ip(handler)
+    retry_after = _ADMIN_LOGIN_LIMITER.retry_after(source_ip, username)
+    if retry_after:
+        password = None
+        _session_response(
+            handler, 429, {"error": "Too many login attempts"},
+            retry_after=retry_after,
+        )
+        return
+
     try:
         marzban_token = _client.get_token(username, password)
     except Exception:
@@ -71,8 +87,11 @@ def handle_admin_session_login(handler):
         password = None
 
     if not marzban_token:
+        _ADMIN_LOGIN_LIMITER.record_failure(source_ip, username)
         _session_response(handler, 401, {"error": "Invalid credentials"})
         return
+
+    _ADMIN_LOGIN_LIMITER.record_success(source_ip, username)
 
     # Never reuse a caller-supplied id: a successful login always creates a
     # fresh server-side session and revokes any session already in the cookie.

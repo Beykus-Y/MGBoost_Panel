@@ -22,6 +22,7 @@
 - Прямые browser-вызовы Marzban заменены explicit server-side path/method broker; upstream auth failure отзывает локальную admin session, а legacy browser Bearer authentication больше не принимается.
 - Privileged service-интеграция Marzban вынесена в отдельный HMAC-authenticated localhost-only broker с десятью typed legacy operations и без generic proxy. Основной MGBoost в broker mode отклоняет Marzban SUDO credentials в своём environment; public legacy `/sub/{token}` остаётся прямым non-SUDO path.
 - Telegram Stars pre-checkout теперь fail-closed проверяет доступность и eligibility целевого Marzban user перед подтверждением новой оплаты; уже полученный `successful_payment` по-прежнему сначала сохраняется durable и остаётся retryable при outage.
+- Admin login получил failed-attempt rate limiting с отдельными IP+username/IP-spray budgets, `429`/`Retry-After`, validated proxy IP и bounded hashed in-memory keys; direct public Marzban `/api/admin/token` получил nginx `limit_req` deployment template.
 
 ### Changed
 

@@ -1,4 +1,5 @@
 import json
+import ipaddress
 
 
 def read_body(handler) -> bytes:
@@ -28,3 +29,19 @@ def error_response(handler, status: int, message: str, *, details: dict | None =
     if details:
         payload["details"] = details
     json_response(handler, status, payload)
+
+
+def client_ip(handler) -> str:
+    """Return a validated client IP, trusting X-Real-IP only from loopback nginx."""
+    try:
+        peer = str(handler.client_address[0])
+        peer_address = ipaddress.ip_address(peer)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return "0.0.0.0"
+    if peer_address.is_loopback:
+        forwarded = (handler.headers.get("X-Real-IP") or "").strip()
+        try:
+            return str(ipaddress.ip_address(forwarded)) if forwarded else peer
+        except ValueError:
+            return peer
+    return peer

@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from http.cookies import SimpleCookie
 
 from .config import (
+    ADMIN_LOGIN_RATE_IDENTITY_FAILURES,
+    ADMIN_LOGIN_RATE_IP_FAILURES,
+    ADMIN_LOGIN_RATE_WINDOW_SECONDS,
     ADMIN_SESSION_COOKIE_SECURE,
     ADMIN_SESSION_TTL_SECONDS,
     INTERNAL_API_ALLOWED_SKEW_SECONDS,
@@ -20,6 +23,8 @@ ADMIN_SESSION_COOKIE = "mgboost_admin"
 ADMIN_CSRF_HEADER = "X-CSRF-Token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _MAX_ADMIN_SESSIONS = 256
+_MAX_LOGIN_IDENTITIES = 4096
+_MAX_LOGIN_IPS = 1024
 
 
 @dataclass(frozen=True)
@@ -113,6 +118,88 @@ class AdminSessionStore:
 
 
 _ADMIN_SESSIONS = AdminSessionStore()
+
+
+class AdminLoginRateLimiter:
+    """Single-process sliding-window limiter for failed admin logins.
+
+    The current production server is intentionally single-process.  PH8-02
+    owns the future shared-state migration before any multi-worker rollout.
+    Usernames are represented only by SHA-256 digests in memory.
+    """
+
+    def __init__(
+        self, *, window_seconds=ADMIN_LOGIN_RATE_WINDOW_SECONDS,
+        identity_failures=ADMIN_LOGIN_RATE_IDENTITY_FAILURES,
+        ip_failures=ADMIN_LOGIN_RATE_IP_FAILURES,
+    ):
+        self.window_seconds = max(10, min(int(window_seconds), 3600))
+        self.identity_failures = max(1, min(int(identity_failures), 100))
+        self.ip_failures = max(self.identity_failures, min(int(ip_failures), 1000))
+        self._identities: dict[tuple[str, str], list[float]] = {}
+        self._ips: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _identity_key(ip: str, username: str) -> tuple[str, str]:
+        username_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()
+        return ip, username_hash
+
+    def _prune_bucket(self, bucket: list[float], now: float):
+        cutoff = now - self.window_seconds
+        bucket[:] = [timestamp for timestamp in bucket if timestamp > cutoff]
+
+    @staticmethod
+    def _evict_oldest(store: dict, maximum: int):
+        while len(store) >= maximum:
+            oldest = min(store.items(), key=lambda item: item[1][-1] if item[1] else 0)[0]
+            store.pop(oldest, None)
+
+    def retry_after(self, ip: str, username: str, *, now: float | None = None) -> int:
+        checked_at = time.time() if now is None else now
+        identity_key = self._identity_key(ip, username)
+        with self._lock:
+            identity = self._identities.get(identity_key, [])
+            ip_bucket = self._ips.get(ip, [])
+            self._prune_bucket(identity, checked_at)
+            self._prune_bucket(ip_bucket, checked_at)
+            if not identity:
+                self._identities.pop(identity_key, None)
+            if not ip_bucket:
+                self._ips.pop(ip, None)
+            blocked = []
+            if len(identity) >= self.identity_failures:
+                blocked.append(identity[0] + self.window_seconds)
+            if len(ip_bucket) >= self.ip_failures:
+                blocked.append(ip_bucket[0] + self.window_seconds)
+            if not blocked:
+                return 0
+            return max(1, int(max(blocked) - checked_at + 0.999))
+
+    def record_failure(self, ip: str, username: str, *, now: float | None = None):
+        failed_at = time.time() if now is None else now
+        identity_key = self._identity_key(ip, username)
+        with self._lock:
+            self._evict_oldest(self._identities, _MAX_LOGIN_IDENTITIES)
+            self._evict_oldest(self._ips, _MAX_LOGIN_IPS)
+            identity = self._identities.setdefault(identity_key, [])
+            ip_bucket = self._ips.setdefault(ip, [])
+            self._prune_bucket(identity, failed_at)
+            self._prune_bucket(ip_bucket, failed_at)
+            identity.append(failed_at)
+            ip_bucket.append(failed_at)
+
+    def record_success(self, ip: str, username: str):
+        with self._lock:
+            self._identities.pop(self._identity_key(ip, username), None)
+
+    def clear(self):
+        with self._lock:
+            self._identities.clear()
+            self._ips.clear()
+
+
+_ADMIN_LOGIN_LIMITER = AdminLoginRateLimiter()
 
 
 def _prune_expired(cache: dict[str, float], now: float):

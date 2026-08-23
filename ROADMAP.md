@@ -267,12 +267,14 @@ Stars и RUB — независимые утверждённые retail price ta
 **Tests:** `test_admin_sessions.py` (server-only JWT, cookie flags, login guard, fixation, CSRF, expiry, logout, rotation), `test_admin_proxy.py` (allowlist/query/path/auth-failure), `test_admin_frontend_security.py` (sink/source matrix и реальный JS render path), `test_admin_browser_e2e.py` (headless Chromium, malicious API values под production CSP). Full regression: 341 passed, 1 browser test additionally passed in Playwright environment.
 **Migration/rollback:** admin asset получил новый cache-buster; SPA посылает `Clear-Site-Data: "storage"` и JS удаляет legacy `mz_token`. После deploy существующие browser JWT sessions потребуют новый login. Rollback допустим только к server-side session implementation и никогда не должен возвращать JWT в JavaScript/localStorage.
 
-## [ ] PH1-02 — Marzban SUDO CSPRNG rotation и login rate limit — P1
+## [~] PH1-02 — Marzban SUDO CSPRNG rotation и login rate limit — P1
 
 **Depends:** выполненный PH1-05 external mutation boundary и maintenance coordination. Credential storage/caller cutover code завершён PH1-05; здесь остаются фактическая production rotation, login rate limit и проверка JWT invalidation/lifetime. Это устраняет прежний circular dependency PH1-02↔PH1-05. **Files:** `src/marzban.py`, broker env, Marzban auth/config.
 **Scope:** service credential >=128-bit; correct form encoding; atomic rotation; rate limit; проверить JWT invalidation/lifetime.
 **Accept/tests:** старый password/JWT не работают; 429 brute-force; special characters и outage ordering; broker smoke.
 **Migration/rollback:** controlled secret delivery; отдельный не логируемый rollback credential.
+**Implemented in main, production cutover pending:** MGBoost failed-login limiter использует validated client IP только от loopback nginx, отдельные sliding-window budgets для IP+username и IP spray, hashed username keys, bounded process-local storage, uniform `429` и `Retry-After`. Public direct Marzban login защищается отдельным nginx `limit_req` exact-location; broker/direct localhost traffic не ограничивается. Rotation design для Marzban 0.8.4 меняет одновременно SUDO username+password: password-only rotation не отзывает старый JWT, а общий JWT secret нельзя менять без отзыва legacy subscription tokens. Осталось применить nginx/runtime и atomic production rotation с owner credential handoff; до этого PH1-02 не `[x]`.
+**Current tests:** full regression `380 passed, 1 skipped`; limiter boundary, trusted-proxy spoofing, upstream-call suppression, expiry/success reset и отсутствие plaintext username/password в limiter state.
 
 ## [x] PH1-03 — Minimum permissions для Marzban secrets/data — P1
 
