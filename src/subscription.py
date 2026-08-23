@@ -6,8 +6,10 @@ FORWARD_HEADERS = {
     "subscription-userinfo",
     "profile-update-interval",
     "profile-title",
+    "profile-description",
     "profile-web-page-url",
     "support-url",
+    "announce",
     "profile-expire",
     "content-disposition",
 }
@@ -161,6 +163,31 @@ def build_userinfo(info_dict):
     return "; ".join(f"{k}={v}" for k, v in info_dict.items())
 
 
+def encode_profile_header(value):
+    """Encode UTF-8 profile metadata in the format supported by clients."""
+    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return f"base64:{encoded}"
+
+
+def get_header(headers, name, default=""):
+    """Return an HTTP header value without relying on key casing."""
+    name_lower = name.lower()
+    for key, value in headers.items():
+        if key.lower() == name_lower:
+            return value
+    return default
+
+
+def set_header(headers, name, value):
+    """Set an HTTP header, replacing an existing differently-cased key."""
+    name_lower = name.lower()
+    for key in list(headers):
+        if key.lower() == name_lower:
+            headers[key] = value
+            return
+    headers[name] = value
+
+
 def patch_userinfo_header(header_value, token, db):
     """Add hysteria traffic to subscription-userinfo if available."""
     info = parse_userinfo(header_value)
@@ -229,16 +256,17 @@ def process_subscription(body, marzban_headers, token, username, db):
     lines = add_extra_configs(lines, username, db)
 
     # Custom description (fake node)
-    userinfo_raw = marzban_headers.get("subscription-userinfo", "")
+    userinfo_raw = get_header(marzban_headers, "subscription-userinfo")
     # Use patched info for formatting if available
     userinfo_patched = patch_userinfo_header(userinfo_raw, token, db)
     
     custom_desc_tpl = db.get_setting("sub_custom_desc")
+    custom_desc = None
     if custom_desc_tpl:
         from urllib.parse import quote
-        desc = format_sub_template(custom_desc_tpl, userinfo_patched)
+        custom_desc = format_sub_template(custom_desc_tpl, userinfo_patched)
         # Fake VLESS node as description
-        fake_node = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?type=tcp#{quote(desc)}"
+        fake_node = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?type=tcp#{quote(custom_desc)}"
         lines.insert(0, fake_node)
 
     new_body = base64.b64encode("\n".join(lines).encode("utf-8"))
@@ -259,17 +287,20 @@ def process_subscription(body, marzban_headers, token, username, db):
             if custom_title_tpl:
                 title = format_sub_template(custom_title_tpl, userinfo_patched)
                 # Marzban often uses base64: prefix for titles with non-ascii chars
-                title_b64 = base64.b64encode(title.encode("utf-8")).decode("utf-8")
-                out_headers[key] = f"base64:{title_b64}"
+                out_headers[key] = encode_profile_header(title)
             else:
                 out_headers[key] = val
         elif key_lower in FORWARD_HEADERS:
             out_headers[key] = val
 
     # If custom title is set but not present in marzban_headers, add it
-    if custom_title_tpl and "profile-title" not in out_headers:
+    if custom_title_tpl:
         title = format_sub_template(custom_title_tpl, userinfo_patched)
-        title_b64 = base64.b64encode(title.encode("utf-8")).decode("utf-8")
-        out_headers["profile-title"] = f"base64:{title_b64}"
+        set_header(out_headers, "profile-title", encode_profile_header(title))
+
+    if custom_desc is not None:
+        set_header(out_headers, "profile-description", encode_profile_header(custom_desc))
+        # INCY, Happ and v2RayTun document a 200-character announce limit.
+        set_header(out_headers, "announce", encode_profile_header(custom_desc[:200]))
 
     return new_body, out_headers
