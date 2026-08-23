@@ -27,6 +27,8 @@ _mutation_cooldown: dict = {}
 MGMT_COOKIE_NAME = "mgmt_session"
 _MGMT_SCOPE_DEVICES = "devices:manage"
 _MGMT_CODE_RE = re.compile(r"^[A-Za-z0-9_\-]{16,64}$")
+_SUBSCRIPTION_HEADER = "X-MGBoost-Subscription"
+_LEGACY_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_\-]{8,64}$")
 
 
 def _get_admin_token():
@@ -87,6 +89,8 @@ def _json_ok(handler, data):
     # exchange endpoint below, a session-establishing Set-Cookie) — make
     # sure no intermediate cache/proxy retains a copy.
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
 
     # Fix CORS: don't rely on Host header which can be spoofed
     origin = handler.headers.get("Origin", "")
@@ -111,6 +115,8 @@ def _error(handler, status, message, reason=None):
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -125,6 +131,8 @@ def _json_ok_with_cookie(handler, data, cookie_name, cookie_value, max_age):
     # intermediate cache/proxy must never retain (and potentially replay)
     # a copy of it.
     handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
 
     origin = handler.headers.get("Origin", "")
     if origin in ALLOWED_ORIGINS:
@@ -228,6 +236,16 @@ def handle_lk_page(handler):
         return
     handler.send_response(200)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    handler.send_header(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+        "frame-ancestors 'none'; form-action 'self'",
+    )
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -241,10 +259,18 @@ def _get_token_from_query(handler):
         if part.startswith("token="):
             token = unquote(part[6:])
             # Validation: only allow safe characters
-            if re.match(r'^[a-zA-Z0-9_\-]{8,64}$', token):
+            if _LEGACY_TOKEN_RE.fullmatch(token):
                 return token
             return None
     return None
+
+
+def _get_subscription_token(handler):
+    """Prefer the non-URL header while accepting old LK query bookmarks."""
+    header_token = (handler.headers.get(_SUBSCRIPTION_HEADER) or "").strip()
+    if header_token:
+        return header_token if _LEGACY_TOKEN_RE.fullmatch(header_token) else None
+    return _get_token_from_query(handler)
 
 
 def handle_lk_info(handler):
@@ -253,7 +279,7 @@ def handle_lk_info(handler):
         _error(handler, 429, "Too many requests")
         return
 
-    token = _get_token_from_query(handler)
+    token = _get_subscription_token(handler)
     if token:
         username = _client.get_username_for_token(token)
         if not username:
@@ -312,7 +338,7 @@ def handle_lk_usage(handler):
         _error(handler, 429, "Too many requests")
         return
 
-    token = _get_token_from_query(handler)
+    token = _get_subscription_token(handler)
     if token:
         username = _client.get_username_for_token(token)
         if not username:
@@ -359,7 +385,7 @@ def handle_lk_devices(handler):
         _error(handler, 429, "Too many requests")
         return
 
-    token = _get_token_from_query(handler)
+    token = _get_subscription_token(handler)
     if token:
         username = _client.get_username_for_token(token)
         if not username:
@@ -388,7 +414,7 @@ def handle_lk_device_delete(handler, device_id):
         _error(handler, 429, "Too many requests")
         return
 
-    token = _get_token_from_query(handler)
+    token = _get_subscription_token(handler)
     if token:
         username = _client.get_username_for_token(token)
         if not username:
@@ -438,7 +464,7 @@ def handle_lk_device_rename(handler, device_id):
         _error(handler, 429, "Too many requests")
         return
 
-    token = _get_token_from_query(handler)
+    token = _get_subscription_token(handler)
     if token:
         username = _client.get_username_for_token(token)
         if not username:

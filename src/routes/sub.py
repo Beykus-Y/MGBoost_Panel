@@ -52,6 +52,10 @@ def handle_sub(handler, token):
         page = _browser_page(sub_url)
         handler.send_response(200)
         handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Referrer-Policy", "no-referrer")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header("X-Frame-Options", "DENY")
         handler.send_header("Content-Length", str(len(page)))
         handler.end_headers()
         handler.wfile.write(page)
@@ -62,7 +66,8 @@ def handle_sub(handler, token):
     try:
         body, marzban_headers = _client.get_sub(token, extra_headers)
     except URLError as e:
-        print(f"[Sub] Error fetching from Marzban: {e}")
+        # urllib exception strings can include the raw path bearer.
+        print(f"[Sub] Error fetching from Marzban: {type(e).__name__}")
         handler.send_response(502)
         handler.end_headers()
         return
@@ -80,6 +85,9 @@ def handle_sub(handler, token):
             print(f"[Sub] Blocked {username} reason={reason} key={request_key[:16]}...")
             handler.send_response(200)
             handler.send_header("Content-Type", "text/plain")
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("Referrer-Policy", "no-referrer")
+            handler.send_header("X-Content-Type-Options", "nosniff")
             handler.send_header("Content-Length", str(len(fake)))
             handler.end_headers()
             handler.wfile.write(fake)
@@ -97,6 +105,9 @@ def handle_sub(handler, token):
 
     handler.send_response(200)
     handler.send_header("Content-Type", "text/plain")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
     handler.send_header("Content-Length", str(len(new_body)))
     for key, val in out_headers.items():
         handler.send_header(key, val)

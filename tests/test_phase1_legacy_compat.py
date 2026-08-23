@@ -132,6 +132,31 @@ def test_legacy_subscription_keeps_token_uuid_configs_expiry_and_existing_hwid(m
     assert base64.b64decode(handler.wfile.getvalue()).decode("utf-8").splitlines() == original_lines
     assert handler.header("Subscription-Userinfo") == upstream_headers["Subscription-Userinfo"]
     assert handler.header("Profile-Title") == "legacy profile"
+    assert handler.header("Cache-Control") == "no-store"
+    assert handler.header("Referrer-Policy") == "no-referrer"
+
+
+def test_browser_subscription_response_prevents_cache_and_referrer_leak(monkeypatch):
+    from src.routes import sub as sub_route
+
+    client = _SubscriptionClient(b"", {})
+    handler = _SubscriptionHandler(
+        _SubscriptionDB(),
+        {
+            "User-Agent": "Mozilla/5.0",
+            "X-Forwarded-Proto": "https",
+            "Host": "sub.beykus.fun",
+        },
+    )
+    monkeypatch.setattr(sub_route, "_client", client)
+
+    sub_route.handle_sub(handler, LEGACY_TOKEN)
+
+    assert handler.status == 200
+    assert client.calls == []
+    assert handler.header("Cache-Control") == "no-store"
+    assert handler.header("Referrer-Policy") == "no-referrer"
+    assert handler.header("X-Frame-Options") == "DENY"
 
 
 def test_legacy_non_hwid_client_remains_permissive_and_does_not_claim_slot(monkeypatch):
@@ -182,7 +207,8 @@ def test_existing_hwid_refresh_keeps_the_same_device_slot(tmp_path, monkeypatch)
         assert len(rows) == 1
         assert rows[0]["id"] == before["id"]
         assert rows[0]["first_seen"] == before["first_seen"]
-        assert rows[0]["token"] == "same-legacy-url"
+        from src.sensitive import subscription_token_ref
+        assert rows[0]["token"] == subscription_token_ref("same-legacy-url")
         assert rows[0]["client_version"] == "1.1"
         assert lock["username"] == "legacy-user"
     finally:

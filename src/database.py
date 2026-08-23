@@ -8,6 +8,7 @@ import time
 import threading
 
 from .config import DATA_DIR
+from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
 
@@ -488,7 +489,7 @@ class Database:
                 for token, entry in stats.items():
                     self._conn.execute(
                         "INSERT OR REPLACE INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
-                        (token, entry.get("upload", 0), entry.get("download", 0)),
+                        (subscription_token_ref(token), entry.get("upload", 0), entry.get("download", 0)),
                     )
                 self._conn.commit()
             print(f"[DB] Migrated {len(stats)} hysteria_stats entries from JSON")
@@ -608,33 +609,113 @@ class Database:
     def get_hysteria_stats(self):
         with self._lock:
             rows = self._conn.execute("SELECT token, upload, download FROM hysteria_stats").fetchall()
-        return {r["token"]: {"upload": r["upload"], "download": r["download"]} for r in rows}
+        # Never expose a raw legacy bearer through the admin API.  Merge is
+        # defensive for the short cutover window where an old raw row and a
+        # new verifier row could coexist before the controlled migration.
+        result = {}
+        for row in rows:
+            ref = subscription_token_ref(row["token"])
+            item = result.setdefault(ref, {"upload": 0, "download": 0})
+            item["upload"] += row["upload"]
+            item["download"] += row["download"]
+        return result
 
     def get_hysteria_traffic(self, token):
+        token_ref = subscription_token_ref(token)
         with self._lock:
             row = self._conn.execute(
-                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token_ref,)
             ).fetchone()
+            # Compatibility only until the controlled PH1-06 DB migration.
+            if not row and token_ref != token:
+                row = self._conn.execute(
+                    "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+                ).fetchone()
         if not row:
             return 0, 0
         return row["upload"], row["download"]
 
     def update_hysteria_stats(self, token, upload_delta, download_delta):
+        token_ref = subscription_token_ref(token)
         with self._lock:
             existing = self._conn.execute(
-                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+                "SELECT upload, download FROM hysteria_stats WHERE token=?", (token_ref,)
             ).fetchone()
+            storage_key = token_ref
+            if not existing and token_ref != token:
+                legacy = self._conn.execute(
+                    "SELECT upload, download FROM hysteria_stats WHERE token=?", (token,)
+                ).fetchone()
+                if legacy:
+                    # Updating an existing legacy row does not create new raw
+                    # evidence and preserves counters until offline migration.
+                    existing = legacy
+                    storage_key = token
             if existing:
                 self._conn.execute(
                     "UPDATE hysteria_stats SET upload=upload+?, download=download+? WHERE token=?",
-                    (upload_delta, download_delta, token),
+                    (upload_delta, download_delta, storage_key),
                 )
             else:
                 self._conn.execute(
                     "INSERT INTO hysteria_stats (token, upload, download) VALUES (?,?,?)",
-                    (token, upload_delta, download_delta),
+                    (token_ref, upload_delta, download_delta),
                 )
             self._conn.commit()
+
+    def migrate_legacy_subscription_token_storage(self) -> dict:
+        """Replace raw local token keys with SHA-256 references atomically.
+
+        This does not rotate or revoke a Marzban token.  It is intentionally
+        an explicit operational step, run only after the PH1-06 encrypted
+        quarantine/restore gate; startup never performs the cleanup silently.
+        """
+        counts = {"sub_requests": 0, "user_devices": 0, "hysteria_stats": 0}
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for table in ("sub_requests", "user_devices"):
+                    rows = self._conn.execute(f"SELECT id, token FROM {table}").fetchall()
+                    for row in rows:
+                        if is_subscription_token_ref(row["token"]):
+                            continue
+                        self._conn.execute(
+                            f"UPDATE {table} SET token=? WHERE id=?",
+                            (subscription_token_ref(row["token"]), row["id"]),
+                        )
+                        counts[table] += 1
+
+                rows = self._conn.execute(
+                    "SELECT token, upload, download FROM hysteria_stats"
+                ).fetchall()
+                for row in rows:
+                    raw = row["token"]
+                    if is_subscription_token_ref(raw):
+                        continue
+                    ref = subscription_token_ref(raw)
+                    existing = self._conn.execute(
+                        "SELECT upload, download FROM hysteria_stats WHERE token=?", (ref,)
+                    ).fetchone()
+                    if existing:
+                        self._conn.execute(
+                            "UPDATE hysteria_stats SET upload=?, download=? WHERE token=?",
+                            (
+                                existing["upload"] + row["upload"],
+                                existing["download"] + row["download"],
+                                ref,
+                            ),
+                        )
+                        self._conn.execute("DELETE FROM hysteria_stats WHERE token=?", (raw,))
+                    else:
+                        self._conn.execute(
+                            "UPDATE hysteria_stats SET token=? WHERE token=?", (ref, raw)
+                        )
+                    counts["hysteria_stats"] += 1
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return counts
 
     # --- sub_requests ---
 
@@ -658,6 +739,7 @@ class Database:
         return result
 
     def log_request(self, token, username, user_agent, ip, device_metadata=None):
+        token_ref = subscription_token_ref(token)
         device_metadata = device_metadata or {}
         request_key = device_metadata.get("request_key")
         metadata = device_metadata.get("metadata") or {}
@@ -668,17 +750,17 @@ class Database:
             if request_key:
                 existing = self._conn.execute(
                     "SELECT id FROM sub_requests WHERE token=? AND request_key=? ORDER BY timestamp DESC LIMIT 1",
-                    (token, request_key),
+                    (token_ref, request_key),
                 ).fetchone()
                 if not existing and user_agent:
                     existing = self._conn.execute(
                         "SELECT id FROM sub_requests WHERE token=? AND user_agent=? AND request_key IS NULL ORDER BY timestamp DESC LIMIT 1",
-                        (token, user_agent),
+                        (token_ref, user_agent),
                     ).fetchone()
             elif user_agent:
                 existing = self._conn.execute(
                     "SELECT id FROM sub_requests WHERE token=? AND user_agent=? ORDER BY timestamp DESC LIMIT 1",
-                    (token, user_agent),
+                    (token_ref, user_agent),
                 ).fetchone()
 
             payload = (
@@ -717,7 +799,7 @@ class Database:
                         platform, os, fingerprint, metadata_json, token
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
-                    payload + (token,),
+                    payload + (token_ref,),
                 )
             self._conn.commit()
 
@@ -725,7 +807,7 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT {self._device_select_columns()} FROM sub_requests WHERE token=? ORDER BY timestamp DESC LIMIT ?",
-                (token, limit),
+                (subscription_token_ref(token), limit),
             ).fetchall()
         return [self._device_row_to_dict(r) for r in rows]
 
@@ -814,6 +896,7 @@ class Database:
             return False, None
 
         now = int(time.time())
+        token_ref = subscription_token_ref(token)
 
         with self._lock:
             # 1. Global anti-sharing check
@@ -832,7 +915,7 @@ class Database:
             if existing and existing["is_active"]:
                 self._conn.execute(
                     "UPDATE user_devices SET last_seen=?, token=?, client_version=? WHERE id=?",
-                    (now, token, device_metadata.get("client_version"), existing["id"]),
+                    (now, token_ref, device_metadata.get("client_version"), existing["id"]),
                 )
                 self._conn.commit()
                 return False, None
@@ -854,7 +937,7 @@ class Database:
                     """UPDATE user_devices
                        SET is_active=1, last_seen=?, token=?, client_name=?, client_version=?, device_name=?
                        WHERE id=?""",
-                    (now, token, device_metadata.get("client_name"),
+                    (now, token_ref, device_metadata.get("client_name"),
                      device_metadata.get("client_version"), device_name, existing["id"]),
                 )
             else:
@@ -863,7 +946,7 @@ class Database:
                        (username, token, request_key, device_name, platform, client_name,
                         client_version, is_active, first_seen, last_seen)
                        VALUES (?,?,?,?,?,?,?,1,?,?)""",
-                    (username, token, request_key, device_name,
+                    (username, token_ref, request_key, device_name,
                      device_metadata.get("platform"), device_metadata.get("client_name"),
                      device_metadata.get("client_version"), now, now),
                 )

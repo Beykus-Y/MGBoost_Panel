@@ -612,8 +612,28 @@ def test_get_lk_page_never_returns_or_requires_mgmt_credential(db):
     handle_lk_page(h)
     assert h._response_code == 200
     assert h._sent_headers.get("Content-Type") == ["text/html; charset=utf-8"]
+    assert h._sent_headers.get("Cache-Control") == ["no-store"]
+    assert h._sent_headers.get("Referrer-Policy") == ["no-referrer"]
+    assert h._sent_headers.get("X-Frame-Options") == ["DENY"]
+    assert "default-src 'self'" in h._sent_headers["Content-Security-Policy"][0]
     # No cookie is set by merely loading the page shell.
     assert "Set-Cookie" not in h._sent_headers
+
+
+def test_read_only_lk_accepts_subscription_header_without_query_bearer(db):
+    from src.routes.lk import handle_lk_devices
+
+    _add_device(db, "alice")
+    h = FakeHandler(
+        db,
+        path="/lk/api/devices",
+        headers={"X-MGBoost-Subscription": "tok-alice"},
+    )
+    handle_lk_devices(h)
+    assert h._response_code == 200
+    assert h.json_response()["active_count"] == 1
+    assert h._sent_headers.get("Cache-Control") == ["no-store"]
+    assert h._sent_headers.get("Referrer-Policy") == ["no-referrer"]
 
 
 def test_exchange_response_sets_cache_control_no_store(db):

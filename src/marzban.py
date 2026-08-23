@@ -62,7 +62,8 @@ class MarzbanClient:
                 _USERNAME_CACHE[token] = (username, now + _USERNAME_TTL)
             return username
         except Exception as e:
-            print(f"[Marzban] Could not resolve username for token: {e}")
+            # urllib exception strings can include /sub/{raw_token}/info.
+            print(f"[Marzban] Could not resolve username for token: {type(e).__name__}")
             return None
 
     # NOTE: an earlier version of this client had a get_token_for_username()

@@ -197,6 +197,21 @@ subscription endpoint; privileged LK/Stars/bot/Filin операции fail close
 обратно в своё окружение. Это не production target и не требует изменения
 пользовательских UUID/subscription URLs/HWID.
 
+### Encrypted backups and token-safe logs
+
+PH1-06 stores new local subscription references as `sha256:<hex>` verifiers;
+the real legacy `/sub/{token}` remains unchanged and valid. LK accepts old
+`?token=` bookmarks once, removes the value from browser URL state and sends
+subsequent same-origin API calls in `X-MGBoost-Subscription`. Application and
+nginx sensitive-route logs must redact the full path/query and omit Referer.
+
+Daily encrypted SQLite backup units are
+`mgboost-secure-backup.service`/`.timer`. They require root-owned mode `0600`
+`/etc/mgboost/backup.passphrase` and write root-only artifacts under
+`/var/backups/mgboost`. Installation, the one-time encrypted quarantine,
+restore verification, retention and rollback order are defined in
+`docs/PHASE1_RETENTION_AND_BACKUP.md`.
+
 ## API эндпоинты (принимает сервер)
 
 | Метод | Путь | Описание |

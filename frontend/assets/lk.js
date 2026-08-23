@@ -1,7 +1,31 @@
 const app = document.getElementById('app');
 
+// Accept old ?token= bookmarks once, then remove the bearer from the visible
+// URL before any API request or subresource load. New manual entries use a
+// fragment, which is never sent to nginx. The token remains memory-only.
+const initialUrl = new URL(location.href);
+const fragmentParams = new URLSearchParams(
+  initialUrl.hash.startsWith('#') ? initialUrl.hash.slice(1) : initialUrl.hash
+);
+const legacySubscriptionToken =
+  initialUrl.searchParams.get('token') || fragmentParams.get('token') || '';
+if (legacySubscriptionToken) {
+  initialUrl.searchParams.delete('token');
+  fragmentParams.delete('token');
+  const remainingFragment = fragmentParams.toString();
+  const cleanTarget = initialUrl.pathname +
+    (initialUrl.searchParams.toString() ? `?${initialUrl.searchParams}` : '') +
+    (remainingFragment ? `#${remainingFragment}` : '');
+  history.replaceState(null, '', cleanTarget);
+}
+
 function getToken() {
-  return new URLSearchParams(location.search).get('token') || '';
+  return legacySubscriptionToken;
+}
+
+function subscriptionHeaders(extra = {}) {
+  const token = getToken();
+  return token ? { ...extra, 'X-MGBoost-Subscription': token } : extra;
 }
 
 function formatBytes(bytes) {
@@ -75,40 +99,38 @@ async function _throwApiError(res) {
 }
 
 async function apiFetch(path) {
-  const token = getToken();
-  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
   // credentials: 'include' so that when there's no token (pure
   // management-session flow, reached via the bot's mgmt deep link) the
   // HttpOnly management-session cookie rides along and the backend can
   // resolve the username from the session instead. Harmless when a token
   // is present too — the backend always prefers the token in that case.
-  const res = await fetch(`/lk/api/${path}${qs}`, { credentials: 'include' });
+  const res = await fetch(`/lk/api/${path}`, {
+    credentials: 'include',
+    headers: subscriptionHeaders(),
+  });
   if (!res.ok) await _throwApiError(res);
   return res.json();
 }
 
 async function apiDelete(path) {
-  const token = getToken();
-  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
   // credentials: 'include' so the HttpOnly management-session cookie
   // (set by exchangeMgmtCode()) rides along — mutating actions are
   // authorized by that cookie server-side, not by the token in the URL.
   // When there's no token at all, the cookie is also how the backend
   // resolves which username this request is for.
-  const res = await fetch(`/lk/api/${path}${qs}`, {
+  const res = await fetch(`/lk/api/${path}`, {
     method: 'DELETE',
     credentials: 'include',
+    headers: subscriptionHeaders(),
   });
   if (!res.ok) await _throwApiError(res);
   return res.json();
 }
 
 async function apiPatch(path, data) {
-  const token = getToken();
-  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-  const res = await fetch(`/lk/api/${path}${qs}`, {
+  const res = await fetch(`/lk/api/${path}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: subscriptionHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(data),
   });
@@ -174,9 +196,11 @@ function openWithToken() {
   let token = val;
   try {
     const u = new URL(val);
-    token = u.searchParams.get('token') || val;
+    token = u.searchParams.get('token') ||
+      new URLSearchParams(u.hash.slice(1)).get('token') ||
+      (u.pathname.includes('/sub/') ? u.pathname.split('/sub/')[1].split('/')[0] : val);
   } catch {}
-  location.href = `/lk/?token=${encodeURIComponent(token)}`;
+  location.href = `/lk/#token=${encodeURIComponent(token)}`;
 }
 
 async function renderDashboard(token) {

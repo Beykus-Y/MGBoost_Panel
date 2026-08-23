@@ -86,6 +86,7 @@ from .routes.lk import (
 from .routes.panel import handle_panel, handle_static_asset
 from .routes.sub import handle_sub
 from .security import require_admin_auth, require_internal_auth
+from .sensitive import redact_request_target
 
 # (method, regex_pattern) -> handler(request_handler, **groups)
 _ROUTES = [
@@ -174,7 +175,11 @@ _ROUTES = [
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        print(f"[Server] {self.address_string()} - {format % args}")
+        status = str(args[1]) if len(args) > 1 else "-"
+        print(
+            f"[Server] {self.address_string()} - {getattr(self, 'command', '-')} "
+            f"{redact_request_target(getattr(self, 'path', '/'))} -> {status}"
+        )
 
     def _dispatch(self, method):
         path = self.path.split("?", 1)[0]
@@ -186,7 +191,11 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     handler(self, **m.groupdict())
                 except Exception as exc:
-                    print(f"[Server] Unhandled error on {method} {self.path}: {exc}")
+                    # urllib exception strings can include a raw request URL.
+                    print(
+                        f"[Server] Unhandled {type(exc).__name__} on {method} "
+                        f"{redact_request_target(self.path)}"
+                    )
                     error_response(self, 500, "Internal server error")
                 return
         self.send_response(404)

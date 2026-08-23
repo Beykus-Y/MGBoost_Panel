@@ -1,0 +1,26 @@
+[Unit]
+Description=Encrypted MGBoost and Marzban SQLite backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/MGBoost_Panel/scripts/secure_db_backup.py --apply-retention
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ReadOnlyPaths=/opt/MGBoost_Panel/data/db.sqlite3 /var/lib/marzban/db.sqlite3 /etc/mgboost/backup.passphrase
+ReadWritePaths=/var/backups/mgboost
+
+[Install]
+WantedBy=multi-user.target

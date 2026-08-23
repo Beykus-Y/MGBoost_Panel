@@ -1,4 +1,10 @@
-    # Define once in nginx's http {} scope, outside server/location blocks:
+    # Define once in nginx's http {} scope, outside server/location blocks.
+    # Sensitive route logs retain operational status without path/query,
+    # Referer or User-Agent (all can contain a subscription bearer):
+    # log_format mgboost_sensitive '$remote_addr [$time_local] '
+    #     '"$request_method <redacted-sensitive-target> $server_protocol" '
+    #     '$status $body_bytes_sent';
+    #
     # limit_req_zone $binary_remote_addr zone=marzban_admin_login:10m rate=5r/m;
     #
     # Any public server that proxies Marzban must override its generic `/`
@@ -14,6 +20,7 @@
     # }
 
     location /lk/ {
+        access_log /var/log/nginx/mgboost-sensitive-access.log mgboost_sensitive;
         proxy_pass http://127.0.0.1:8001/lk/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -22,6 +29,7 @@
     }
 
     location /sub/ {
+        access_log /var/log/nginx/mgboost-sensitive-access.log mgboost_sensitive;
         if ($http_user_agent ~* "(Mozilla|Chrome|Safari|Firefox|Edge|Opera)") {
             return 302 /sub-browser;
         }

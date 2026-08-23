@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted MGBoost and Marzban SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 03:25:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=mgboost-secure-backup.service
+
+[Install]
+WantedBy=timers.target
