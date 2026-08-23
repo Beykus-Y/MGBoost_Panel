@@ -1,13 +1,13 @@
 # Phase 1 backward-compatibility / no-user-impact gate
 
-Status: **SAFE TO DEPLOY FOR EXISTING USERS**, subject to the production
-preflight/cutover sequence in this document.  PH1-05 is implemented locally
-but has **not** been deployed to production.  Its ten typed operations passed
-direct-call versus broker comparison against an isolated official Marzban
-0.8.4 instance; outage, recovery, restart, Filin HMAC, Stars durability,
-legacy subscription and direct-mode rollback contracts passed.  PH1-03/PH1-04
-were already applied before this gate was requested; their observed production
-state is recorded below.
+Status: **SAFE TO DEPLOY FOR EXISTING USERS — DEPLOYED AND VERIFIED 2026-08-24**.
+PH1-01 and PH1-05 were deployed as separate steps with an explicit gate between
+them, including owner-confirmed manual admin login.  The ten typed operations
+passed direct-call versus broker comparison against an isolated official
+Marzban 0.8.4 instance; production read gates, outage/recovery, restart, Filin
+HMAC, Stars durability, exact legacy subscription and direct-mode rollback
+contracts passed.  PH1-03/PH1-04 were already applied before this gate was
+requested; their observed production state is recorded below.
 
 This document is a deployment gate, not an account migration design.  Phase 1
 must not create parent accounts or child users, change plans, rotate user UUIDs,
@@ -210,10 +210,37 @@ checks below before enabling mutations.
 - Real staging outage: broker returned 503 (no false success) while Marzban was
   stopped, its health endpoint stayed 200, and typed reads recovered after
   Marzban restart.  Broker process restart also recovered on the same address.
-- Automated result: `375 passed, 1 skipped`.  The skipped Playwright browser
+- Automated result: `376 passed, 1 skipped`.  The skipped Playwright browser
   test belongs to PH1-01 and was previously passed in the dedicated browser
   environment; PH1-05 has no frontend change.  `systemd-analyze verify`, Python
   compile and `git diff --check` pass.
+
+## Production rollout evidence (2026-08-24)
+
+- PH1-01 automated gate verified CSP/session headers, exact legacy alias,
+  aggregate user/config/device contracts, LK, Stars state, Filin, systemd,
+  nginx and journals.  The owner then manually logged in and confirmed no
+  visual admin regression.  An earlier attempt was immediately rolled back
+  when an over-restrictive checkout umask made new source unreadable to the
+  existing `mgboost` service user; permissions were restored and the corrected
+  deploy passed.  No user credential or database record changed in that attempt.
+- PH1-05 production uses `mgboost-broker:mgboost-broker`, root-managed
+  `/etc/mgboost/marzban-broker.env` (`0640`) and literal
+  `127.0.0.1:8002`; nginx contains no route to the port.  Missing/invalid HMAC
+  is denied, and the broker's Unix identity cannot read the main `.env`.
+- Main `.env` and `/proc/<main-pid>/environ` contain zero
+  `MARZBAN_ADMIN_USER/PASS` keys.  The broker is the only MGBoost component
+  with the retained service credential; actual credential rotation remains
+  PH1-02.
+- Six read operations were compared on production; all four mutation types
+  remained uncalled on real users and retain their isolated 0.8.4 staging and
+  contract-test evidence.  During a controlled broker outage, the frozen
+  pre-cutover legacy alias returned the same semantic config while privileged
+  calls and Filin failed closed with 502; broker reads recovered after restart.
+- Masked pre/post and post-MGBoost-restart snapshots matched for all 25 users:
+  UUID, expiry, proxies/inbounds/data limit, URL route contract, rendered config
+  contract, and all 71 device/HWID ownership/lock rows.  Both external admin/LK
+  endpoints returned 200 and no new MGBoost/broker/nginx warning was observed.
 
 ## Rollback procedure
 
@@ -260,7 +287,7 @@ after PH1-02 rotation; it is not a user UUID or subscription token.
   documented direct-mode rollback.  PH1-02 rotates that service credential in
   a separately coordinated step; it does not rotate user credentials.
 
-With these operational gates followed, the verdict is:
+These operational gates were followed.  The final production verdict is:
 
 **SAFE TO DEPLOY FOR EXISTING USERS**
 
