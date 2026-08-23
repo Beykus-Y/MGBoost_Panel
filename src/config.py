@@ -18,3 +18,7 @@ DATA_DIR = os.getenv("DATA_DIR", "./data")
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 INTERNAL_API_ALLOWED_SKEW_SECONDS = int(os.getenv("INTERNAL_API_ALLOWED_SKEW_SECONDS", "300"))
+ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "1800"))
+ADMIN_SESSION_COOKIE_SECURE = os.getenv("ADMIN_SESSION_COOKIE_SECURE", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}

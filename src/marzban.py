@@ -78,7 +78,7 @@ class MarzbanClient:
 
     def get_token(self, username, password):
         url = f"{self.base_url}/api/admin/token"
-        body = f"username={username}&password={password}".encode()
+        body = urlencode({"username": username, "password": password}).encode("utf-8")
         req = Request(url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
         resp = urlopen(req, timeout=10)
         data = json.loads(resp.read())
@@ -117,6 +117,11 @@ class MarzbanClient:
         query = urlencode({"limit": limit, "offset": offset})
         return self._api_json(f"/api/users?{query}", admin_token)
 
+    def get_users_usage(self, admin_token, start="", end=""):
+        query = urlencode({k: v for k, v in {"start": start, "end": end}.items() if v})
+        suffix = f"?{query}" if query else ""
+        return self._api_json(f"/api/users/usage{suffix}", admin_token)
+
     def get_inbounds(self, admin_token):
         return self._api_json("/api/inbounds", admin_token)
 
@@ -136,3 +141,9 @@ class MarzbanClient:
 
     def delete_user(self, username, admin_token):
         return self._api_request_json("DELETE", f"/api/user/{quote(username, safe='')}", admin_token)
+
+    def reset_user_traffic(self, username, admin_token):
+        return self._api_request_json("POST", f"/api/user/{quote(username, safe='')}/reset", admin_token)
+
+    def reconnect_node(self, node_id, admin_token):
+        return self._api_request_json("POST", f"/api/node/{int(node_id)}/reconnect", admin_token)

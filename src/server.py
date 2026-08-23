@@ -67,6 +67,13 @@ from .routes.internal import (
     handle_internal_user_renew,
     handle_internal_users_list,
 )
+from .routes.admin_proxy import handle_admin_marzban_proxy
+from .routes.admin_session import (
+    handle_admin_session_login,
+    handle_admin_session_logout,
+    handle_admin_session_rotate,
+    handle_admin_session_status,
+)
 from .routes.lk import (
     handle_lk_device_delete,
     handle_lk_device_rename,
@@ -91,6 +98,14 @@ _ROUTES = [
     ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
     ("GET",    re.compile(r"^/(?:.*?/)?assets/(?P<path>.+)$"),  lambda h, path: handle_static_asset(h, path)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
+    ("POST",   re.compile(r"^/admin/session/login$"),          lambda h: handle_admin_session_login(h)),
+    ("GET",    re.compile(r"^/admin/session$"),                lambda h: handle_admin_session_status(h)),
+    ("POST",   re.compile(r"^/admin/session/logout$"),         lambda h: handle_admin_session_logout(h) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/session/rotate$"),         lambda h: handle_admin_session_rotate(h) if require_admin_auth(h) else None),
+    ("GET",    re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
+    ("POST",   re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
+    ("PUT",    re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
+    ("DELETE", re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_list(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/configs$"),                 lambda h: handle_configs_add(h) if require_admin_auth(h) else None),
     ("DELETE", re.compile(r"^/admin/configs/(?P<cid>\d+)$"),   lambda h, cid: handle_configs_delete(h, cid) if require_admin_auth(h) else None),
@@ -188,6 +203,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         self._dispatch("PATCH")
+
+    def do_PUT(self):
+        self._dispatch("PUT")
 
 
 class _ServerWithDB(HTTPServer):

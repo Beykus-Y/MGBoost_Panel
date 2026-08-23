@@ -1,6 +1,8 @@
-const MARZBAN = '';
 const PROXY_API = '/sub-admin-api';
-let TOKEN = localStorage.getItem('mz_token') || '';
+let CSRF_TOKEN = '';
+// Legacy builds stored the Marzban JWT here.  Remove it before any request;
+// authentication now uses only an HttpOnly server-side session cookie.
+localStorage.removeItem('mz_token');
 let allUsers = [];
 let allNodes = [];
 let nodeFilters = {};
@@ -18,6 +20,32 @@ const TRAFFIC_PERIODS = {
   '7d': { label: 'за неделю', ms: 7 * 24 * 60 * 60 * 1000 },
   '30d': { label: 'за месяц', ms: 30 * 24 * 60 * 60 * 1000 },
 };
+
+class SafeMarkup{
+  constructor(value){this.value=value}
+}
+function esc(s){
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function html(strings,...values){
+  let value='';
+  strings.forEach((part,index)=>{
+    value+=part;
+    if(index<values.length)value+=safeMarkupValue(values[index]);
+  });
+  return new SafeMarkup(value);
+}
+function safeMarkupValue(value){
+  if(value instanceof SafeMarkup)return value.value;
+  if(Array.isArray(value))return value.map(safeMarkupValue).join('');
+  return esc(value);
+}
+function renderHtml(element,markup){
+  if(!(markup instanceof SafeMarkup))throw new TypeError('SafeMarkup required');
+  const template=document.createElement('template');
+  template.innerHTML=markup.value;
+  element.replaceChildren(template.content.cloneNode(true));
+}
 
 function fmt(bytes){
   if(bytes===null||bytes===undefined)return'—';
@@ -104,16 +132,16 @@ function fmtRelDate(ts){
   const d=parseUTC(ts);
   const diff=d-Date.now();
   const days=Math.ceil(diff/86400000);
-  if(days<0)return'<span style="color:var(--red)">просрочен</span>';
-  if(days===0)return'<span style="color:var(--amber)">сегодня</span>';
-  if(days<=3)return`<span style="color:var(--amber)">${days}д</span>`;
+  if(days<0)return html`<span style="color:var(--red)">просрочен</span>`;
+  if(days===0)return html`<span style="color:var(--amber)">сегодня</span>`;
+  if(days<=3)return html`<span style="color:var(--amber)">${days}д</span>`;
   return`${days}д`;
 }
 function fmtOnline(dt){
   if(!dt)return'—';
   const d=parseUTC(dt);
   const diff=(Date.now()-d)/1000;
-  if(diff<120)return'<span style="color:var(--green)">сейчас</span>';
+  if(diff<120)return html`<span style="color:var(--green)">сейчас</span>`;
   if(diff<3600)return`${Math.floor(diff/60)}м назад`;
   if(diff<86400)return`${Math.floor(diff/3600)}ч назад`;
   return`${Math.floor(diff/86400)}д назад`;
@@ -121,7 +149,7 @@ function fmtOnline(dt){
 function statusBadge(s){
   const m={active:'badge-green',disabled:'badge-red',expired:'badge-red',limited:'badge-amber',on_hold:'badge-gray'};
   const l={active:'активен',disabled:'выкл',expired:'истёк',limited:'лимит',on_hold:'на паузе'};
-  return`<span class="badge ${m[s]||'badge-gray'}">${l[s]||s}</span>`;
+  return html`<span class="badge ${m[s]||'badge-gray'}">${l[s]||s}</span>`;
 }
 function toast(msg,type='ok'){
   const t=document.getElementById('toast');
@@ -130,12 +158,18 @@ function toast(msg,type='ok'){
 }
 
 async function api(path,opts={}){
-  const r=await fetch(MARZBAN+'/api'+path,{...opts,headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});
-  if(r.status===401){doLogout();throw new Error('unauth')}
-  return r;
+  return adminFetch('/admin/marzban'+path,opts);
 }
 async function proxyApi(path,opts={}){
-  return fetch(PROXY_API+path,{...opts,headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json',...(opts.headers||{})}});
+  return adminFetch(path,opts);
+}
+async function adminFetch(path,opts={}){
+  const method=(opts.method||'GET').toUpperCase();
+  const headers={'Content-Type':'application/json',...(opts.headers||{})};
+  if(!['GET','HEAD','OPTIONS'].includes(method)&&CSRF_TOKEN)headers['X-CSRF-Token']=CSRF_TOKEN;
+  const r=await fetch(PROXY_API+path,{...opts,method,credentials:'same-origin',headers});
+  if(r.status===401){showLoggedOut();throw new Error('unauth')}
+  return r;
 }
 
 function toApiDate(ms){
@@ -192,21 +226,40 @@ async function doLogin(){
   const e=document.getElementById('login-err');
   e.style.display='none';
   try{
-    const r=await fetch(MARZBAN+'/api/admin/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`username=${encodeURIComponent(u)}&password=${encodeURIComponent(p)}`});
+    const r=await fetch(PROXY_API+'/admin/session/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-MGBoost-Admin-Login':'1'},body:JSON.stringify({username:u,password:p})});
     const d=await r.json();
-    if(!d.access_token)throw new Error();
-    TOKEN=d.access_token;
-    localStorage.setItem('mz_token',TOKEN);
-    document.getElementById('sidebar-admin').textContent=u;
+    if(!r.ok||!d.authenticated||!d.csrf_token)throw new Error();
+    CSRF_TOKEN=d.csrf_token;
+    document.getElementById('login-pass').value='';
+    document.getElementById('sidebar-admin').textContent=d.username;
     document.getElementById('login-page').style.display='none';
     document.getElementById('app').style.display='flex';
     bootstrap();
   }catch{e.style.display='block'}
 }
-function doLogout(){
-  localStorage.removeItem('mz_token');TOKEN='';
+function showLoggedOut(){
+  CSRF_TOKEN='';
   document.getElementById('app').style.display='none';
   document.getElementById('login-page').style.display='flex';
+}
+async function doLogout(){
+  try{
+    await adminFetch('/admin/session/logout',{method:'POST'});
+  }catch{}
+  showLoggedOut();
+}
+async function restoreAdminSession(){
+  try{
+    const r=await fetch(PROXY_API+'/admin/session',{credentials:'same-origin',headers:{Accept:'application/json'}});
+    if(!r.ok)throw new Error();
+    const d=await r.json();
+    if(!d.authenticated||!d.csrf_token)throw new Error();
+    CSRF_TOKEN=d.csrf_token;
+    document.getElementById('sidebar-admin').textContent=d.username;
+    document.getElementById('login-page').style.display='none';
+    document.getElementById('app').style.display='flex';
+    bootstrap();
+  }catch{showLoggedOut()}
 }
 document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 
@@ -242,15 +295,15 @@ async function loadDashboard(){
   const mem=Math.round(sys.mem_used/sys.mem_total*100);
   const label=document.getElementById('traffic-period-label');
   if(label)label.textContent=period.label;
-  document.getElementById('sys-stats').innerHTML=`
+  renderHtml(document.getElementById('sys-stats'),html`
     <div class="stat-card"><div class="stat-label">Пользователи</div><div class="stat-value">${sys.total_user}</div><div class="stat-sub">${sys.users_active} активных · ${sys.users_expired} истекших</div></div>
     <div class="stat-card"><div class="stat-label">Онлайн</div><div class="stat-value" style="color:var(--green)">${sys.online_users}</div><div class="stat-sub">прямо сейчас</div></div>
     <div class="stat-card"><div class="stat-label">Входящий трафик</div><div class="stat-value">${fmt(sys.incoming_bandwidth)}</div><div class="stat-sub">${fmt(sys.incoming_bandwidth_speed)}/с</div></div>
     <div class="stat-card"><div class="stat-label">Исходящий трафик</div><div class="stat-value">${fmt(sys.outgoing_bandwidth)}</div><div class="stat-sub">${fmt(sys.outgoing_bandwidth_speed)}/с</div></div>
     <div class="stat-card"><div class="stat-label">CPU</div><div class="stat-value">${sys.cpu_usage.toFixed(1)}%</div><div class="stat-sub">${sys.cpu_cores} ядр</div></div>
     <div class="stat-card"><div class="stat-label">RAM</div><div class="stat-value">${mem}%</div><div class="stat-sub">${fmt(sys.mem_used)} / ${fmt(sys.mem_total)}</div></div>
-  `;
-  document.getElementById('dash-nodes').innerHTML=nodes.map(n=>`
+  `);
+  renderHtml(document.getElementById('dash-nodes'),html`${nodes.map(n=>html`
     <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
       <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
       <div style="flex:1">
@@ -259,19 +312,19 @@ async function loadDashboard(){
       </div>
       <span class="badge ${n.status==='connected'?'badge-green':'badge-red'}">${n.status==='connected'?'ок':'офф'}</span>
     </div>
-  `).join('');
+  `)}`);
   const totalTraffic=usages.reduce((s,u)=>s+u.uplink+u.downlink,0);
-  document.getElementById('dash-node-traffic').innerHTML=usages.length?usages.map(u=>{
+  renderHtml(document.getElementById('dash-node-traffic'),usages.length?html`${usages.map(u=>{
     const total=u.uplink+u.downlink;
     const pct=totalTraffic>0?Math.round(total/totalTraffic*100):0;
-    return`<div class="clickable" style="padding:8px 0;border-bottom:0.5px solid var(--border)" onclick="openNodeTraffic(${u.node_id===null?'null':u.node_id})">
+    return html`<div class="clickable" style="padding:8px 0;border-bottom:0.5px solid var(--border)" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
         <span style="color:var(--text2)">${u.node_name}</span>
         <span>${fmt(total)}</span>
       </div>
       <div class="traffic-bar"><div class="traffic-fill" style="width:${pct}%"></div></div>
     </div>`;
-  }).join(''):'<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет трафика за период</p>';
+  })}`:html`<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет трафика за период</p>`);
 }
 
 // USERS
@@ -288,21 +341,21 @@ async function loadUsers(){
   renderUsers(allUsers);
   // populate per-user select
   const sel=document.getElementById('pu-user');
-  sel.innerHTML=allUsers.map(u=>`<option value="${u.username}">${u.username}</option>`).join('');
+  renderHtml(sel,html`${allUsers.map(u=>html`<option value="${u.username}">${u.username}</option>`)}`);
 }
 function filterUsers(){
   const q=document.getElementById('user-search').value.toLowerCase();
   renderUsers(allUsers.filter(u=>u.username.toLowerCase().includes(q)||(u.note||'').toLowerCase().includes(q)));
 }
 function renderUsers(users){
-  document.getElementById('users-tbody').innerHTML=users.map(u=>{
+  renderHtml(document.getElementById('users-tbody'),html`${users.map(u=>{
     const f=nodeFilters[u.username];
     const hasFilter=f&&f.all===false&&(f.allowed_configs||[]).length>0;
-    return`
-    <tr class="clickable" onclick="openUser('${u.username}')">
+    return html`
+    <tr class="clickable" data-action="open-user" data-username="${u.username}">
       <td>
-        <div style="font-weight:500">${u.username}${hasFilter?` <span style="font-size:10px;color:var(--amber);border:0.5px solid var(--amber2);border-radius:3px;padding:1px 5px;vertical-align:middle">фильтр</span>`:''}</div>
-        ${u.note?`<div style="font-size:11px;color:var(--text2)">${u.note}</div>`:''}
+        <div style="font-weight:500">${u.username}${hasFilter?html` <span style="font-size:10px;color:var(--amber);border:0.5px solid var(--amber2);border-radius:3px;padding:1px 5px;vertical-align:middle">фильтр</span>`:''}</div>
+        ${u.note?html`<div style="font-size:11px;color:var(--text2)">${u.note}</div>`:''}
       </td>
       <td>${statusBadge(u.status)}</td>
       <td>${fmt(u.used_traffic)}${u.data_limit?` / ${fmt(u.data_limit)}`:'  / ∞'}</td>
@@ -310,10 +363,10 @@ function renderUsers(users){
       <td style="font-size:11px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(u.sub_last_user_agent||'—').split('/')[0]}</td>
       <td>${userDeviceCounts[u.username]??0}</td>
       <td>${fmtOnline(u.online_at)}</td>
-      <td><button onclick="event.stopPropagation();openUser('${u.username}')">···</button></td>
+      <td><button data-action="open-user" data-username="${u.username}">···</button></td>
     </tr>
   `;
-  }).join('');
+  })}`);
 }
 
 // USER DETAIL MODAL
@@ -322,13 +375,13 @@ async function openUser(username){
   const body=document.getElementById('user-modal-body');
   const footer=document.getElementById('user-modal-footer');
   document.getElementById('user-modal-title').textContent=username;
-  body.innerHTML='<div class="loading"><span class="spinner"></span>Загрузка...</div>';
-  footer.innerHTML='';
+  renderHtml(body,html`<div class="loading"><span class="spinner"></span>Загрузка...</div>`);
+  footer.replaceChildren();
   modal.classList.add('open');
 
   const [userR,usageR,devR]=await Promise.all([
-    api('/user/'+username),
-    api('/user/'+username+'/usage'),
+    api('/user/'+encodeURIComponent(username)),
+    api('/user/'+encodeURIComponent(username)+'/usage'),
     proxyApi('/admin/user-devices/'+encodeURIComponent(username)),
   ]);
   const u=await userR.json();
@@ -338,7 +391,7 @@ async function openUser(username){
   const usageByNode=usage.usages||[];
   const totalUsage=usageByNode.reduce((s,n)=>s+n.used_traffic,0);
 
-  body.innerHTML=`
+  renderHtml(body,html`
     <div class="user-detail-grid">
       <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${statusBadge(u.status)}</div></div>
       <div class="detail-item"><div class="detail-label">Использовано</div><div class="detail-value">${fmt(u.used_traffic)}</div></div>
@@ -347,42 +400,42 @@ async function openUser(username){
       <div class="detail-item"><div class="detail-label">Создан</div><div class="detail-value">${fmtDate(u.created_at)}</div></div>
       <div class="detail-item"><div class="detail-label">Онлайн</div><div class="detail-value">${fmtOnline(u.online_at)}</div></div>
     </div>
-    ${u.note?`<div style="background:var(--bg4);border-radius:8px;padding:10px 12px;margin-bottom:1rem;font-size:13px"><span style="color:var(--text2)">Заметка: </span>${u.note}</div>`:''}
+    ${u.note?html`<div style="background:var(--bg4);border-radius:8px;padding:10px 12px;margin-bottom:1rem;font-size:13px"><span style="color:var(--text2)">Заметка: </span>${u.note}</div>`:''}
     <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Трафик по нодам</div>
     <div class="usage-node-list">
       ${usageByNode.map(n=>{
         const pct=totalUsage>0?Math.round(n.used_traffic/totalUsage*100):0;
-        return`<div class="usage-node-item">
+        return html`<div class="usage-node-item">
           <div style="display:flex;justify-content:space-between">
             <span class="usage-node-name">${n.node_name}</span>
             <span class="usage-node-val">${fmt(n.used_traffic)} <span style="color:var(--text3);font-size:11px">${pct}%</span></span>
           </div>
           <div class="traffic-bar" style="margin-top:6px"><div class="traffic-fill" style="width:${pct}%"></div></div>
         </div>`;
-      }).join('')}
+      })}
     </div>
     <div style="margin-top:1rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Устройства (HWID)</div>
-        <button style="font-size:11px;padding:3px 10px" onclick="changeDeviceLimit('${username}',${devData?devData.limit:3})">Изменить лимит</button>
+        <button style="font-size:11px;padding:3px 10px" data-action="change-device-limit" data-username="${username}" data-limit="${devData?devData.limit:3}">Изменить лимит</button>
       </div>
-      ${devData?`
+      ${devData?html`
         <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
           Активных: <b>${devData.active_count}</b> / <b>${devData.limit===0?'∞':devData.limit}</b>
         </div>
-        ${devData.devices.length?devData.devices.map(d=>`
+        ${devData.devices.length?devData.devices.map(d=>html`
           <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px">
             <div>
               <span style="${d.is_active?'color:var(--green)':'color:var(--text3)'}">${d.is_active?'●':'○'}</span>
-              <span style="margin-left:6px;font-weight:500">${esc(d.display_name||d.device_name||d.client_name||'Устройство')}</span>
-              <span style="color:var(--text2);margin-left:6px">${esc(d.platform||'')}${d.client_name?' · '+esc(d.client_name):''}</span>
+              <span style="margin-left:6px;font-weight:500">${d.display_name||d.device_name||d.client_name||'Устройство'}</span>
+              <span style="color:var(--text2);margin-left:6px">${d.platform||''}${d.client_name?` · ${d.client_name}`:''}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
               <span style="color:var(--text3)">${fmtOnline(new Date(d.last_seen*1000).toISOString())}</span>
-              <button style="font-size:11px;padding:2px 8px;color:var(--red)" onclick="adminRemoveDevice(${d.id},'${username}')">✕</button>
+              <button style="font-size:11px;padding:2px 8px;color:var(--red)" data-action="admin-remove-device" data-device-id="${d.id}" data-username="${username}">✕</button>
             </div>
-          </div>`).join(''):'<div style="color:var(--text3);font-size:12px">Нет зарегистрированных устройств</div>'}
-      `:'<div style="color:var(--text3);font-size:12px">Нет данных</div>'}
+          </div>`):html`<div style="color:var(--text3);font-size:12px">Нет зарегистрированных устройств</div>`}
+      `:html`<div style="color:var(--text3);font-size:12px">Нет данных</div>`}
     </div>
     <div style="margin-top:1rem" id="nf-section">
       <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
@@ -403,14 +456,14 @@ async function openUser(username){
       <label>Заметка</label>
       <input type="text" id="edit-note" value="${u.note||''}" />
     </div>
-  `;
+  `);
 
-  footer.innerHTML=`
-    <button class="danger" onclick="deleteUser('${username}')">Удалить</button>
-    <button onclick="${u.status==='active'?`disableUser('${username}')`:`enableUser('${username}')`}">${u.status==='active'?'Отключить':'Включить'}</button>
-    <button onclick="resetTraffic('${username}')">Сбросить трафик</button>
-    <button class="primary" onclick="saveUser('${username}')">Сохранить</button>
-  `;
+  renderHtml(footer,html`
+    <button class="danger" data-action="delete-user" data-username="${username}">Удалить</button>
+    <button data-action="${u.status==='active'?'disable-user':'enable-user'}" data-username="${username}">${u.status==='active'?'Отключить':'Включить'}</button>
+    <button data-action="reset-traffic" data-username="${username}">Сбросить трафик</button>
+    <button class="primary" data-action="save-user" data-username="${username}">Сохранить</button>
+  `);
 
   renderNodeFilterSection(username, u.links||[]);
 }
@@ -467,47 +520,47 @@ function renderNodeFilterSection(username, links){
   const allowedSet=new Set(f.allowed_configs||[]);
 
   if(!hostOrder.length){
-    sec.innerHTML=`
+    renderHtml(sec,html`
       <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
-      <p style="font-size:12px;color:var(--text3)">Нет ссылок в подписке</p>`;
+      <p style="font-size:12px;color:var(--text3)">Нет ссылок в подписке</p>`);
     return;
   }
 
-  const groupRows=hostOrder.map(ip=>{
+  const groupRows=hostOrder.map((ip,groupIndex)=>{
     const nodeName=nodeByAddr[ip]||null;
     const configs=hostConfigs[ip];
-    const safeIp=ip.replace(/\./g,'-');
+    const groupId=`nfg-${groupIndex}`;
 
     const configChecks=configs.map(cfg=>{
       const checked=isAll||allowedSet.has(cfg);
-      return`<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">
-        <input type="checkbox" class="nf-cfg" data-cfg="${esc(cfg)}" ${checked?'checked':''} style="width:auto" onchange="onNfCfgToggle()" />
-        <span style="font-size:12px">${esc(cfg)}</span>
+      return html`<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">
+        <input type="checkbox" class="nf-cfg" data-cfg="${cfg}" ${checked?html`checked`:''} style="width:auto" data-change-action="nf-cfg-toggle" />
+        <span style="font-size:12px">${cfg}</span>
       </label>`;
-    }).join('');
+    });
 
     const allGroupChecked=isAll||configs.every(c=>allowedSet.has(c));
 
-    return`<div style="margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);cursor:pointer" onclick="toggleNfGroup('nfg-${safeIp}')">
-        <input type="checkbox" class="nf-group-all" data-ip="${esc(ip)}" ${allGroupChecked?'checked':''} style="width:auto" onclick="event.stopPropagation();onNfGroupAllToggle('${esc(ip)}')" />
+    return html`<div style="margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);cursor:pointer" data-action="toggle-nf-group" data-target="${groupId}">
+        <input type="checkbox" class="nf-group-all" data-group-id="${groupId}" ${allGroupChecked?html`checked`:''} style="width:auto" data-change-action="nf-group-all-toggle" />
         <span style="font-size:13px;flex:1">
-          ${nodeName?`<span style="color:var(--text)">${esc(nodeName)}</span> `:''}
-          <span style="font-family:monospace;font-size:11px;color:var(--text3)">${esc(ip)}</span>
+          ${nodeName?html`<span style="color:var(--text)">${nodeName}</span> `:''}
+          <span style="font-family:monospace;font-size:11px;color:var(--text3)">${ip}</span>
         </span>
         <span style="font-size:11px;color:var(--text3)">${configs.length} конф.</span>
       </div>
-      <div id="nfg-${safeIp}" style="padding:6px 10px 6px 28px">${configChecks}</div>
+      <div id="${groupId}" style="padding:6px 10px 6px 28px">${configChecks}</div>
     </div>`;
-  }).join('');
+  });
 
-  sec.innerHTML=`
+  renderHtml(sec,html`
     <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
-      <input type="checkbox" id="nf-all" ${isAll?'checked':''} onchange="onNfAllToggle()" style="width:auto" />
+      <input type="checkbox" id="nf-all" ${isAll?html`checked`:''} data-change-action="nf-all-toggle" style="width:auto" />
       <span style="font-size:13px">Все конфиги (без фильтра)</span>
     </label>
-    <div id="nf-list" style="${isAll?'opacity:0.45;pointer-events:none':''}">${groupRows}</div>`;
+    <div id="nf-list" style="${isAll?'opacity:0.45;pointer-events:none':''}">${groupRows}</div>`);
 }
 
 function toggleNfGroup(id){
@@ -522,14 +575,8 @@ function onNfAllToggle(){
   list.style.pointerEvents=all?'none':'';
 }
 
-function onNfGroupAllToggle(ip){
-  const groupCb=document.querySelector(`.nf-group-all[data-ip="${ip}"]`);
-  document.querySelectorAll(`.nf-cfg`).forEach(cb=>{
-    // only touch configs belonging to this group (those inside the same group container)
-  });
-  // find the group div by ip
-  const safeIp=ip.replace(/\./g,'-');
-  const groupDiv=document.getElementById('nfg-'+safeIp);
+function onNfGroupAllToggle(groupCb){
+  const groupDiv=document.getElementById(groupCb.dataset.groupId);
   if(!groupDiv)return;
   groupDiv.querySelectorAll('.nf-cfg').forEach(cb=>{
     cb.checked=groupCb.checked;
@@ -543,9 +590,7 @@ function onNfCfgToggle(){
 
 function _syncGroupAllCheckboxes(){
   document.querySelectorAll('.nf-group-all').forEach(groupCb=>{
-    const ip=groupCb.dataset.ip;
-    const safeIp=ip.replace(/\./g,'-');
-    const groupDiv=document.getElementById('nfg-'+safeIp);
+    const groupDiv=document.getElementById(groupCb.dataset.groupId);
     if(!groupDiv)return;
     const cfgs=[...groupDiv.querySelectorAll('.nf-cfg')];
     groupCb.checked=cfgs.length>0&&cfgs.every(c=>c.checked);
@@ -576,18 +621,18 @@ async function saveUser(username){
     await proxyApi('/admin/node-filters',{method:'POST',body:JSON.stringify(nodeFilters)});
   }
 
-  const r=await api('/user/'+username,{method:'PUT',body:JSON.stringify(body)});
+  const r=await api('/user/'+encodeURIComponent(username),{method:'PUT',body:JSON.stringify(body)});
   if(r.ok){toast('Сохранено');closeModal('user-modal');loadUsers();}
   else toast('Ошибка','err');
 }
 async function deleteUser(username){
   if(!confirm('Удалить '+username+'?'))return;
-  const r=await api('/user/'+username,{method:'DELETE'});
+  const r=await api('/user/'+encodeURIComponent(username),{method:'DELETE'});
   if(r.ok){toast('Удалён');closeModal('user-modal');loadUsers();}
   else toast('Ошибка','err');
 }
 async function disableUser(username){
-  const r=await api('/user/'+username,{method:'PUT',body:JSON.stringify({status:'disabled'})});
+  const r=await api('/user/'+encodeURIComponent(username),{method:'PUT',body:JSON.stringify({status:'disabled'})});
   if(r.ok){toast('Отключён');openUser(username);loadUsers();}
 }
 async function changeDeviceLimit(username,current){
@@ -606,12 +651,12 @@ async function adminRemoveDevice(deviceId,username){
   else toast('Ошибка','err');
 }
 async function enableUser(username){
-  const r=await api('/user/'+username,{method:'PUT',body:JSON.stringify({status:'active'})});
+  const r=await api('/user/'+encodeURIComponent(username),{method:'PUT',body:JSON.stringify({status:'active'})});
   if(r.ok){toast('Включён');openUser(username);loadUsers();}
 }
 async function resetTraffic(username){
   if(!confirm('Сбросить трафик '+username+'?'))return;
-  const r=await api('/user/'+username+'/reset',{method:'POST'});
+  const r=await api('/user/'+encodeURIComponent(username)+'/reset',{method:'POST'});
   if(r.ok){toast('Трафик сброшен');openUser(username);loadUsers();}
 }
 
@@ -622,17 +667,17 @@ async function openCreateUser(){
   if(!allInbounds||!Object.keys(allInbounds).length){
     try{const r=await api('/inbounds');allInbounds=await r.json();}catch{}
   }
-  el.innerHTML=Object.entries(allInbounds).map(([proto,items])=>`
+  renderHtml(el,Object.keys(allInbounds).length?html`${Object.entries(allInbounds).map(([proto,items])=>html`
     <div style="margin-bottom:8px">
-      <div style="font-size:12px;color:var(--text2);margin-bottom:4px;text-transform:uppercase">${esc(proto)}</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:4px;text-transform:uppercase">${proto}</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px 12px;margin-left:4px">
-        ${items.map(it=>`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" class="nu-ib" data-proto="${esc(proto)}" data-tag="${esc(it.tag)}" checked style="width:auto" />
-          <span>${esc(it.tag)}</span>
-        </label>`).join('')}
+        ${items.map(it=>html`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" class="nu-ib" data-proto="${proto}" data-tag="${it.tag}" checked style="width:auto" />
+          <span>${it.tag}</span>
+        </label>`)}
       </div>
     </div>
-  `).join('')||'<p style="color:var(--text3);font-size:12px">Нет inbounds</p>';
+  `)}`:html`<p style="color:var(--text3);font-size:12px">Нет inbounds</p>`);
 }
 async function createUser(){
   const username=document.getElementById('new-username').value.trim();
@@ -666,17 +711,17 @@ async function loadNodes(){
   (usage.usages||[]).forEach(u=>usageMap[u.node_id??'null']=u);
   const billingGroups=buildBillingGroups(usage.usages||[]);
 
-  document.getElementById('nodes-grid').innerHTML=nodes.map(n=>{
+  renderHtml(document.getElementById('nodes-grid'),html`${nodes.map(n=>{
     const u=usageMap[n.id]||{uplink:0,downlink:0};
     const total=(u.uplink||0)+(u.downlink||0);
     const s=getNodeSetting(n.id);
-    return`<div class="node-card clickable" onclick="openNode(${n.id})">
+    return html`<div class="node-card clickable" data-action="open-node" data-node-id="${n.id}">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
         <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
-        <div class="node-name" style="flex:1">${esc(n.name)}</div>
-        <button onclick="event.stopPropagation();reconnectNode(${n.id})" style="padding:2px 8px;font-size:11px">⟳</button>
+        <div class="node-name" style="flex:1">${n.name}</div>
+        <button data-action="reconnect-node" data-node-id="${n.id}" style="padding:2px 8px;font-size:11px">⟳</button>
       </div>
-      <div class="node-addr">${esc(n.address)}:${n.port}</div>
+      <div class="node-addr">${n.address}:${n.port}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
         <span class="badge ${importanceClass(s.importance)}">${importanceLabel(s.importance)}</span>
         <span class="badge ${s.can_remove?'badge-green':'badge-red'}">${s.can_remove?'можно убрать':'не трогать'}</span>
@@ -689,31 +734,31 @@ async function loadNodes(){
       <div style="margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)">
         <div style="display:flex;justify-content:space-between;gap:8px"><span>VPS / мес</span><b style="color:var(--text)">${fmtMoney(s.monthly_cost,s.currency)}</b></div>
         <div style="display:flex;justify-content:space-between;gap:8px"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
-        ${(s.provider||s.location)?`<div style="margin-top:6px;color:var(--text3)">${esc([s.provider,s.location].filter(Boolean).join(' · '))}</div>`:''}
-        ${s.billing_group?`<div style="margin-top:4px;color:var(--text3)">группа: ${esc(s.billing_group)}</div>`:''}
-        ${total&&s.traffic_price_per_tb?`<div style="margin-top:4px;color:var(--text3)">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
+        ${(s.provider||s.location)?html`<div style="margin-top:6px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')}</div>`:''}
+        ${s.billing_group?html`<div style="margin-top:4px;color:var(--text3)">группа: ${s.billing_group}</div>`:''}
+        ${total&&s.traffic_price_per_tb?html`<div style="margin-top:4px;color:var(--text3)">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
       </div>
-      <button onclick="event.stopPropagation();openNodeSettings(${n.id})" style="width:100%;margin-top:10px">Настроить</button>
+      <button data-action="open-node-settings" data-node-id="${n.id}" style="width:100%;margin-top:10px">Настроить</button>
     </div>`;
-  }).join('');
+  })}`);
 
   const tbody=document.getElementById('node-traffic-tbody');
-  tbody.innerHTML=(usage.usages||[]).map(u=>{
+  renderHtml(tbody,html`${(usage.usages||[]).map(u=>{
     const total=u.uplink+u.downlink;
     const s=getNodeSetting(u.node_id);
-    return`<tr class="clickable" onclick="openNodeTraffic(${u.node_id===null?'null':u.node_id})">
+    return html`<tr class="clickable" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
       <td>
-        <div style="font-weight:500">${esc(u.node_name)}</div>
-        <div style="font-size:11px;color:var(--text3)">${esc([s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance))}</div>
+        <div style="font-weight:500">${u.node_name}</div>
+        <div style="font-size:11px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance)}</div>
       </td>
       <td>${fmt(u.uplink)}</td>
       <td>${fmt(u.downlink)}</td>
       <td style="font-weight:500">${fmt(total)}</td>
       <td>${fmtMoney(s.monthly_cost,s.currency)}</td>
       <td>${groupTrafficCostLabel(u.node_id,total,billingGroups)}</td>
-      <td><button onclick="event.stopPropagation();openNodeSettings(${u.node_id===null?'null':u.node_id})" style="padding:4px 10px;font-size:12px">Настроить</button></td>
+      <td><button data-action="open-node-settings" data-node-id="${u.node_id===null?'null':u.node_id}" style="padding:4px 10px;font-size:12px">Настроить</button></td>
     </tr>`;
-  }).join('');
+  })}`);
 }
 
 async function reconnectNode(id){
@@ -723,7 +768,7 @@ async function reconnectNode(id){
 }
 
 function option(value,current,label){
-  return `<option value="${esc(value)}" ${value===current?'selected':''}>${esc(label)}</option>`;
+  return html`<option value="${value}" ${value===current?html`selected`:''}>${label}</option>`;
 }
 
 function emptyToNumber(id){
@@ -738,24 +783,24 @@ function openNodeSettings(id){
   const s={currency:'USD',importance:'normal',can_remove:true,...getNodeSetting(id)};
   document.getElementById('node-modal-title').textContent=node?`Настройки ноды · ${node.name}`:'Настройки ноды';
   const body=document.getElementById('node-modal-body');
-  body.innerHTML=`
+  renderHtml(body,html`
     <div style="font-size:13px;color:var(--text2);margin-bottom:1rem">
       Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду.
     </div>
     <label>Отображаемое имя (в боте)</label>
-    <input type="text" id="node-display-name" maxlength="128" placeholder="${esc(node?node.name:'')}" value="${esc(s.node_name||'')}" style="margin-bottom:12px" />
+    <input type="text" id="node-display-name" maxlength="128" placeholder="${node?node.name:''}" value="${s.node_name||''}" style="margin-bottom:12px" />
     <div class="form-row">
       <div>
         <label>Провайдер</label>
-        <input type="text" id="node-provider" maxlength="64" placeholder="Hetzner, Aeza..." value="${esc(s.provider||'')}" />
+        <input type="text" id="node-provider" maxlength="64" placeholder="Hetzner, Aeza..." value="${s.provider||''}" />
       </div>
       <div>
         <label>Локация</label>
-        <input type="text" id="node-location" maxlength="64" placeholder="DE, NL, Estonia..." value="${esc(s.location||'')}" />
+        <input type="text" id="node-location" maxlength="64" placeholder="DE, NL, Estonia..." value="${s.location||''}" />
       </div>
     </div>
     <label>Группа тарификации</label>
-    <input type="text" id="node-billing-group" maxlength="128" placeholder="например: Yandex Cloud / Москва" value="${esc(s.billing_group||'')}" />
+    <input type="text" id="node-billing-group" maxlength="128" placeholder="например: Yandex Cloud / Москва" value="${s.billing_group||''}" />
     <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px">
       Если несколько нод в одной группе, цена доп. трафика и включённый лимит считаются по суммарному трафику группы.
     </div>
@@ -766,7 +811,7 @@ function openNodeSettings(id){
       </div>
       <div>
         <label>Валюта</label>
-        <input type="text" id="node-currency" maxlength="8" placeholder="USD" value="${esc(s.currency||'USD')}" />
+        <input type="text" id="node-currency" maxlength="8" placeholder="USD" value="${s.currency||'USD'}" />
       </div>
     </div>
     <div class="form-row">
@@ -793,29 +838,29 @@ function openNodeSettings(id){
       <div>
         <label>Кандидат на удаление</label>
         <select id="node-can-remove">
-          <option value="true" ${s.can_remove?'selected':''}>Можно убрать, если метрики слабые</option>
-          <option value="false" ${!s.can_remove?'selected':''}>Не трогать без ручного решения</option>
+          <option value="true" ${s.can_remove?html`selected`:''}>Можно убрать, если метрики слабые</option>
+          <option value="false" ${!s.can_remove?html`selected`:''}>Не трогать без ручного решения</option>
         </select>
       </div>
     </div>
     <label>Заметка</label>
-    <textarea id="node-note" maxlength="512" rows="4" placeholder="Например: дешёвая, плохой провайдер, оставить как резерв...">${esc(s.note||'')}</textarea>
+    <textarea id="node-note" maxlength="512" rows="4" placeholder="Например: дешёвая, плохой провайдер, оставить как резерв...">${s.note||''}</textarea>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem">
       <div class="detail-item"><div class="detail-label">Marzban ID</div><div class="detail-value">${node?node.id:'—'}</div></div>
-      <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?esc(node.address):esc(s.node_address||'—')}</div></div>
-      <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?esc(node.status):'—'}</div></div>
+      <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?node.address:s.node_address||'—'}</div></div>
+      <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?node.status:'—'}</div></div>
     </div>
     <div style="margin-top:1rem">
       <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Тихие часы мониторинга (UTC)</div>
       <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Во время тихих часов алерты в Telegram не отправляются (для прерываемых ВМ).</div>
       <div id="node-quiet-hours-list">${renderQuietHours(s.monitor_quiet_hours||[])}</div>
-      <button style="margin-top:6px;font-size:12px" onclick="addQuietHour()">+ Добавить окно</button>
+      <button style="margin-top:6px;font-size:12px" data-action="add-quiet-hour">+ Добавить окно</button>
     </div>
     <div class="modal-footer">
-      <button onclick="closeModal('node-modal')">Отмена</button>
-      <button class="primary" onclick="saveNodeSettings(${id===null?'null':id})">Сохранить</button>
+      <button data-action="close-modal" data-target="node-modal">Отмена</button>
+      <button class="primary" data-action="save-node-settings" data-node-id="${id===null?'null':id}">Сохранить</button>
     </div>
-  `;
+  `);
   document.getElementById('node-modal').classList.add('open');
 }
 
@@ -885,16 +930,16 @@ async function openNodeTraffic(id){
   const title=node?`${node.name} · ${node.address}`:(usage?usage.node_name:'Нода');
   document.getElementById('node-modal-title').textContent=`${title} · ${period.label}`;
   const body=document.getElementById('node-modal-body');
-  body.innerHTML='<div class="loading"><span class="spinner"></span>Собираю трафик по клиентам...</div>';
+  renderHtml(body,html`<div class="loading"><span class="spinner"></span>Собираю трафик по клиентам...</div>`);
   document.getElementById('node-modal').classList.add('open');
 
   const results=await loadUsersUsageForNode(id,period);
   const sorted=results.filter(r=>r.traffic>0).sort((a,b)=>b.traffic-a.traffic);
-  if(!sorted.length){body.innerHTML='<p style="color:var(--text3);padding:1rem 0">Нет трафика через эту ноду за выбранный период</p>';return}
-  body.innerHTML=`<div class="table-wrap"><table>
+  if(!sorted.length){renderHtml(body,html`<p style="color:var(--text3);padding:1rem 0">Нет трафика через эту ноду за выбранный период</p>`);return}
+  renderHtml(body,html`<div class="table-wrap"><table>
     <thead><tr><th>Пользователь</th><th style="text-align:right">Трафик</th></tr></thead>
-    <tbody>${sorted.map(r=>`<tr class="clickable" onclick="closeModal('node-modal');openUser('${r.username}')"><td>${esc(r.username)}</td><td style="text-align:right">${fmt(r.traffic)}</td></tr>`).join('')}</tbody>
-  </table></div>`;
+    <tbody>${sorted.map(r=>html`<tr class="clickable" data-action="open-user-from-node" data-username="${r.username}"><td>${r.username}</td><td style="text-align:right">${fmt(r.traffic)}</td></tr>`)}</tbody>
+  </table></div>`);
 }
 
 async function openNode(id){
@@ -907,19 +952,18 @@ async function loadGlobalConfigs(){
   const configs=await r.json();
   const list=document.getElementById('cfg-list');
   document.getElementById('cfg-count').textContent='('+configs.length+')';
-  if(!configs.length){list.innerHTML='<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет конфигов</p>';return}
-  list.innerHTML=configs.map((c,i)=>`
-    <div class="config-row" draggable="true" id="cfg-${i}"
-      ondragstart="dragStart(${i})" ondragover="dragOver(event,${i})" ondrop="drop(${i})" ondragend="dragEnd()">
+  if(!configs.length){renderHtml(list,html`<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет конфигов</p>`);return}
+  renderHtml(list,html`${configs.map((c,i)=>html`
+    <div class="config-row" draggable="true" id="cfg-${i}" data-config-index="${i}">
       <span class="drag-handle">⠿</span>
       <div class="config-info">
-        <div class="config-name-text">${esc(c.name)}</div>
-        <div class="config-uri-text">${esc(c.uri)}</div>
+        <div class="config-name-text">${c.name}</div>
+        <div class="config-uri-text">${c.uri}</div>
       </div>
-      <span class="badge ${c.enabled?'badge-green':'badge-red'}" style="cursor:pointer" onclick="toggleConfig(${i})">${c.enabled?'вкл':'выкл'}</span>
-      <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deleteConfig(${i})">×</button>
+      <span class="badge ${c.enabled?'badge-green':'badge-red'}" style="cursor:pointer" data-action="toggle-config" data-config-index="${i}">${c.enabled?'вкл':'выкл'}</span>
+      <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-config" data-config-index="${i}">×</button>
     </div>
-  `).join('');
+  `)}`);
   window._cfgs=configs;
 }
 async function addGlobalConfig(){
@@ -949,7 +993,7 @@ async function toggleConfig(idx){
 }
 let _dragIdx=null;
 function dragStart(i){_dragIdx=i;document.getElementById('cfg-'+i).style.opacity='0.4'}
-function dragOver(e,i){e.preventDefault()}
+function dragOver(e){e.preventDefault()}
 function drop(i){
   if(_dragIdx===null||_dragIdx===i)return;
   const cfgs=window._cfgs||[];
@@ -970,16 +1014,16 @@ document.getElementById('pu-user').addEventListener('change',e=>renderPerUserCon
 function renderPerUserConfigs(username){
   const configs=perUserConfigs[username]||[];
   const el=document.getElementById('per-user-configs');
-  if(!configs.length){el.innerHTML='<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет индивидуальных конфигов</p>';return}
-  el.innerHTML=configs.map((c,i)=>`
+  if(!configs.length){renderHtml(el,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет индивидуальных конфигов</p>`);return}
+  renderHtml(el,html`${configs.map((c,i)=>html`
     <div class="per-user-config">
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:500">${esc(c.name)}</div>
-        <div style="font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.uri)}</div>
+        <div style="font-size:13px;font-weight:500">${c.name}</div>
+        <div style="font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.uri}</div>
       </div>
-      <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deletePerUserConfig('${username}',${i})">×</button>
+      <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-per-user-config" data-username="${username}" data-config-index="${i}">×</button>
     </div>
-  `).join('');
+  `)}`);
 }
 async function addPerUserConfig(){
   const username=document.getElementById('pu-user').value;
@@ -1006,7 +1050,7 @@ async function loadInboundExtras(){
   const dl=document.getElementById('ie-inbounds-list');
   const tags=[];
   Object.values(allInbounds).forEach(items=>items.forEach(i=>tags.push(i.tag)));
-  dl.innerHTML=tags.map(t=>`<option value="${esc(t)}">`).join('');
+  renderHtml(dl,html`${tags.map(t=>html`<option value="${t}"></option>`)}`);
 
   try{
     const r=await proxyApi('/admin/settings');
@@ -1019,21 +1063,25 @@ async function loadInboundExtras(){
 function renderInboundExtras(){
   const list=document.getElementById('inbound-extra-list');
   const entries=Object.entries(inboundClientExtras);
-  if(!entries.length){list.innerHTML='<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>';return;}
-  list.innerHTML=entries.map(([tag,extra])=>`
+  if(!entries.length){renderHtml(list,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>`);return;}
+  renderHtml(list,html`${entries.map(([tag,extra])=>html`
     <div style="background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div style="font-weight:500;font-size:14px">${esc(tag)}</div>
-        <button class="danger" style="padding:4px 10px;font-size:12px" onclick="deleteInboundExtra('${esc(tag)}')">Удалить</button>
+        <div style="font-weight:500;font-size:14px">${tag}</div>
+        <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-inbound-extra" data-inbound-tag="${tag}">Удалить</button>
       </div>
       <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Параметры (URL query) или чистый JSON:</div>
-      <textarea style="width:100%;height:100px;font-family:monospace;font-size:12px" id="ie-val-${esc(tag)}" placeholder="extra=... или { \\\"xmux\\\": ... }">${esc(extra)}</textarea>
+      <textarea style="width:100%;height:100px;font-family:monospace;font-size:12px" data-inbound-value="${tag}" placeholder="extra=... или { &quot;xmux&quot;: ... }">${extra}</textarea>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <button onclick="formatInboundExtraJson('${esc(tag)}')">Сжать и закодировать JSON (если введён чистый JSON)</button>
-        <button class="primary" onclick="updateInboundExtra('${esc(tag)}')">Сохранить</button>
+        <button data-action="format-inbound-extra" data-inbound-tag="${tag}">Сжать и закодировать JSON (если введён чистый JSON)</button>
+        <button class="primary" data-action="update-inbound-extra" data-inbound-tag="${tag}">Сохранить</button>
       </div>
     </div>
-  `).join('');
+  `)}`);
+}
+
+function inboundExtraField(tag){
+  return [...document.querySelectorAll('[data-inbound-value]')].find(el=>el.dataset.inboundValue===tag);
 }
 
 async function addInboundExtra(){
@@ -1048,7 +1096,8 @@ async function addInboundExtra(){
 }
 
 function formatInboundExtraJson(tag){
-  const el=document.getElementById('ie-val-'+tag);
+  const el=inboundExtraField(tag);
+  if(!el)return;
   let val=el.value.trim();
   if(!val)return;
   // If it starts with { it might be raw JSON
@@ -1068,7 +1117,8 @@ function formatInboundExtraJson(tag){
 }
 
 async function updateInboundExtra(tag){
-  const el=document.getElementById('ie-val-'+tag);
+  const el=inboundExtraField(tag);
+  if(!el)return;
   let val=el.value.trim();
   
   // auto-encode if user forgot and it's valid JSON
@@ -1100,7 +1150,6 @@ async function saveInboundExtras(){
   await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({inbound_client_extras:inboundClientExtras})});
 }
 
-function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function closeModal(id){document.getElementById(id).classList.remove('open')}
 document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')}));
 
@@ -1162,26 +1211,26 @@ async function saveSettings(){
 
 // QUIET HOURS
 function renderQuietHours(list){
-  if(!list||!list.length)return'<div style="font-size:12px;color:var(--text3)">Не заданы</div>';
-  return list.map((w,i)=>`
+  if(!list||!list.length)return html`<div style="font-size:12px;color:var(--text3)">Не заданы</div>`;
+  return html`${list.map((w,i)=>html`
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-      <input type="time" value="${esc(w.from)}" style="width:100px" data-qh-from="${i}" />
+      <input type="time" value="${w.from}" style="width:100px" data-qh-from="${i}" />
       <span style="font-size:12px;color:var(--text2)">—</span>
-      <input type="time" value="${esc(w.to)}" style="width:100px" data-qh-to="${i}" />
-      <button style="padding:2px 8px;font-size:12px" onclick="removeQuietHour(${i})">✕</button>
-    </div>`).join('');
+      <input type="time" value="${w.to}" style="width:100px" data-qh-to="${i}" />
+      <button style="padding:2px 8px;font-size:12px" data-action="remove-quiet-hour" data-quiet-index="${i}">✕</button>
+    </div>`)}`;
 }
 function addQuietHour(){
   const list=document.getElementById('node-quiet-hours-list');
   const existing=collectQuietHours();
   existing.push({from:'00:00',to:'01:00'});
-  list.innerHTML=renderQuietHours(existing);
+  renderHtml(list,renderQuietHours(existing));
 }
 function removeQuietHour(i){
   const list=document.getElementById('node-quiet-hours-list');
   const existing=collectQuietHours();
   existing.splice(i,1);
-  list.innerHTML=renderQuietHours(existing);
+  renderHtml(list,renderQuietHours(existing));
 }
 function collectQuietHours(){
   const froms=document.querySelectorAll('[data-qh-from]');
@@ -1305,22 +1354,22 @@ const _TICKET_STATUS_COLORS={open:'#4af',waiting_human:'#fa4',new_user:'#a4f',cl
 
 async function loadTickets(status){
   const tbody=document.getElementById('tickets-tbody');
-  tbody.innerHTML='<tr><td colspan="6"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  renderHtml(tbody,html`<tr><td colspan="6"><div class="loading"><span class="spinner"></span></div></td></tr>`);
   try{
     const qs=status?`?status=${status}`:'';
     const r=await proxyApi('/admin/tickets'+qs);
     const tickets=await r.json();
-    if(!tickets.length){tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--text3)">Тикетов нет</td></tr>';return;}
-    tbody.innerHTML=tickets.map(t=>`
+    if(!tickets.length){renderHtml(tbody,html`<tr><td colspan="6" style="text-align:center;color:var(--text3)">Тикетов нет</td></tr>`);return;}
+    renderHtml(tbody,html`${tickets.map(t=>html`
       <tr>
         <td>#${t.id}</td>
         <td><span style="color:${_TICKET_STATUS_COLORS[t.status]||'#888'};font-weight:600">${_TICKET_STATUS_LABELS[t.status]||t.status}</span></td>
         <td>${t.marzban_username||`tg:${t.telegram_id}`}</td>
         <td style="font-size:12px;color:var(--text2)">${_tsAgo(t.updated_at)}</td>
         <td style="font-size:12px;color:var(--text3)">${_fmtDate(t.created_at)}</td>
-        <td><button onclick="openTicket(${t.id})">Открыть</button></td>
-      </tr>`).join('');
-  }catch(e){tbody.innerHTML='<tr><td colspan="6" style="color:#f66">Ошибка загрузки</td></tr>';}
+        <td><button data-action="open-ticket" data-ticket-id="${t.id}">Открыть</button></td>
+      </tr>`)}`);
+  }catch(e){renderHtml(tbody,html`<tr><td colspan="6" style="color:#f66">Ошибка загрузки</td></tr>`);}
 }
 
 async function openTicket(id){
@@ -1331,14 +1380,14 @@ async function openTicket(id){
   document.getElementById('ticket-modal-title').textContent=
     `Тикет #${id} — ${ticket.marzban_username||`tg:${ticket.telegram_id}`} [${_TICKET_STATUS_LABELS[ticket.status]||ticket.status}]`;
   const chat=document.getElementById('ticket-chat');
-  chat.innerHTML=messages.length?messages.map(m=>{
+  renderHtml(chat,messages.length?html`${messages.map(m=>{
     const bg=m.role==='user'?'var(--bg4)':m.role==='ai'?'#1a3a2a':'#2a2a1a';
     const label=m.role==='user'?'Пользователь':m.role==='ai'?'AI':'Оператор';
-    return `<div style="margin-bottom:8px;padding:8px;background:${bg};border-radius:6px">
+    return html`<div style="margin-bottom:8px;padding:8px;background:${bg};border-radius:6px">
       <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${label} · ${_fmtDate(m.ts)}</div>
-      <div style="white-space:pre-wrap;font-size:13px">${_esc(m.text)}</div>
+      <div style="white-space:pre-wrap;font-size:13px">${m.text}</div>
     </div>`;
-  }).join(''):'<div style="color:var(--text3);font-size:13px">Сообщений нет</div>';
+  })}`:html`<div style="color:var(--text3);font-size:13px">Сообщений нет</div>`);
   chat.scrollTop=chat.scrollHeight;
   document.getElementById('ticket-reply-text').value='';
   document.getElementById('ticket-action-status').textContent='';
@@ -1377,8 +1426,6 @@ function _tsAgo(ts){
   return`${Math.floor(diff/86400)} дн назад`;
 }
 function _fmtDate(ts){return new Date(ts*1000).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
-function _esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-
 // TELEGRAM STARS
 async function loadStarsSettings(){
   try{
@@ -1394,23 +1441,23 @@ async function saveStarsSettings(){
 
 async function loadStarsTariffs(){
   const tbody=document.getElementById('stars-tariffs-tbody');
-  tbody.innerHTML='<tr><td colspan="5"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  renderHtml(tbody,html`<tr><td colspan="5"><div class="loading"><span class="spinner"></span></div></td></tr>`);
   try{
     const r=await proxyApi('/admin/stars-tariffs');
     const tariffs=await r.json();
     if(!tariffs.length){
-      tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--text3)">Тарифы ещё не настроены — добавьте первый тариф</td></tr>';
+      renderHtml(tbody,html`<tr><td colspan="5" style="text-align:center;color:var(--text3)">Тарифы ещё не настроены — добавьте первый тариф</td></tr>`);
       return;
     }
-    tbody.innerHTML=tariffs.map(t=>`
+    renderHtml(tbody,html`${tariffs.map(t=>html`
       <tr>
-        <td>${esc(t.name)}</td>
+        <td>${t.name}</td>
         <td>${t.duration_days}</td>
         <td>${t.stars_price} ⭐️</td>
-        <td><input type="checkbox" ${t.active?'checked':''} onchange="toggleStarsTariff(${t.id},this.checked)" style="width:auto" /></td>
-        <td><button onclick="deleteStarsTariff(${t.id})">Удалить</button></td>
-      </tr>`).join('');
-  }catch(e){tbody.innerHTML='<tr><td colspan="5" style="color:#f66">Ошибка загрузки</td></tr>';}
+        <td><input type="checkbox" ${t.active?html`checked`:''} data-change-action="toggle-stars-tariff" data-tariff-id="${t.id}" style="width:auto" /></td>
+        <td><button data-action="delete-stars-tariff" data-tariff-id="${t.id}">Удалить</button></td>
+      </tr>`)}`);
+  }catch(e){renderHtml(tbody,html`<tr><td colspan="5" style="color:#f66">Ошибка загрузки</td></tr>`);}
 }
 
 async function addStarsTariff(){
@@ -1448,41 +1495,41 @@ const _STARS_REFUNDABLE=new Set(['applied','manual_review','apply_retry_exhauste
 
 async function loadStarsPayments(status){
   const tbody=document.getElementById('stars-payments-tbody');
-  tbody.innerHTML='<tr><td colspan="10"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  renderHtml(tbody,html`<tr><td colspan="10"><div class="loading"><span class="spinner"></span></div></td></tr>`);
   try{
     const qs=status?`?status=${status}`:'';
     const r=await proxyApi('/admin/stars-payments'+qs);
     const rows=await r.json();
-    if(!rows.length){tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--text3)">Платежей нет</td></tr>';return;}
-    tbody.innerHTML=rows.map(p=>{
+    if(!rows.length){renderHtml(tbody,html`<tr><td colspan="10" style="text-align:center;color:var(--text3)">Платежей нет</td></tr>`);return;}
+    renderHtml(tbody,html`${rows.map(p=>{
       const actions=[];
       if(_STARS_ACTIONABLE.has(p.status)){
-        actions.push(`<button onclick="starsPaymentAction(${p.id},'recheck')">Проверить</button>`);
-        actions.push(`<button onclick="starsPaymentAction(${p.id},'confirm-applied')">Подтвердить</button>`);
+        actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="recheck">Проверить</button>`);
+        actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="confirm-applied">Подтвердить</button>`);
         if(p.base_expire_observed!==null&&p.target_expire!==null){
-          actions.push(`<button onclick="starsPaymentAction(${p.id},'requeue')">Повторить</button>`);
+          actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="requeue">Повторить</button>`);
         }
       }
       if(_STARS_REFUNDABLE.has(p.status)){
-        actions.push(`<button onclick="starsPaymentAction(${p.id},'refund')">Возврат</button>`);
+        actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="refund">Возврат</button>`);
       }
       if(p.status==='refund_pending'||p.status==='refund_unknown'){
-        actions.push(`<button onclick="starsPaymentAction(${p.id},'reconcile-refund')">Сверить возврат</button>`);
+        actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="reconcile-refund">Сверить возврат</button>`);
       }
-      return `<tr>
+      return html`<tr>
         <td>#${p.id}</td>
-        <td>${esc(p.marzban_username)}</td>
-        <td>${esc(p.tariff_name)} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
+        <td>${p.marzban_username}</td>
+        <td>${p.tariff_name} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
         <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
         <td>${p.created_by_telegram_id}</td>
         <td>${p.payer_telegram_id??'—'}</td>
         <td>${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
         <td>${p.applied_expire??'—'}</td>
-        <td style="font-size:11px;color:var(--text3);max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(p.manual_review_reason||'')}</td>
-        <td style="white-space:nowrap">${actions.join(' ')}</td>
+        <td style="font-size:11px;color:var(--text3);max-width:220px;overflow:hidden;text-overflow:ellipsis">${p.manual_review_reason||''}</td>
+        <td style="white-space:nowrap">${actions}</td>
       </tr>`;
-    }).join('');
-  }catch(e){tbody.innerHTML='<tr><td colspan="10" style="color:#f66">Ошибка загрузки</td></tr>';}
+    })}`);
+  }catch(e){renderHtml(tbody,html`<tr><td colspan="10" style="color:#f66">Ошибка загрузки</td></tr>`);}
 }
 
 async function starsPaymentAction(id,action){
@@ -1499,24 +1546,24 @@ async function starsPaymentAction(id,action){
 async function loadStarsOrphans(){
   const tbody=document.getElementById('stars-orphans-tbody');
   if(!tbody)return;
-  tbody.innerHTML='<tr><td colspan="8"><div class="loading"><span class="spinner"></span></div></td></tr>';
+  renderHtml(tbody,html`<tr><td colspan="8"><div class="loading"><span class="spinner"></span></div></td></tr>`);
   try{
     const r=await proxyApi('/admin/stars-orphan-payments');
     const rows=await r.json();
-    if(!rows.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3)">Непривязанных оплат нет</td></tr>';return;}
-    tbody.innerHTML=rows.map(p=>{
+    if(!rows.length){renderHtml(tbody,html`<tr><td colspan="8" style="text-align:center;color:var(--text3)">Непривязанных оплат нет</td></tr>`);return;}
+    renderHtml(tbody,html`${rows.map(p=>{
       const actions=[];
-      if(p.status==='manual_review')actions.push(`<button onclick="starsOrphanAction(${p.id},'refund')">Возврат</button>`);
-      if(p.status==='refund_pending'||p.status==='refund_unknown')actions.push(`<button onclick="starsOrphanAction(${p.id},'reconcile-refund')">Сверить возврат</button>`);
-      return `<tr>
+      if(p.status==='manual_review')actions.push(html`<button data-action="stars-orphan-action" data-payment-id="${p.id}" data-payment-action="refund">Возврат</button>`);
+      if(p.status==='refund_pending'||p.status==='refund_unknown')actions.push(html`<button data-action="stars-orphan-action" data-payment-id="${p.id}" data-payment-action="reconcile-refund">Сверить возврат</button>`);
+      return html`<tr>
         <td>#${p.id}</td><td>${p.payer_telegram_id}</td>
-        <td>${p.total_amount} ${esc(p.currency)}</td><td>${esc(p.invoice_payload)}</td>
-        <td>${esc(p.telegram_payment_charge_id)}</td><td>${esc(p.reason)}</td>
+        <td>${p.total_amount} ${p.currency}</td><td>${p.invoice_payload}</td>
+        <td>${p.telegram_payment_charge_id}</td><td>${p.reason}</td>
         <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
-        <td style="white-space:nowrap">${actions.join(' ')}</td>
+        <td style="white-space:nowrap">${actions}</td>
       </tr>`;
-    }).join('');
-  }catch(e){tbody.innerHTML='<tr><td colspan="8" style="color:#f66">Ошибка загрузки</td></tr>';}
+    })}`);
+  }catch(e){renderHtml(tbody,html`<tr><td colspan="8" style="color:#f66">Ошибка загрузки</td></tr>`);}
 }
 
 async function starsOrphanAction(id,action){
@@ -1528,9 +1575,120 @@ async function starsOrphanAction(id,action){
   loadStarsOrphans();
 }
 
-// INIT
-if(TOKEN){
-  document.getElementById('login-page').style.display='none';
-  document.getElementById('app').style.display='flex';
-  bootstrap();
+function parseNodeId(value){
+  if(value==='null'||value===''||value===undefined)return null;
+  const id=Number(value);
+  return Number.isInteger(id)?id:null;
 }
+function parseInteger(value){
+  const parsed=Number(value);
+  return Number.isInteger(parsed)?parsed:null;
+}
+function runAdminAction(work){
+  Promise.resolve(work).catch(error=>{
+    console.error('admin action failed',error);
+    if(error?.message!=='unauth')toast('Операция не выполнена','err');
+  });
+}
+
+document.addEventListener('click',event=>{
+  const el=event.target.closest('[data-action]');
+  if(!el)return;
+  const action=el.dataset.action;
+  const username=el.dataset.username;
+  const nodeId=parseNodeId(el.dataset.nodeId);
+  const numericId=parseInteger(el.dataset.ticketId??el.dataset.paymentId??el.dataset.tariffId);
+  let work;
+  switch(action){
+    case'login':work=doLogin();break;
+    case'logout':work=doLogout();break;
+    case'show-page':showPage(el.dataset.page);break;
+    case'switch-tab':switchTab(el.dataset.target,el);break;
+    case'load-dashboard':work=loadDashboard();break;
+    case'load-nodes':work=loadNodes();break;
+    case'open-create-user':work=openCreateUser();break;
+    case'create-user':work=createUser();break;
+    case'open-user':work=openUser(username);break;
+    case'open-user-from-node':closeModal('node-modal');work=openUser(username);break;
+    case'change-device-limit':work=changeDeviceLimit(username,parseInteger(el.dataset.limit));break;
+    case'admin-remove-device':work=adminRemoveDevice(parseInteger(el.dataset.deviceId),username);break;
+    case'delete-user':work=deleteUser(username);break;
+    case'disable-user':work=disableUser(username);break;
+    case'enable-user':work=enableUser(username);break;
+    case'reset-traffic':work=resetTraffic(username);break;
+    case'save-user':work=saveUser(username);break;
+    case'open-node':work=openNode(nodeId);break;
+    case'open-node-traffic':work=openNodeTraffic(nodeId);break;
+    case'open-node-settings':openNodeSettings(nodeId);break;
+    case'reconnect-node':event.stopPropagation();work=reconnectNode(nodeId);break;
+    case'save-node-settings':work=saveNodeSettings(nodeId);break;
+    case'add-quiet-hour':addQuietHour();break;
+    case'remove-quiet-hour':removeQuietHour(parseInteger(el.dataset.quietIndex));break;
+    case'toggle-nf-group':
+      if(event.target.closest('input'))return;
+      toggleNfGroup(el.dataset.target);break;
+    case'add-global-config':work=addGlobalConfig();break;
+    case'toggle-config':work=toggleConfig(parseInteger(el.dataset.configIndex));break;
+    case'delete-config':work=deleteConfig(parseInteger(el.dataset.configIndex));break;
+    case'add-per-user-config':work=addPerUserConfig();break;
+    case'delete-per-user-config':work=deletePerUserConfig(username,parseInteger(el.dataset.configIndex));break;
+    case'add-inbound-extra':work=addInboundExtra();break;
+    case'delete-inbound-extra':work=deleteInboundExtra(el.dataset.inboundTag);break;
+    case'format-inbound-extra':formatInboundExtraJson(el.dataset.inboundTag);break;
+    case'update-inbound-extra':work=updateInboundExtra(el.dataset.inboundTag);break;
+    case'save-settings':work=saveSettings();break;
+    case'save-bot-settings':work=saveBotSettings();break;
+    case'restart-bot':work=restartBot();break;
+    case'save-support-settings':work=saveSupportSettings();break;
+    case'open-ticket':work=openTicket(numericId);break;
+    case'send-ticket-reply':work=sendTicketReply();break;
+    case'close-ticket':work=closeTicket();break;
+    case'add-stars-tariff':work=addStarsTariff();break;
+    case'delete-stars-tariff':work=deleteStarsTariff(numericId);break;
+    case'stars-payment-action':work=starsPaymentAction(numericId,el.dataset.paymentAction);break;
+    case'stars-orphan-action':work=starsOrphanAction(numericId,el.dataset.paymentAction);break;
+    case'close-modal':closeModal(el.dataset.target);break;
+    default:return;
+  }
+  if(work!==undefined)runAdminAction(work);
+});
+
+document.addEventListener('change',event=>{
+  const el=event.target.closest('[data-change-action]');
+  if(!el)return;
+  let work;
+  switch(el.dataset.changeAction){
+    case'traffic-period':work=onTrafficPeriodChange();break;
+    case'load-tickets':work=loadTickets(el.value||undefined);break;
+    case'load-stars-payments':work=loadStarsPayments(el.value||undefined);break;
+    case'save-stars-settings':work=saveStarsSettings();break;
+    case'toggle-bot-proxy':toggleBotProxy();break;
+    case'nf-all-toggle':onNfAllToggle();break;
+    case'nf-group-all-toggle':onNfGroupAllToggle(el);break;
+    case'nf-cfg-toggle':onNfCfgToggle();break;
+    case'toggle-stars-tariff':work=toggleStarsTariff(parseInteger(el.dataset.tariffId),el.checked);break;
+    default:return;
+  }
+  if(work!==undefined)runAdminAction(work);
+});
+
+document.addEventListener('input',event=>{
+  const el=event.target.closest('[data-input-action]');
+  if(el?.dataset.inputAction==='filter-users')filterUsers();
+});
+
+document.addEventListener('dragstart',event=>{
+  const row=event.target.closest('.config-row[data-config-index]');
+  if(row)dragStart(parseInteger(row.dataset.configIndex));
+});
+document.addEventListener('dragover',event=>{
+  if(event.target.closest('.config-row[data-config-index]'))dragOver(event);
+});
+document.addEventListener('drop',event=>{
+  const row=event.target.closest('.config-row[data-config-index]');
+  if(row){event.preventDefault();drop(parseInteger(row.dataset.configIndex));}
+});
+document.addEventListener('dragend',dragEnd);
+
+// INIT
+restoreAdminSession();
