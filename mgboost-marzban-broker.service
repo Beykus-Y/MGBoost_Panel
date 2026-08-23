@@ -1,21 +1,21 @@
 [Unit]
-Description=MGBoost Panel
-Wants=network-online.target mgboost-marzban-broker.service
-After=network-online.target mgboost-marzban-broker.service
+Description=MGBoost typed localhost Marzban broker
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
-User=mgboost
-Group=mgboost
+User=mgboost-broker
+Group=mgboost-broker
 WorkingDirectory=/opt/MGBoost_Panel
-ExecStart=/usr/bin/python3 /opt/MGBoost_Panel/main.py
-EnvironmentFile=/opt/MGBoost_Panel/.env
+ExecStart=/usr/bin/python3 /opt/MGBoost_Panel/broker_main.py
+EnvironmentFile=/etc/mgboost/marzban-broker.env
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MGBOOST_SKIP_DOTENV=1
 Restart=on-failure
-RestartSec=5
+RestartSec=3
 UMask=0077
 
-# The panel needs network access and write access only to its SQLite/data dir.
 NoNewPrivileges=true
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -23,7 +23,6 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/MGBoost_Panel/data
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

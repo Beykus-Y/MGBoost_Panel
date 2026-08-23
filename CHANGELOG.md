@@ -34,7 +34,7 @@
 - Регулярные MGBoost/Marzban DB backup jobs на production не обнаружены; их создание и утверждённая retention/quarantine policy остаются отдельным PH1-06, а не считаются выполненными этой permission-задачей.
 - MGBoost production service переведён с root на dedicated `mgboost` system user. Systemd unit теперь ограничивает capabilities, filesystem writes, `/proc`, namespaces/devices/home/tmp и использует restrictive `UMask=0077`; effective exposure score снижен с 9.6 `UNSAFE` до 2.8 `OK`, runtime/SQLite/HTTP smoke пройдены.
 - Добавлен обязательный no-user-impact gate перед PH1-05: зафиксированы production legacy subscription/config/UUID/expiry/HWID contracts, отдельная localhost broker topology, exact current Filin/Stars/LK/bot operation matrix, outage/rollback требования и regression tests. До реализации и staging-проверки broker полный security cutover помечен `NOT SAFE TO DEPLOY`.
-- PH1-05 прошёл isolated Marzban 0.8.4 staging: all-10 direct-vs-broker comparison, HMAC Filin create/renew/delete, broker/Marzban/MGBoost restart/outage recovery и byte-identical legacy subscription smoke. Production deployment не выполнялся; cutover и direct-call rollback не требуют изменения пользовательских UUID, subscription URL/token, HWID, тарифов или expiry.
+- PH1-05 прошёл isolated Marzban 0.8.4 staging: all-10 direct-vs-broker comparison, HMAC Filin create/renew/delete, broker/Marzban/MGBoost restart/outage recovery и byte-identical legacy subscription smoke. Broker запускается отдельным Unix identity и явно не читает repository `.env`; production deployment пока не выполнялся. Cutover и direct-call rollback не требуют изменения пользовательских UUID, subscription URL/token, HWID, тарифов или expiry.
 
 ### Documentation
 

@@ -5,9 +5,9 @@ import time
 from collections import defaultdict
 
 from ..http_utils import read_body as _read_body
-from ..marzban import MarzbanClient
+from ..service_marzban import ServiceMarzbanClient
 
-_client = MarzbanClient()
+_client = ServiceMarzbanClient()
 
 # Simple in-memory rate limiter: {ip: [timestamps]}
 _rate_limit: dict = defaultdict(list)
@@ -29,14 +29,12 @@ _MGMT_SCOPE_DEVICES = "devices:manage"
 _MGMT_CODE_RE = re.compile(r"^[A-Za-z0-9_\-]{16,64}$")
 
 
-def _get_admin_token(user: str, password: str):
-    if not password:
-        return None
+def _get_admin_token():
     now = time.time()
     if _admin_token_cache[0] and _admin_token_cache[1] > now:
         return _admin_token_cache[0]
     try:
-        tok = _client.get_token(user, password)
+        tok = _client.get_admin_token_from_env()
         _admin_token_cache[0] = tok
         _admin_token_cache[1] = now + _ADMIN_TOKEN_TTL
         return tok
@@ -271,17 +269,16 @@ def handle_lk_info(handler):
             return
 
     try:
-        admin_user = os.environ.get("MARZBAN_ADMIN_USER", "admin")
-        admin_pass = os.environ.get("MARZBAN_ADMIN_PASS", "")
+        admin_token = _get_admin_token()
 
-        admin_token = _get_admin_token(admin_user, admin_pass)
-
-        user_data = {}
-        if admin_token:
-            try:
-                user_data = _client.get_user(username, admin_token)
-            except Exception:
-                pass
+        if not admin_token:
+            _error(handler, 503, "Account service temporarily unavailable")
+            return
+        try:
+            user_data = _client.get_user(username, admin_token)
+        except Exception:
+            _error(handler, 503, "Account service temporarily unavailable")
+            return
 
         expire = user_data.get("expire")
         status = user_data.get("status", "unknown")
@@ -328,26 +325,27 @@ def handle_lk_usage(handler):
             return
 
     try:
-        admin_user = os.environ.get("MARZBAN_ADMIN_USER", "admin")
-        admin_pass = os.environ.get("MARZBAN_ADMIN_PASS", "")
+        admin_token = _get_admin_token()
 
-        admin_token = _get_admin_token(admin_user, admin_pass)
-
-        nodes_usage = []
-        if admin_token:
-            try:
-                raw = _client.get_user_usage(username, admin_token)
-                usages = raw.get("usages", [])
-                total = sum(u.get("used_traffic", 0) for u in usages)
-                for u in usages:
-                    used = u.get("used_traffic", 0)
-                    nodes_usage.append({
-                        "node_name": u.get("node_name", "Unknown"),
-                        "used_traffic": used,
-                        "percent": round(used / total * 100) if total > 0 else 0,
-                    })
-            except Exception as e:
-                print(f"[LK] usage fetch error: {e}")
+        if not admin_token:
+            _error(handler, 503, "Traffic service temporarily unavailable")
+            return
+        try:
+            raw = _client.get_user_usage(username, admin_token)
+            usages = raw.get("usages", [])
+            total = sum(u.get("used_traffic", 0) for u in usages)
+            nodes_usage = []
+            for u in usages:
+                used = u.get("used_traffic", 0)
+                nodes_usage.append({
+                    "node_name": u.get("node_name", "Unknown"),
+                    "used_traffic": used,
+                    "percent": round(used / total * 100) if total > 0 else 0,
+                })
+        except Exception as e:
+            print(f"[LK] usage fetch error: {e}")
+            _error(handler, 503, "Traffic service temporarily unavailable")
+            return
 
         _json_ok(handler, {"usages": nodes_usage})
     except Exception as e:

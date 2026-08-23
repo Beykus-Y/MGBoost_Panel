@@ -234,7 +234,12 @@ def test_read_only_info_endpoint_requires_only_token(db, monkeypatch):
     from src.routes import lk as lk_mod
 
     # Avoid a real Marzban admin-token round trip.
-    monkeypatch.setattr(lk_mod, "_get_admin_token", lambda u, p: None)
+    monkeypatch.setattr(lk_mod, "_get_admin_token", lambda: "service")
+    monkeypatch.setattr(
+        lk_mod._client,
+        "get_user",
+        lambda username, _token: {"username": username, "status": "active", "expire": 123},
+    )
 
     h = FakeHandler(db, path="/lk/api/info?token=tok-alice", headers={"Host": "example.com"})
     lk_mod.handle_lk_info(h)

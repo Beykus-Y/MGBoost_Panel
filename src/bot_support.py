@@ -401,6 +401,34 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         if int(time.time()) >= row["expires_at"]:
             await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
             return
+        # Telegram charges after this acknowledgement.  Re-read the exact
+        # target user through the authenticated service boundary immediately
+        # before accepting payment, so a broker/Marzban outage or an account
+        # that became ineligible cannot create a newly-paid entitlement that
+        # we already know we cannot safely apply.  If availability disappears
+        # after this point, successful_payment is still captured durably and
+        # the apply worker retries as before.
+        try:
+            if marzban is None:
+                raise RuntimeError("Marzban service is unavailable")
+            admin_token = await _run_sync(marzban.get_admin_token_from_env)
+            user_info = await _run_sync(
+                marzban.get_user, row["marzban_username"], admin_token
+            )
+            eligible, _reason = _check_stars_eligibility(user_info)
+            if not eligible:
+                await query.answer(
+                    ok=False,
+                    error_message="Подписка сейчас недоступна для продления.",
+                )
+                return
+        except Exception as exc:
+            logger.warning("Stars pre-checkout rejected: entitlement service unavailable: %s", exc)
+            await query.answer(
+                ok=False,
+                error_message="Сервис продления временно недоступен. Попробуйте позже.",
+            )
+            return
         await query.answer(ok=True)
 
     async def capture_orphan_payment(message: Message, reason: str):
@@ -570,7 +598,6 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             )
             return
         try:
-            admin_token = await _run_sync(marzban.get_admin_token_from_env)
             username = marzban.get_username_for_token(token)
             if not username:
                 await message.answer("Ссылка не найдена в системе. Проверьте правильность.")

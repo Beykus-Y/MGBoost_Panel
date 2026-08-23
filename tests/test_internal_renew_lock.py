@@ -163,6 +163,19 @@ class _FakeMarzbanClient:
         self.users[username].update(payload)
         return dict(self.users[username])
 
+    def renew_user(self, username, renewal, admin_token):
+        user = self.get_user(username, admin_token)
+        update = {}
+        if "add_days" in renewal:
+            update["expire"] = max(int(user.get("expire") or 0), int(time.time())) + renewal["add_days"] * 86400
+        if "expire" in renewal:
+            update["expire"] = renewal["expire"]
+        if "data_limit" in renewal:
+            update["data_limit"] = renewal["data_limit"] or None
+        if "status" in renewal:
+            update["status"] = renewal["status"]
+        return self.modify_user(username, update, admin_token)
+
     def get_admin_token_from_env(self):
         return "tok"
 

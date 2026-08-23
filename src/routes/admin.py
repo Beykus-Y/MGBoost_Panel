@@ -770,8 +770,8 @@ def handle_stars_orphan_payments_list(handler):
 
 
 def _get_stars_admin_token(handler):
-    from ..marzban import MarzbanClient
-    client = MarzbanClient()
+    from ..service_marzban import ServiceMarzbanClient
+    client = ServiceMarzbanClient()
     try:
         return client.get_admin_token_from_env(), client
     except Exception:

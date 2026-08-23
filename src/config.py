@@ -1,7 +1,12 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# The isolated Marzban broker receives its complete environment from a
+# root-managed systemd EnvironmentFile and must not read the main process'
+# repository .env.  This also lets the broker use a separate Unix identity
+# which has no filesystem permission to that file.
+if os.getenv("MGBOOST_SKIP_DOTENV", "0") != "1":
+    load_dotenv()
 
 MARZBAN_URL = os.getenv("MARZBAN_URL", "http://127.0.0.1:8000")
 # Public hostname used to build links sent outside of an HTTP request context

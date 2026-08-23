@@ -243,7 +243,10 @@ after PH1-02 rotation; it is not a user UUID or subscription token.
   main without copying the Marzban SUDO password.
 - Start broker on `127.0.0.1:8002`, verify HMAC typed smoke and confirm `ss`
   shows no non-loopback listener.  Do not add or alter any nginx route for it;
-  verify public nginx locations do not proxy port 8002.
+  verify public nginx locations do not proxy port 8002.  The broker unit sets
+  `MGBOOST_SKIP_DOTENV=1`: its separate Unix identity must not be able to read
+  the main repository `.env` and must receive all required values only from
+  `/etc/mgboost/marzban-broker.env`.
 - Remove both Marzban SUDO keys from main `.env`, restart MGBoost, and verify
   `/proc/<main-pid>/environ` contains neither key by name.  Confirm broker is
   the only process with the service credential.

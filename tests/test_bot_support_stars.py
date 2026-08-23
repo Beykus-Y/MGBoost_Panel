@@ -43,7 +43,14 @@ def handlers(db):
 
     dp = Dispatcher()
     trigger = asyncio.Event()
-    setup_support_handlers(dp, db, marzban=None, stars_trigger=trigger)
+    class HealthyMarzban:
+        def get_admin_token_from_env(self):
+            return "service"
+
+        def get_user(self, username, _token):
+            return {"username": username, "expire": int(time.time()) + 86400, "status": "active"}
+
+    setup_support_handlers(dp, db, marzban=HealthyMarzban(), stars_trigger=trigger)
     return {
         "pre_checkout": _get_handler(dp.pre_checkout_query, "on_pre_checkout"),
         "successful_payment": _get_handler(dp.message, "on_successful_payment"),
@@ -184,6 +191,75 @@ def test_pre_checkout_ttl_boundary_rejects_exact_expiry(db, handlers, monkeypatc
     asyncio.run(handlers["pre_checkout"](q))
     assert q.answers[0][0] is False
     assert "истёк" in q.answers[0][1]
+
+
+def _payment_handlers_for_marzban(db, marzban):
+    from aiogram import Dispatcher
+    from src.bot_support import setup_support_handlers
+
+    dp = Dispatcher()
+    trigger = asyncio.Event()
+    setup_support_handlers(dp, db, marzban=marzban, stars_trigger=trigger)
+    return {
+        "pre_checkout": _get_handler(dp.pre_checkout_query, "on_pre_checkout"),
+        "successful_payment": _get_handler(dp.message, "on_successful_payment"),
+        "trigger": trigger,
+    }
+
+
+def test_pre_checkout_rejects_when_broker_or_marzban_is_unavailable(db):
+    class UnavailableMarzban:
+        def get_admin_token_from_env(self):
+            return "broker"
+
+        def get_user(self, _username, _token):
+            raise ConnectionError("broker unavailable")
+
+    handlers = _payment_handlers_for_marzban(db, UnavailableMarzban())
+    inv = _paid_ready_invoice(db)
+    q = FakePreCheckoutQuery(str(inv["id"]), "XTR", 320)
+
+    asyncio.run(handlers["pre_checkout"](q))
+
+    assert q.answers[0][0] is False
+    assert "временно недоступен" in q.answers[0][1]
+    assert db.get_invoice(inv["id"])["status"] == "created"
+
+
+def test_pre_checkout_rejects_when_entitlement_became_ineligible(db):
+    class DisabledMarzban:
+        def get_admin_token_from_env(self):
+            return "broker"
+
+        def get_user(self, username, _token):
+            return {"username": username, "expire": int(time.time()) + 1000, "status": "disabled"}
+
+    handlers = _payment_handlers_for_marzban(db, DisabledMarzban())
+    inv = _paid_ready_invoice(db)
+    q = FakePreCheckoutQuery(str(inv["id"]), "XTR", 320)
+
+    asyncio.run(handlers["pre_checkout"](q))
+
+    assert q.answers[0][0] is False
+    assert "недоступна для продления" in q.answers[0][1]
+
+
+def test_successful_payment_remains_durable_if_broker_fails_after_checkout(db):
+    class DownAfterCheckout:
+        def get_admin_token_from_env(self):
+            raise ConnectionError("broker failed after Telegram accepted checkout")
+
+    handlers = _payment_handlers_for_marzban(db, DownAfterCheckout())
+    inv = _paid_ready_invoice(db)
+    payment = FakeSuccessfulPayment(str(inv["id"]), charge_id="durable-during-outage")
+    message = FakeSuccessfulPaymentMessage(payment, payer_id=111, bot=FakeBot())
+
+    asyncio.run(handlers["successful_payment"](message, object()))
+
+    row = db.get_invoice(inv["id"])
+    assert row["status"] == "paid"
+    assert row["telegram_payment_charge_id"] == "durable-during-outage"
+    assert handlers["trigger"].is_set()
 
 
 # --- successful_payment: independent re-validation + payer identity -------

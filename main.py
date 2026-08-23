@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from src.config import LISTEN_HOST, LISTEN_PORT
 from src.database import Database
-from src.marzban import MarzbanClient
+from src.service_marzban import ServiceMarzbanClient
 from src.server import Server
 from src.bot_runner import BotRunner
 
@@ -9,7 +9,8 @@ if __name__ == "__main__":
     db = Database()
     db.migrate_from_json()
 
-    marzban = MarzbanClient()
+    marzban = ServiceMarzbanClient()
+    marzban.assert_credential_boundary()
 
     def make_bot_runner():
         return BotRunner.from_db(db, marzban=marzban)
