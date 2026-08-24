@@ -77,6 +77,8 @@ class BrokerApplication:
         if not isinstance(data, dict):
             return None
         username = data.get("username")
+        if username is None:
+            username = data.get("child_username")
         if username is None and isinstance(data.get("user"), dict):
             username = data["user"].get("username")
         if not isinstance(username, str) or not username:

@@ -49,6 +49,8 @@ SECRET_KEY=changeme                  # поменяй!
 ADMIN_SESSION_TTL_SECONDS=1800       # абсолютный TTL admin session
 ADMIN_SESSION_COOKIE_SECURE=1        # обязательно 1 в production HTTPS
 PRIMARY_MGBOOST_ADMIN_ACTOR_ID=      # empty = dormant PH3-06 writes fail closed
+PRIMARY_MGBOOST_ADMIN_LOGIN=         # authenticated server-side login allowlist
+DEVICE_SLOT_HMAC_KEY=                # future PH3 slot verifier key; >=32 CSPRNG bytes
 ADMIN_LOGIN_RATE_WINDOW_SECONDS=300  # окно failed-login limiter
 ADMIN_LOGIN_RATE_IDENTITY_FAILURES=5 # failures на IP+username за окно
 ADMIN_LOGIN_RATE_IP_FAILURES=20      # общий IP spray budget за окно
@@ -193,7 +195,8 @@ MARZBAN_BROKER_LISTEN_HOST=127.0.0.1
 MARZBAN_BROKER_LISTEN_PORT=8002
 ```
 
-Broker принимает только десять typed legacy operations и HMAC-authenticated
+Broker принимает десять совместимых typed legacy operations и отдельный
+dormant typed `child.user.ensure`; все операции HMAC-authenticated
 requests. Произвольного Marzban proxy в нём нет. При broker outage текущий
 `/sub/{legacy_token}` продолжает работать напрямую через public Marzban
 subscription endpoint; privileged LK/Stars/bot/Filin операции fail closed.

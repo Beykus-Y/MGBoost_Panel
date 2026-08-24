@@ -64,19 +64,22 @@ therefore unchanged:
 
 The stable account ID, immutable payment ID, mutation ID and idempotency
 verifier are suitable causal references for a durable child-create or
-entitlement outbox event. PH3-09 does not yet provide the outbox itself. Before
-PH3-03, add an account/slot/generation-scoped desired operation containing a
-unique operation key, typed payload digest, pending/applied/error state,
-attempts, remote observation and reconciliation timestamps.
+entitlement outbox event. PH3-09 itself does not provide the outbox. The
+subsequent PH3-03 prerequisite implementation now adds an
+account/slot/generation-scoped desired child operation with a unique operation
+key, typed payload digest, lease/retry/applied state, attempts and immutable
+reconciliation events; it remains dormant and is not production-deployed.
 
-The Phase 1 broker must also gain a new child-specific typed surface rather
+The Phase 1 broker prerequisite implementation adds a child-specific typed surface rather
 than reusing caller-controlled generic legacy semantics blindly. Required
 PH3-03 operations are: deterministic child lookup/create, exact reread/verify,
 and later disable/revoke/update-expiry/update-only-inbounds. The broker must
-accept a server-derived child username/plan payload, reject arbitrary
+accepts a server-derived child username/contract, rejects arbitrary
 proxies/inbounds/data-limit changes outside the operation, and return enough
 remote identity/effect evidence for outbox reconciliation. Existing ten legacy
-operations remain unchanged for compatibility.
+operations remain unchanged for compatibility. See
+`docs/PHASE3_CHILD_PROVISIONING.md`; real Marzban 0.8.4 staging and production
+activation are still pending.
 
 ## Tests and rollback
 

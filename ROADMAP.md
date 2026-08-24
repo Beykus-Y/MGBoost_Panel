@@ -439,12 +439,18 @@ and are not eligible for completion.
 **Production-copy gate:** exact PH3-02 migration applied twice (`true/false`), preserved the digest of all 30 pre-existing non-marker tables, left parent/slot/generation rows at zero, kept legacy devices/HWID locks 71/71, and passed checksum/quick/FK checks. No legacy runtime module references the new repository. Forensic note and rollout/rollback: `docs/PHASE3_DEVICE_SLOTS.md`.
 **Production completed 2026-08-24:** a fresh encrypted backup preceded the exact `1d0d120` pull and `mgboost-panel`-only restart. The migration checksum is present while all parent/slot/generation tables remain empty; legacy `user_devices`/`hwid_lock` remain 71/71 and authoritative. Exact pre/post masked digests match for all 25 Marzban identities and 25/25 fetched legacy configs with zero fetch errors. Admin/LK, invalid-sub uniform response, durable Stars state, signed Filin, localhost broker, Telegram proxy, nginx/systemd, SQLite quick/FK and token-safe journal/access-log gates passed. UUID, legacy subscription URL/token, HWID, expiry, tariff, child users, forced client reconfiguration and unexpected config changes caused by deployment: 0. Rollback remains application-only with no credential change. PH3-03 was not started.
 
-## [ ] PH3-03 — Lazy idempotent child Marzban creation
+## [~] PH3-03 — Lazy idempotent child Marzban creation
 
 **Depends:** PH1-05, PH3-02. **Scope:** child создаётся при первом занятии slot; отдельный UUID; не создавать 12 заранее.
 **Accept:** 2 занятых Family slots = 2 child users; retry/timeout не создаёт duplicate/orphan.
 **Tests:** remote-created/local-ACK-failed, collisions, concurrent requests.
 **Rollback:** remote reread/reconcile до retry/delete.
+**Owner-approved canary identity (DL-045):** `beykus`, `beykusios`, `BeykusLaptop` — три immutable legacy aliases одного будущего parent `INTERNAL_OWNER_PRIMARY`, owner Telegram identity `905302972`, INTERNAL/billing-free/WL-unlimited/devices=10/expiry-unlimited. Девять observations — practical slot candidates, не доказанные physical devices; cross-client dedup запрещён. Остальные перечисленные legacy candidates и anomalies не классифицировать/не создавать.
+**Prerequisites implemented locally/staged 2026-08-25; production not changed:** additive one-parent/many-alias group/rows preserve each exact legacy username and evidence. Account public ID, child username and operation ID are server-derived; an account-owned active slot generation can atomically create one immutable child intent plus one leased durable outbox row. UUID persists only as hash/mask after ACK. Append-only attempt events and idempotent `CREATED`/`EXISTING` convergence cover remote-created/local-ACK-failed without duplicate/orphan. Cross-account alias/generation substitution is rejected by transactions/composite FKs.
+**Broker prerequisite:** the existing ten legacy operations are unchanged; typed `child.user.ensure` accepts only server-derived operation/child identity, reviewed source alias, exact source-contract hash and expiry. It clones exact allowed VLESS/optional Shadowsocks protocol shape/inbounds/options while making Marzban generate fresh credentials, then rereads/verifies. No generic payload, caller UUID/password/proxies/inbounds/data-limit/status is accepted. Production `beykusios` read-only contract is VLESS+Shadowsocks (25/0 inbound counts), so the allowlist explicitly covers both rather than silently dropping current config semantics.
+**Tests/gates:** focused child/internal/broker `41 passed`; full regression `513 passed, 3 skipped`. A disposable current production DB copy applied the prerequisite migration twice (`true/false`), preserved all 38 prior table digests and 71/71 legacy device/HWID rows, left every alias/child/outbox table empty, and passed quick/FK checks. Real Marzban 0.8.4 create/reread staging remains mandatory because no isolated staging instance is currently retained.
+**First exact manifest, not executed:** source alias `beykusios`; selected observation `user_devices.id=56` / privacy ref `corr_701f5982b4` (iPhone 17, INCY 2.5.2); future slot 1/generation 1; parent public ID `acct_435p4hjeoxeq3bzg4ifkdut4veower4r`; child `mgc_sgg6v7t6he43yytsqmkdczzfpa`; operation `op_lw33pjhqhnvorrgh4p754bnc34`; unlimited expiry. First child does not revoke or redirect any legacy UUID/URL/config; all other observations remain legacy.
+**Осталось до `[x]`:** isolated real Marzban 0.8.4 staging comparison, dormant production schema/code gate, protected slot-HMAC and primary-admin mapping configuration, explicit final manifest approval, one parent/alias/slot/outbox canary mutation, worker dispatch/reread/reconcile and post-effect verification. PH3-04 remains off. Contract/runbook: `docs/PHASE3_CHILD_PROVISIONING.md`.
 
 ## [ ] PH3-04 — HWID fail-closed compatibility gate
 
@@ -468,6 +474,7 @@ and are not eligible for completion.
 **Migration:** internal accounts — canary cohort и тоже child users.
 **Implemented/staging verified 2026-08-24:** checksum-pinned additive review/revision schema plus dormant primary-admin-only repository creates a versioned internal plan and reviewed parent account atomically, rejects ambiguous Telegram ownership before binding, and evaluates configurable/unlimited devices (technical cap 99), billing-free and unlimited-WL semantics without username rules. Every override requires reason, expiry (maximum 90 days), immutable idempotent mutation evidence and returns to plan/AUTO at expiry. No legacy route imports this service; an unset `PRIMARY_MGBOOST_ADMIN_ACTOR_ID` fails every write closed. Focused tests: `8 passed`; full regression `495 passed, 3 skipped`. A disposable online production DB copy applied the migration twice (`true/false`), preserved all 34 pre-existing table digests, left review/revision/account/slot/generation rows at zero, retained 71/71 legacy device/HWID rows and passed quick/FK checks. Read-only candidate evidence and exclusions are recorded in `docs/PHASE3_INTERNAL_ENTITLEMENTS.md`; zero production accounts are automatically provisioned.
 **Production completed 2026-08-24:** verified encrypted backup preceded exact commit `eb6dd37`; only `mgboost-panel` restarted and the additive migration marker/quick/FK checks passed. Production leaves primary-admin actor unset, so every dormant provisioning/override write fails closed. Accounts, plans, internal reviews/revisions, slots and generations remain 0. Exact masked pre/post state matches for 25 Marzban users/configs and 71 legacy device/HWID rows. Admin/LK, invalid subscription, Stars durable state, signed Filin, broker, Telegram proxy, nginx/systemd and token-safe journal/access logs passed. UUID, legacy token/URL, HWID binding, expiry, tariff, parent account, slot/generation, child user, forced reconfiguration and unexpected config changes: 0.
+**PH3-03 prerequisite amendment, not production deployed:** writes now require a sealed capability derived from an authenticated server-side allowlisted admin login; a caller/frontend actor string cannot authorize. DL-045 fixes stable actor `owner:mgboost-primary:v1` and Telegram identity `905302972`, but both production config values remain intentionally unset until the canary gate. Reviewed creation now supports immutable one-parent/many-alias evidence instead of one review username being the only mapping.
 
 ## [x] PH3-07 — Privacy-safe HWID/client compatibility telemetry
 
@@ -1550,6 +1557,17 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Почему:** сохранить уже оплаченный срок, разрешить ранние и повторные продления и не нарушить утверждённую 30-day WL-period модель.
 - **Связано:** OPD-40, PH5-02/05/06/10, PH6-02/08; обязательные tests — repeated payment, concurrent payment, duplicate callback и crash/retry.
 
+## DL-045 — Primary internal owner aliases and privileged actor boundary
+
+- **Дата:** 2026-08-25.
+- **Вопрос:** считать ли `beykus`, `beykusios`, `BeykusLaptop` разными accounts и как авторизовать stable primary actor для первого child canary.
+- **Варианты:** три parent accounts; один parent с разрушительным alias merge; один parent с immutable one-to-many alias evidence. Для actor: доверять caller `actor_id`; либо mint server capability после authenticated allowlisted admin session.
+- **Выбрано:** один parent mapping `INTERNAL_OWNER_PRIMARY` с тремя отдельными immutable aliases; Telegram identity `905302972`; INTERNAL, `billing_required=false`, WL unlimited, device capacity 10, expiry unlimited. Девять observed HWID rows — practical slot candidates, не physical-device proof и не подлежат automatic cross-client dedup. Stable actor `owner:mgboost-primary:v1` может выполнять privileged mutation только через server-derived capability после authenticated primary-admin authorization; Telegram ID остаётся identity link, не credential.
+- **Canary:** только один явно выбранный `beykusios` slot generation; все остальные aliases/devices продолжают legacy runtime. До доказательства child flow old shared UUID и legacy URL не revoke/redirect. Остальные названные candidates и две anomalies не создавать/классифицировать автоматически.
+- **Кто:** пользователь.
+- **Почему:** сохранить ownership/history/reconciliation для всех legacy имён, ограничить blast radius canary и исключить frontend actor spoofing.
+- **Связано:** PH3-01/02/03/06/09, PH4-01/02/03, `src/admin_authority.py`, `src/internal_entitlements.py`, `src/child_provisioning_schema.py`, `docs/PHASE3_CHILD_PROVISIONING.md`.
+
 # Contradictions and migration hazards
 
 1. Current production Stars 199/349 совпадает по цене с будущим WL, но schema не содержит plan/WL/device semantics; старые invoices нельзя молча переинтерпретировать.
@@ -1557,7 +1575,7 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 3. Current one-user/shared-UUID модель несовместима с child revoke/allocation; local device delete не отзывает UUID.
 4. Current proxy требует raw Marzban token; простое hash-only изменение колонки сломает resolver. Нужен новый child-config path.
 5. PH1-01 удалил frontend `localStorage` Marzban JWT и ввёл server session; PH1-05 изолировал service SUDO за typed localhost broker. Оставшиеся risks — process-local admin session state до PH8-02 и сам full-SUDO credential внутри broker до будущего narrow upstream authority.
-6. PH1-03/04 закрыли world-readable sensitive files и root runtime MGBoost; Marzban container всё ещё root. После PH1-05 MGBoost/Filin не получают SUDO/JWT напрямую, но compromised main с broker HMAC key всё ещё может вызвать десять transitional allowlisted operations до их дальнейшего сужения.
+6. PH1-03/04 закрыли world-readable sensitive files и root runtime MGBoost; Marzban container всё ещё root. После PH1-05 MGBoost/Filin не получают SUDO/JWT напрямую, но compromised main с broker HMAC key всё ещё может вызвать десять transitional legacy operations и dormant typed child ensure до дальнейшего сужения authority.
 7. Exact WL tags существуют только live, в repo пока нет authoritative versioned config; stale hosts делают fuzzy match опасным.
 8. Marzban usage агрегируется по UTC-hour; rolling mid-hour period нельзя точно считать суммой whole-hour rows.
 9. Current `audit_log` полезен, но не даёт immutable actor/before/after/reason для всех admin changes.
@@ -1573,6 +1591,7 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 19. Current code хранит только legacy/free-form Stars tariff state и не моделирует утверждённый `RUB-2026-08-23-v1`; новую таблицу нельзя подменять правкой старых invoice/payment snapshots при PH5-01/09 migration.
 20. Marzban current `subscription_url` не является полным inventory реально работающих legacy aliases: 42 из 45 distinct tokens, сохранённых у devices, всё ещё resolve к stored username, хотя почти все отличаются от current user API URL. PH1-06 не может безопасно revoke/rotate user tokens до staged Phase 4 inventory/migration.
 21. Старое предположение PH1-05 о непубликуемом `/internal/` неверно: production nginx допускает этот route с IP `155.212.142.20`, а MGBoost затем проверяет Filin HMAC. Отсутствие вызовов в retained journal sample не разрешает удалить create/renew/delete contract.
+22. Legacy `beykusios` имеет одновременно VLESS и Shadowsocks proxy credentials; VLESS-only child clone изменил бы config semantics. Typed `child.user.ensure` обязан сохранить разрешённую protocol/inbound/options shape, сгенерировать новые credentials обоих протоколов и пройти реальный Marzban 0.8.4 staging до production child mutation.
 
 # Roadmap maintenance checklist
 

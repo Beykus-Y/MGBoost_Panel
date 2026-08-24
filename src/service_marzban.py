@@ -17,6 +17,7 @@ from .broker_protocol import (
     validate_shared_key,
 )
 from .legacy_contract import validate_renew_payload, validate_username
+from .child_contract import validate_child_ensure_request
 from .marzban import MarzbanClient
 
 
@@ -189,3 +190,15 @@ class ServiceMarzbanClient:
         if self.mode == "direct":
             return self.direct.delete_user(username, admin_token)
         return self._broker().call("legacy.user.delete", {"username": username})
+
+    def ensure_child_user(self, request):
+        """Execute only the typed idempotent child ensure contract.
+
+        Direct mode exists solely for isolated comparison/rollback testing;
+        secure production broker mode keeps SUDO out of this process.
+        """
+        normalized = validate_child_ensure_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch("child.user.ensure", normalized)
+        return self._broker().call("child.user.ensure", normalized)

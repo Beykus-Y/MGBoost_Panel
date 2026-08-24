@@ -15,7 +15,7 @@ BROKER_SIGNATURE_HEADER = "X-MGBoost-Signature"
 BROKER_CLIENT_HEADER = "X-MGBoost-Client"
 BROKER_CONTENT_TYPE = "application/json"
 BROKER_MAX_BODY_BYTES = 64 * 1024
-BROKER_OPERATIONS = frozenset({
+LEGACY_BROKER_OPERATIONS = frozenset({
     "legacy.user.get",
     "legacy.user.usage",
     "legacy.users.list",
@@ -27,6 +27,7 @@ BROKER_OPERATIONS = frozenset({
     "legacy.user.set_expire",
     "legacy.user.delete",
 })
+BROKER_OPERATIONS = LEGACY_BROKER_OPERATIONS | frozenset({"child.user.ensure"})
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _SIGNATURE_RE = re.compile(r"^[0-9a-f]{64}$")
 

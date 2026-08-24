@@ -6,10 +6,12 @@ Date: 2026-08-24
 
 PH3-06 is additive and dormant. `src/internal_entitlements.py` is not imported
 by any HTTP, subscription, LK, Stars, Filin, bot or Marzban route. Startup only
-applies the checksum-pinned schema and constructs a repository object. An empty
-`PRIMARY_MGBOOST_ADMIN_ACTOR_ID` disables every PH3-06 write operation; the
-identifier is a server-side authorization input, not a secret or a browser
-claim.
+applies the checksum-pinned schema and constructs a repository object. Both
+`PRIMARY_MGBOOST_ADMIN_ACTOR_ID` and `PRIMARY_MGBOOST_ADMIN_LOGIN` are required;
+an empty value disables every PH3-06 write operation. The stable actor is audit
+identity, not authentication or a browser claim. A sealed capability is minted
+only from an authenticated server-side admin session whose login matches the
+protected allowlist; stores no longer accept caller-provided actor strings.
 
 No legacy username is used to grant access. An internal account must reference
 an immutable `plan_kind=INTERNAL` plan with `billing_required=0`. The plan can
@@ -22,7 +24,8 @@ which still resolves to the technical cap 99. WL is explicit `NONE` or
 The transactional creation operation requires:
 
 - the configured primary-admin actor;
-- an exact legacy username as migration evidence, not as authorization logic;
+- an immutable one-parent/many-legacy-alias mapping, preserving every exact
+  source username as migration evidence rather than authorization logic;
 - an immutable versioned internal plan;
 - current legacy status/expiry and aggregate device/HWID evidence;
 - a reason, confidence, structured evidence and a stable idempotency key;
@@ -30,12 +33,14 @@ The transactional creation operation requires:
 
 `AMBIGUOUS` is rejected before an account or Telegram link is written. A
 Telegram owner link is created only for `PROVEN`; `ABSENT` creates no binding.
-The account, subscription, mutation, review and optional identity link are one
+The account, alias group/rows, subscription, mutation, review and optional identity link are one
 `BEGIN IMMEDIATE` transaction. The review and mutation are immutable. Retrying
 the same operation returns the same account; reusing its key with another
 payload fails closed.
 
-Production provisioning is deliberately not performed by deployment. A later
+The additive multi-alias/outbox prerequisite implementation is documented in
+`docs/PHASE3_CHILD_PROVISIONING.md` and is not yet deployed. Production
+provisioning is deliberately not performed by deployment. A later
 primary-admin reviewed action must select the exact candidates. This prevents
 an unlimited expiry, recognizable username or note from silently becoming an
 INTERNAL entitlement.
@@ -110,8 +115,9 @@ reads these tables, rollback requires no user credential or Marzban change.
 Production deployment completed on exact commit `eb6dd37` after the encrypted
 backup gate. Only `mgboost-panel` restarted. The migration marker is present,
 SQLite quick/FK checks pass, and all account/plan/review/revision/slot/generation
-tables remain empty. `PRIMARY_MGBOOST_ADMIN_ACTOR_ID` is unset, deliberately
-disabling provisioning until an owner-reviewed canary is selected.
+tables remain empty. `PRIMARY_MGBOOST_ADMIN_ACTOR_ID` and
+`PRIMARY_MGBOOST_ADMIN_LOGIN` are unset, deliberately disabling provisioning
+until an owner-reviewed canary is selected.
 
 Masked pre/post digests match exactly for all 25 Marzban users/configs and all
 71 legacy device/HWID rows. Admin, LK, uniform invalid subscription, Stars

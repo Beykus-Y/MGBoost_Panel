@@ -6,6 +6,12 @@ import time
 from urllib.error import HTTPError
 
 from .broker_protocol import BROKER_OPERATIONS
+from .child_contract import (
+    build_child_payload,
+    source_contract_hash,
+    validate_child_ensure_request,
+    validate_created_child,
+)
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
 
 
@@ -127,6 +133,30 @@ class BrokerOperations:
             username = validate_username(data["username"])
             with self._lock_for(username):
                 return self.marzban.delete_user(username, self._admin_token())
+
+        if operation == "child.user.ensure":
+            request = validate_child_ensure_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                source = self.marzban.get_user(request["source_username"], token)
+                if source_contract_hash(source) != request["source_contract_hash"]:
+                    raise ValueError("source user contract changed")
+                existing = None
+                try:
+                    existing = self.marzban.get_user(child_username, token)
+                except HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                if existing is not None:
+                    verified = validate_created_child(existing, request, source)
+                    return {"outcome": "EXISTING", **verified}
+                self.marzban.create_user(build_child_payload(request, source), token)
+                # The create response is not trusted as an acknowledgement:
+                # always reread the authoritative remote state.
+                created = self.marzban.get_user(child_username, token)
+                verified = validate_created_child(created, request, source)
+                return {"outcome": "CREATED", **verified}
 
         raise AssertionError(f"unhandled operation: {operation}")
 

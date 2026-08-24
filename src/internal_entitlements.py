@@ -7,11 +7,12 @@ primary-admin actor configured server-side before any write can occur.
 from __future__ import annotations
 
 import hashlib
-import hmac
+import base64
 import json
-import secrets
 import sqlite3
 import time
+
+from .admin_authority import PrimaryAdminAuthorizationError
 
 
 TECHNICAL_DEVICE_CAP = 99
@@ -44,24 +45,31 @@ def _idempotency_hash(scope: str, raw_key: str) -> str:
     return hashlib.sha256((scope + "\0" + raw_key).encode("utf-8")).hexdigest()
 
 
+def derive_reviewed_account_public_id(mapping_key: str) -> str:
+    key = (mapping_key or "").strip()
+    if not 3 <= len(key) <= 128:
+        raise ReviewedEvidenceRequired("reviewed mapping key is invalid")
+    digest = hashlib.sha256(("mgboost-account-v1\0" + key).encode("utf-8")).digest()
+    encoded = base64.b32encode(digest[:20]).decode("ascii").lower().rstrip("=")
+    return "acct_" + encoded
+
+
 class InternalEntitlementStore:
-    def __init__(self, connection: sqlite3.Connection, lock, primary_admin_actor_id: str):
+    def __init__(self, connection: sqlite3.Connection, lock, primary_admin_authority):
         self._conn = connection
         self._lock = lock
-        self._primary_actor = (primary_admin_actor_id or "").strip()
+        self._primary_authority = primary_admin_authority
 
-    def _require_primary(self, actor_id: str) -> str:
-        actor = (actor_id or "").strip()
-        if not self._primary_actor or not actor or not hmac.compare_digest(
-            actor, self._primary_actor
-        ):
+    def _require_primary(self, capability) -> str:
+        try:
+            return self._primary_authority.require(capability)
+        except PrimaryAdminAuthorizationError:
             raise PrimaryAdminRequired("primary MGBoost admin capability required")
-        return actor
 
     def create_internal_plan(
         self,
         *,
-        actor_id: str,
+        capability,
         plan_code: str,
         version: int,
         display_name: str,
@@ -71,7 +79,7 @@ class InternalEntitlementStore:
         terms: dict | None = None,
         now: int | None = None,
     ) -> dict:
-        self._require_primary(actor_id)
+        self._require_primary(capability)
         if device_limit_mode == "LIMITED":
             if isinstance(device_limit, bool) or not isinstance(device_limit, int):
                 raise InternalEntitlementError("limited internal plan requires device limit")
@@ -131,9 +139,12 @@ class InternalEntitlementStore:
     def create_reviewed_account(
         self,
         *,
-        actor_id: str,
+        capability,
         plan_version_id: int,
         legacy_username: str,
+        mapping_key: str,
+        decision_ref: str,
+        legacy_aliases: list[dict],
         ownership_evidence: str,
         telegram_id: int | None,
         legacy_status: str,
@@ -146,7 +157,7 @@ class InternalEntitlementStore:
         idempotency_key: str,
         now: int | None = None,
     ) -> dict:
-        actor = self._require_primary(actor_id)
+        actor = self._require_primary(capability)
         if ownership_evidence not in {"PROVEN", "ABSENT"}:
             raise ReviewedEvidenceRequired("ambiguous ownership cannot be auto-bound")
         if ownership_evidence == "PROVEN":
@@ -159,16 +170,84 @@ class InternalEntitlementStore:
         if migration_confidence not in {"HIGH", "MEDIUM", "LOW"}:
             raise ReviewedEvidenceRequired("migration confidence is invalid")
         username = (legacy_username or "").strip()
+        mapping_key = (mapping_key or "").strip()
+        decision_ref = (decision_ref or "").strip()
         reason = (internal_reason or "").strip()
-        if not username or len(username) > 128 or not 8 <= len(reason) <= 1000:
+        if (
+            not username or len(username) > 128
+            or not 3 <= len(mapping_key) <= 128
+            or not 3 <= len(decision_ref) <= 128
+            or not 8 <= len(reason) <= 1000
+        ):
             raise ReviewedEvidenceRequired("reviewed username/reason is invalid")
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 0
                for v in (device_evidence_count, hwid_evidence_count)):
             raise ReviewedEvidenceRequired("evidence counts are invalid")
+        if not isinstance(legacy_aliases, list) or not legacy_aliases:
+            raise ReviewedEvidenceRequired("at least one reviewed legacy alias is required")
+        normalized_aliases = []
+        seen_aliases = set()
+        primary_count = 0
+        for raw_alias in legacy_aliases:
+            if not isinstance(raw_alias, dict) or set(raw_alias) != {
+                "legacy_username", "alias_role", "ownership_provenance",
+                "legacy_status", "legacy_expiry", "observed_device_count",
+                "observed_hwid_count", "evidence",
+            }:
+                raise ReviewedEvidenceRequired("legacy alias evidence is malformed")
+            alias_username = (raw_alias["legacy_username"] or "").strip()
+            alias_role = raw_alias["alias_role"]
+            alias_status = raw_alias["legacy_status"]
+            alias_provenance = raw_alias["ownership_provenance"]
+            if (
+                not alias_username or len(alias_username) > 128
+                or alias_username in seen_aliases
+                or alias_role not in {"PRIMARY", "SECONDARY"}
+                or alias_status not in {"ACTIVE", "DISABLED", "EXPIRED", "UNLIMITED"}
+                or alias_provenance not in {"OWNER_APPROVED", "EVIDENCE_PROVEN"}
+            ):
+                raise ReviewedEvidenceRequired("legacy alias identity is invalid")
+            alias_expiry = raw_alias["legacy_expiry"]
+            if alias_expiry is not None and (
+                isinstance(alias_expiry, bool) or not isinstance(alias_expiry, int)
+                or alias_expiry < 0
+            ):
+                raise ReviewedEvidenceRequired("legacy alias expiry is invalid")
+            alias_counts = (
+                raw_alias["observed_device_count"], raw_alias["observed_hwid_count"]
+            )
+            if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in alias_counts):
+                raise ReviewedEvidenceRequired("legacy alias counts are invalid")
+            if not isinstance(raw_alias["evidence"], dict):
+                raise ReviewedEvidenceRequired("legacy alias evidence must be an object")
+            if alias_role == "PRIMARY":
+                primary_count += 1
+                if alias_username != username:
+                    raise ReviewedEvidenceRequired("primary alias must match review username")
+            seen_aliases.add(alias_username)
+            normalized_aliases.append({
+                "legacy_username": alias_username,
+                "alias_role": alias_role,
+                "ownership_provenance": alias_provenance,
+                "legacy_status": alias_status,
+                "legacy_expiry": alias_expiry,
+                "observed_device_count": alias_counts[0],
+                "observed_hwid_count": alias_counts[1],
+                "evidence": raw_alias["evidence"],
+            })
+        if primary_count != 1:
+            raise ReviewedEvidenceRequired("exactly one primary legacy alias is required")
+        if sum(item["observed_device_count"] for item in normalized_aliases) != device_evidence_count:
+            raise ReviewedEvidenceRequired("alias device counts do not match review total")
+        if sum(item["observed_hwid_count"] for item in normalized_aliases) != hwid_evidence_count:
+            raise ReviewedEvidenceRequired("alias HWID counts do not match review total")
         timestamp = int(time.time()) if now is None else int(now)
         idem_hash = _idempotency_hash("internal-account-v1", idempotency_key)
         review_payload = {
             "legacy_username": username,
+            "mapping_key": mapping_key,
+            "decision_ref": decision_ref,
+            "legacy_aliases": normalized_aliases,
             "ownership_evidence": ownership_evidence,
             "telegram_id": telegram_id,
             "legacy_status": legacy_status,
@@ -201,7 +280,7 @@ class InternalEntitlementStore:
                 ).fetchone()
                 if not plan:
                     raise ReviewedEvidenceRequired("review requires a versioned internal plan")
-                public_id = "acct_" + secrets.token_urlsafe(18)
+                public_id = derive_reviewed_account_public_id(mapping_key)
                 account_id = self._conn.execute(
                     "INSERT INTO mgboost_accounts "
                     "(public_id,status,account_source,created_at,updated_at) "
@@ -249,6 +328,27 @@ class InternalEntitlementStore:
                     "(account_id,revision,updated_at) VALUES (?,1,?)",
                     (account_id, timestamp),
                 )
+                self._conn.execute(
+                    "INSERT INTO mgboost_legacy_alias_groups "
+                    "(account_id,mapping_key,decision_ref,created_by_actor,created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (account_id, mapping_key, decision_ref, actor, timestamp),
+                )
+                for alias in normalized_aliases:
+                    self._conn.execute(
+                        "INSERT INTO mgboost_legacy_account_aliases "
+                        "(account_id,legacy_username,alias_role,ownership_provenance,"
+                        "legacy_status,legacy_expiry,observed_device_count,"
+                        "observed_hwid_count,evidence_json,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            account_id, alias["legacy_username"], alias["alias_role"],
+                            alias["ownership_provenance"], alias["legacy_status"],
+                            alias["legacy_expiry"], alias["observed_device_count"],
+                            alias["observed_hwid_count"], _canonical(alias["evidence"]),
+                            timestamp,
+                        ),
+                    )
                 self._conn.commit()
                 return self._review_result(account_id)
             except Exception:
@@ -259,9 +359,10 @@ class InternalEntitlementStore:
         row = self._conn.execute(
             "SELECT a.id AS account_id,a.public_id,a.account_source,s.id AS subscription_id,"
             "s.status,s.current_expiry,r.ownership_evidence,r.migration_confidence,"
-            "r.proposed_plan_version_id FROM mgboost_accounts a "
+            "r.proposed_plan_version_id,g.mapping_key FROM mgboost_accounts a "
             "JOIN mgboost_subscriptions s ON s.account_id=a.id "
             "JOIN mgboost_internal_account_reviews r ON r.account_id=a.id "
+            "JOIN mgboost_legacy_alias_groups g ON g.account_id=a.id "
             "WHERE a.id=?", (int(account_id),),
         ).fetchone()
         return dict(row)
@@ -325,7 +426,7 @@ class InternalEntitlementStore:
         self,
         account_id: int,
         *,
-        actor_id: str,
+        capability,
         entitlement_key: str,
         value_type: str,
         value: int | bool | None,
@@ -334,7 +435,7 @@ class InternalEntitlementStore:
         idempotency_key: str,
         now: int | None = None,
     ) -> dict:
-        actor = self._require_primary(actor_id)
+        actor = self._require_primary(capability)
         timestamp = int(time.time()) if now is None else int(now)
         reason = (reason or "").strip()
         if not 8 <= len(reason) <= 1000:

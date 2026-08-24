@@ -22,10 +22,17 @@ LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8001"))
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
 COMPAT_TELEMETRY_HMAC_KEY = os.getenv("COMPAT_TELEMETRY_HMAC_KEY", "")
+# Dedicated key for durable slot verifiers. It remains unused until an
+# explicitly approved PH3 canary claim is executed.
+DEVICE_SLOT_HMAC_KEY = os.getenv("DEVICE_SLOT_HMAC_KEY", "")
 # Stable, non-secret actor identifier used only by the dormant PH3-06
 # entitlement write boundary.  An empty value deliberately disables all
 # internal-plan/account/override mutations; it does not affect legacy runtime.
 PRIMARY_MGBOOST_ADMIN_ACTOR_ID = os.getenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", "").strip()
+# Login identity mapped to the stable actor only after successful server-side
+# Marzban authentication. Both values must be configured or privileged PH3
+# mutations remain disabled. Neither may be supplied by an HTTP request.
+PRIMARY_MGBOOST_ADMIN_LOGIN = os.getenv("PRIMARY_MGBOOST_ADMIN_LOGIN", "").strip()
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 INTERNAL_API_ALLOWED_SKEW_SECONDS = int(os.getenv("INTERNAL_API_ALLOWED_SKEW_SECONDS", "300"))
 INTERNAL_API_IDEMPOTENCY_TTL_SECONDS = int(

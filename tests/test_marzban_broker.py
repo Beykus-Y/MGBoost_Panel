@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -20,6 +21,7 @@ from src.broker_protocol import (
     BROKER_CLIENT_HEADER,
     BROKER_NONCE_HEADER,
     BROKER_OPERATIONS,
+    LEGACY_BROKER_OPERATIONS,
     BROKER_SIGNATURE_HEADER,
     BROKER_TIMESTAMP_HEADER,
     build_broker_signature,
@@ -28,6 +30,9 @@ from src.broker_protocol import (
 )
 from src.broker_server import BrokerApplication, build_broker_server
 from src.service_marzban import BrokerTransport, ServiceMarzbanClient
+from src.child_contract import (
+    derive_child_username, derive_operation_id, source_contract_hash,
+)
 
 
 AUTH_KEY = "broker-test-key-with-at-least-32-bytes"
@@ -96,7 +101,12 @@ class FakeMarzban:
         self.calls.append(("create_user", json.loads(json.dumps(payload)), token))
         user = json.loads(json.dumps(payload))
         user.setdefault("expire", 0)
-        user["proxies"].setdefault("vless", {"id": UUID})
+        if "vless" in user["proxies"] and not user["proxies"]["vless"].get("id"):
+            user["proxies"]["vless"]["id"] = str(
+                uuid.uuid5(uuid.NAMESPACE_URL, "fake-marzban:" + user["username"])
+            )
+        if "shadowsocks" in user["proxies"] and not user["proxies"]["shadowsocks"].get("password"):
+            user["proxies"]["shadowsocks"]["password"] = "fresh-fake-password-" + user["username"]
         self.users[user["username"]] = user
         return json.loads(json.dumps(user))
 
@@ -214,7 +224,95 @@ def test_all_ten_operations_are_explicit_and_preserve_legacy_payload_semantics()
 
     assert operations.dispatch("legacy.user.delete", {"username": "bob"}) == {}
     seen.add("legacy.user.delete")
-    assert seen == BROKER_OPERATIONS
+    assert seen == LEGACY_BROKER_OPERATIONS
+    assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {"child.user.ensure"}
+
+
+def _child_request(source, *, account="acct_example", slot=1, generation=1, expire=0):
+    username = derive_child_username(account, slot, generation)
+    return {
+        "operation_id": derive_operation_id(username),
+        "child_username": username,
+        "source_username": source["username"],
+        "source_contract_hash": source_contract_hash(source),
+        "expire": expire,
+    }
+
+
+def test_child_ensure_creates_fresh_uuid_then_converges_to_existing():
+    marzban = FakeMarzban()
+    operations = BrokerOperations(marzban)
+    source = marzban.users["alice"]
+    request = _child_request(source, expire=7_777)
+
+    created = operations.dispatch("child.user.ensure", request)
+    existing = operations.dispatch("child.user.ensure", request)
+
+    assert created["outcome"] == "CREATED"
+    assert existing["outcome"] == "EXISTING"
+    assert created["uuid"] == existing["uuid"]
+    assert created["uuid"] != UUID
+    remote = marzban.users[request["child_username"]]
+    assert remote["expire"] == 7_777
+    assert remote["inbounds"] == source["inbounds"]
+    assert remote["data_limit"] is None
+    assert remote["proxies"]["vless"]["id"] == created["uuid"]
+    creates = [call for call in marzban.calls if call[0] == "create_user"]
+    assert len(creates) == 1
+
+
+def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentials():
+    marzban = FakeMarzban()
+    marzban.users["alice"]["proxies"]["vless"]["flow"] = "xtls-rprx-vision"
+    marzban.users["alice"]["proxies"]["shadowsocks"] = {
+        "method": "aes-128-gcm", "password": "legacy-password"
+    }
+    marzban.users["alice"]["inbounds"]["shadowsocks"] = []
+    source = json.loads(json.dumps(marzban.users["alice"]))
+    request = _child_request(source)
+
+    result = BrokerOperations(marzban).dispatch("child.user.ensure", request)
+
+    remote = marzban.users[request["child_username"]]
+    assert result["protocols"] == ["shadowsocks", "vless"]
+    assert remote["proxies"]["vless"]["flow"] == "xtls-rprx-vision"
+    assert remote["proxies"]["vless"]["id"] != source["proxies"]["vless"]["id"]
+    assert remote["proxies"]["shadowsocks"]["method"] == "aes-128-gcm"
+    assert remote["proxies"]["shadowsocks"]["password"] != source["proxies"]["shadowsocks"]["password"]
+
+
+def test_child_ensure_rejects_contract_drift_arbitrary_fields_and_uuid_reuse():
+    marzban = FakeMarzban()
+    operations = BrokerOperations(marzban)
+    request = _child_request(marzban.users["alice"])
+    with pytest.raises(ValueError, match="fields"):
+        operations.dispatch("child.user.ensure", {**request, "proxies": {}})
+    with pytest.raises(ValueError, match="contract changed"):
+        operations.dispatch(
+            "child.user.ensure", {**request, "source_contract_hash": "0" * 64}
+        )
+    marzban.users[request["child_username"]] = {
+        "username": request["child_username"], "expire": 0, "status": "active",
+        "proxies": {"vless": {"id": UUID}},
+        "inbounds": {"vless": ["LEGACY"]}, "data_limit": None,
+    }
+    with pytest.raises(ValueError, match="must differ"):
+        operations.dispatch("child.user.ensure", request)
+
+
+def test_child_ensure_typed_http_and_direct_comparison():
+    source = FakeMarzban().users["alice"]
+    request = _child_request(source, account="acct_compare", expire=8_888)
+    with running_broker() as (server, broker_remote):
+        broker_result = broker_client(server.server_address[1]).ensure_child_user(request)
+    direct_remote = FakeMarzban()
+    direct_result = ServiceMarzbanClient(
+        mode="direct", direct_client=direct_remote
+    ).ensure_child_user(request)
+    assert broker_result == direct_result
+    assert broker_remote.users[request["child_username"]] == direct_remote.users[
+        request["child_username"]
+    ]
 
 
 @pytest.mark.parametrize(
