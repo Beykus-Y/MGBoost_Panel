@@ -115,6 +115,33 @@ The exact schema was applied twice to a fresh online copy of production DB:
 Rollback remains application-only: an older binary ignores the additive tables.
 No destructive down migration is needed.
 
+## Production rollout evidence
+
+Production rollout completed on 2026-08-24 from exact implementation commit
+`1d0d120adf1895af44eb89bdc1334febab55fda2`. A fresh encrypted root-only DB
+backup completed before the pull, and only `mgboost-panel` was restarted.
+
+- the migration checksum is present and SQLite reports `quick_check=ok` with
+  zero foreign-key violations;
+- parent accounts, slots and generations remain exactly zero; automatic
+  backfill remains zero;
+- legacy `user_devices` and `hwid_lock` remain authoritative and unchanged at
+  71/71;
+- the pre/post masked identity digest matches for all 25 live Marzban users;
+- all 25 legacy subscription configs were fetched successfully and their
+  normalized config digest matches pre-deploy exactly;
+- admin, LK, uniform invalid-sub response, signed Filin status, durable Stars
+  state, localhost broker health, Telegram through the configured proxy,
+  nginx and systemd passed;
+- the post-restart application/broker/nginx error count is zero, and count-only
+  scans found zero raw subscription paths or UUID patterns in the checked
+  journal and current nginx access-log tail.
+
+Deployment-caused changes: UUID 0, legacy subscription URL/token 0, HWID 0,
+expiry 0, tariff 0, child users 0, forced client reconfiguration 0 and
+unexpected effective config changes 0. Rollback is an application rollback;
+no user credential changes are required.
+
 ## Read-only legacy anomaly note
 
 The forensic script emitted no usernames, Telegram IDs, token, UUID or HWID.
