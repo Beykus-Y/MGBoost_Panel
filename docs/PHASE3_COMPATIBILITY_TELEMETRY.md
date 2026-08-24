@@ -125,3 +125,64 @@ Rollback disables/removes only the telemetry environment key and returns the
 previous application commit/unit state. The two additive tables may remain and
 are ignored by the older binary. No UUID, bearer, HWID binding, expiry, tariff
 or client configuration changes are required.
+
+## Production evidence
+
+Production completed on 2026-08-24 from implementation commit `be1299d` plus
+startup-safe retention fix `d69ee39`. A verified encrypted root-only DB backup
+completed before cutover. The dedicated telemetry key is 64 characters in the
+protected service environment; only presence/length were inspected, never its
+value. The migration marker, `quick_check=ok` and zero FK violations passed.
+
+The first immediate cleanup start raced the `Type=simple` application startup
+before its additive migration committed and returned `no such table`. The main
+service remained active and user traffic was unaffected. Cleanup was changed to
+a tested successful no-op when an older/starting application has not created the
+schema; the final oneshot result is success and the daily timer is enabled.
+
+Exact masked pre/post state matched:
+
+- 25 Marzban users and 25/25 fetched configs, zero fetch errors;
+- 71 legacy device rows and 71 HWID locks;
+- parent accounts, slots and generations: 0/0/0;
+- Stars state unchanged at two refunded historical invoices;
+- valid legacy `/sub`: HTTP 200 and functional VPN links;
+- admin, LK, signed Filin, broker, Telegram proxy, nginx and systemd: healthy;
+- application/broker/nginx error count: 0 after the gate;
+- telemetry fail-open warnings: 0;
+- raw subscription paths and UUID patterns in checked new journal/nginx data: 0.
+
+Deployment-caused changes are all zero: UUID, legacy URL/token, HWID binding,
+expiry, tariff, parent account, slot/generation, child user, forced client
+reconfiguration and unexpected effective config.
+
+### Initial compatibility sample
+
+The first live window, 2026-08-24 15:59:02–16:07:14 UTC, is deliberately
+reported with its small denominator: six `SUPPORTED_HWID_PRESENT` requests
+(100%), zero missing and zero malformed. Five are organic and one is a
+controlled replay of a different historical real header set. Observed clients
+are Happ 2.7.0/Windows and 3.26.3/Android, Incy 2.5.2/iOS, and v2rayTun
+2.4.7/iOS plus 5.25.81/Android. This is not a representative request-rate
+sample and cannot justify fail-closed.
+
+A separate read-only classification of 204 pre-existing deduplicated
+`sub_requests` rows found 115 supported (56.37%) and 89 missing/unsupported
+(43.63%); malformed candidates were zero. These rows are historical subjects,
+not request rate, and include known gate/tool traffic.
+
+Observed supported families/versions include:
+
+- multiple Happ releases from 1.5.2 through 4.12.0 across Windows, Android and iOS;
+- multiple v2rayTun releases from 2.2 through 5.25.81 across iOS, Android and Windows;
+- multiple Incy releases from 2.2.3 through 3.5.4 across iOS, Android and Windows;
+- one historical `vpn-subscription-client/3.1.6` observation.
+
+Observed missing-HWID families include Streisand 41/42/43/48, HiddifyNext
+2.5.7/4.1.1, v2rayN 7.18.0/7.23.4, Throne 1.0.11–1.2.1, Exclave 0.17.21 and
+unknown/no-parse rows. Curl, WhatsApp and known PH1/PH3 gate UAs are retained in
+the historical inventory but are not treated as proof of an active VPN client.
+
+Conclusion: PH3-07 collection works, but PH3-04 remains blocked until a
+representative live window and an explicit compatibility/recovery plan exist
+for missing-HWID clients. Runtime remains permissive.
