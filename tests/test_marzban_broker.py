@@ -229,7 +229,35 @@ def test_all_ten_operations_are_explicit_and_preserve_legacy_payload_semantics()
     assert seen == LEGACY_BROKER_OPERATIONS
     assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {
         "child.user.ensure", "child.user.credentials.get",
+        "child.user.observe",
         "maintenance.user.retire_shadowsocks",
+    }
+
+
+def test_child_observe_is_read_only_and_classifies_absent_match_and_mismatch():
+    marzban = FakeMarzban()
+    operations = BrokerOperations(marzban)
+    child_username = derive_child_username("acct_test-observe", 1, 1)
+    request = {
+        "operation_id": derive_operation_id(child_username),
+        "child_username": child_username,
+        "source_username": "alice",
+        "source_contract_hash": source_contract_hash(marzban.users["alice"]),
+        "expire": 0,
+    }
+    assert operations.dispatch("child.user.observe", request) == {"presence": "ABSENT"}
+    created = operations.dispatch("child.user.ensure", request)
+    assert created["outcome"] == "CREATED"
+    call_count = len(marzban.calls)
+    observed = operations.dispatch("child.user.observe", request)
+    assert observed["presence"] == "MATCH"
+    assert observed["uuid"] == created["uuid"]
+    assert not any(call[0] in {"create_user", "modify_user", "delete_user"}
+                   for call in marzban.calls[call_count:])
+    marzban.users[child_username]["expire"] = 123
+    mismatch = operations.dispatch("child.user.observe", request)
+    assert mismatch == {
+        "presence": "MISMATCH", "mismatch_code": "REMOTE_CONTRACT_MISMATCH"
     }
 
 

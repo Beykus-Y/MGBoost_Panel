@@ -1,0 +1,45 @@
+[Unit]
+Description=MGBoost durable child provisioning reconciler
+Wants=network-online.target mgboost-marzban-broker.service
+After=network-online.target mgboost-marzban-broker.service
+
+[Service]
+Type=simple
+User=mgboost
+Group=mgboost
+WorkingDirectory=/opt/MGBoost_Panel
+ExecStart=/opt/mgboost-venvs/ph1-07/bin/python /opt/MGBoost_Panel/child_worker_main.py
+EnvironmentFile=/etc/mgboost/child-worker.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MGBOOST_SKIP_DOTENV=1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/MGBoost_Panel/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

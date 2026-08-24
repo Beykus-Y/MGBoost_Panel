@@ -10,6 +10,7 @@ from .child_contract import (
     build_child_payload,
     source_contract_hash,
     validate_child_ensure_request,
+    validate_child_observe_request,
     validate_created_child,
     validate_child_credentials_request,
     reread_child_credentials,
@@ -167,6 +168,32 @@ class BrokerOperations:
                 created = self.marzban.get_user(child_username, token)
                 verified = validate_created_child(created, request, source)
                 return {"outcome": "CREATED", **verified}
+
+        if operation == "child.user.observe":
+            request = validate_child_observe_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                source = self.marzban.get_user(request["source_username"], token)
+                if source_contract_hash(source) != request["source_contract_hash"]:
+                    return {
+                        "presence": "MISMATCH",
+                        "mismatch_code": "SOURCE_CONTRACT_MISMATCH",
+                    }
+                try:
+                    child = self.marzban.get_user(child_username, token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        return {"presence": "ABSENT"}
+                    raise
+                try:
+                    verified = validate_created_child(child, request, source)
+                except (TypeError, ValueError, KeyError):
+                    return {
+                        "presence": "MISMATCH",
+                        "mismatch_code": "REMOTE_CONTRACT_MISMATCH",
+                    }
+                return {"presence": "MATCH", **verified}
 
         if operation == "child.user.credentials.get":
             request = validate_child_credentials_request(data)

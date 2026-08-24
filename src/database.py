@@ -20,6 +20,8 @@ from .compat_telemetry import record_observation, telemetry_key_is_valid
 from .compat_telemetry_schema import apply_compat_telemetry_schema
 from .child_provisioning_schema import apply_child_provisioning_schema
 from .child_provisioning import ChildProvisioningStore
+from .child_workflow import ChildWorkflowStore
+from .child_workflow_schema import apply_child_workflow_schema
 from .device_slot_schema import apply_device_slot_schema
 from .device_slots import DeviceSlotStore
 from .internal_entitlement_schema import apply_internal_entitlement_schema
@@ -97,6 +99,7 @@ class Database:
         )
         self.provenance = ProvenanceStore(self._conn, self._lock)
         self.child_provisioning = ChildProvisioningStore(self._conn, self._lock)
+        self.child_workflow = ChildWorkflowStore(self._conn, self._lock)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -353,6 +356,7 @@ class Database:
         apply_internal_entitlement_schema(self._conn)
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
+        apply_child_workflow_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()

@@ -13,6 +13,7 @@ from .legacy_contract import validate_username
 
 
 CHILD_OPERATION = "child.user.ensure"
+CHILD_OBSERVE_OPERATION = "child.user.observe"
 _CHILD_USERNAME_RE = re.compile(r"^mgc_[a-z2-7]{26}$")
 _OPERATION_ID_RE = re.compile(r"^op_[a-z2-7]{26}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -123,6 +124,11 @@ def validate_child_ensure_request(data: dict) -> dict:
         "source_contract_hash": contract_hash,
         "expire": expire,
     }
+
+
+def validate_child_observe_request(data: dict) -> dict:
+    """Observe uses the immutable ensure identity and never accepts a mutation payload."""
+    return validate_child_ensure_request(data)
 
 
 def build_child_payload(request: dict, source_user: dict) -> dict:

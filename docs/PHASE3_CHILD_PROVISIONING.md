@@ -4,12 +4,11 @@ Date: 2026-08-25
 
 ## Activation boundary
 
-This change is implemented and verified locally/on a disposable production DB
-copy, but is not deployed to production. There is no worker, HTTP route,
-subscription resolver or Marzban call wired to `ChildProvisioningStore`.
-Applying the additive migration creates empty tables only. Creating the approved
-parent, aliases, slot generation, outbox row or remote child remains a separate
-owner-approved production mutation.
+The owner-approved dormant parent/slot/child canary is production-proven. A
+durable worker/reconciler is now implemented and real-Marzban-staged, but its
+production activation remains gated. There is still no subscription resolver
+or automatic intent creation from legacy devices. The only permitted production
+worker target is the already-APPLIED canary operation in `reconcile_only` mode.
 
 Legacy `/sub/{token}`, UUID, token, HWID binding, config, expiry and tariff paths
 do not import or read the new repository. PH3-04 remains disabled.
@@ -126,10 +125,11 @@ does not roll back a verified remote effect.
 
 If the broker or Marzban is unavailable, desired state remains retryable and no
 success is acknowledged. Contract drift/collision fails closed for manual
-review. A future periodic reconciler must use the same operation and reread
-rules.
+review. The periodic reconciler uses typed read-only `child.user.observe`,
+durable DB leases and the same immutable operation/digest rules. See
+`docs/PHASE3_CHILD_WORKER.md`.
 
-## First canary manifest (not executed)
+## First canary manifest (executed dormant; legacy runtime unchanged)
 
 - source alias: `beykusios`;
 - selected legacy observation: `user_devices.id=56`, privacy reference

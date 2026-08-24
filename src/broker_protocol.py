@@ -29,6 +29,7 @@ LEGACY_BROKER_OPERATIONS = frozenset({
 })
 BROKER_OPERATIONS = LEGACY_BROKER_OPERATIONS | frozenset({
     "child.user.ensure",
+    "child.user.observe",
     "child.user.credentials.get",
     "maintenance.user.retire_shadowsocks",
 })

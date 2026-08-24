@@ -20,6 +20,7 @@ from .legacy_contract import validate_renew_payload, validate_username
 from .child_contract import (
     validate_child_credentials_request,
     validate_child_ensure_request,
+    validate_child_observe_request,
 )
 from .marzban import MarzbanClient
 from .shadowsocks_retirement import validate_retirement_request
@@ -206,6 +207,16 @@ class ServiceMarzbanClient:
             from .broker_operations import BrokerOperations
             return BrokerOperations(self.direct).dispatch("child.user.ensure", normalized)
         return self._broker().call("child.user.ensure", normalized)
+
+    def observe_child_user(self, request):
+        """Typed read-only child/source contract observation."""
+        normalized = validate_child_observe_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch(
+                "child.user.observe", normalized
+            )
+        return self._broker().call("child.user.observe", normalized)
 
     def get_child_credentials(self, request):
         """Typed ephemeral credential reread; callers must never persist/log result."""
