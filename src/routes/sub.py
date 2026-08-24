@@ -1,4 +1,5 @@
 import base64
+import logging
 import os
 import re
 import time
@@ -11,6 +12,7 @@ from ..marzban import MarzbanClient
 from ..subscription import process_subscription
 
 _client = MarzbanClient()
+logger = logging.getLogger(__name__)
 
 _BLOCK_TITLES = {
     "device_locked":       "⛔ Устройство занято другой подпиской",
@@ -71,6 +73,25 @@ def _invalid_subscription_response(handler, started_at: float):
     _plain_response(handler, 404, _INVALID_SUB_BODY)
 
 
+def _observe_compatibility_fail_open(db, token, device_metadata):
+    """PH3-07 is strictly observational and must never affect VPN delivery."""
+    observer = getattr(db, "observe_hwid_compatibility", None)
+    if observer is None:
+        return
+    try:
+        observer(token, device_metadata)
+    except Exception as exc:
+        # Never include token, username, HWID, UA or exception text: driver
+        # errors can contain SQL/data. Logging itself is non-critical too.
+        try:
+            logger.warning(
+                "compatibility telemetry write skipped error_type=%s",
+                type(exc).__name__,
+            )
+        except Exception:
+            pass
+
+
 def handle_sub(handler, token):
     started_at = time.monotonic()
     if not token or len(token) > _MAX_LEGACY_TOKEN_LENGTH:
@@ -123,6 +144,7 @@ def handle_sub(handler, token):
     db = handler.server.db
     username = _client.get_username_for_token(token)
     device_metadata = extract_device_metadata(handler.headers)
+    _observe_compatibility_fail_open(db, token, device_metadata)
 
     request_key = device_metadata.get("request_key")
     if request_key and request_key.startswith("hwid:") and username:

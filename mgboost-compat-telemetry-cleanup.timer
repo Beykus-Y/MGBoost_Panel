@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily MGBoost compatibility telemetry retention
+
+[Timer]
+OnCalendar=*-*-* 02:45:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=mgboost-compat-telemetry-cleanup.service
+
+[Install]
+WantedBy=timers.target

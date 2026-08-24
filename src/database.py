@@ -7,9 +7,11 @@ import sqlite3
 import time
 import threading
 
-from .config import DATA_DIR
+from .config import COMPAT_TELEMETRY_HMAC_KEY, DATA_DIR
 from .account_schema import apply_parent_account_schema
 from .account_store import AccountStore
+from .compat_telemetry import record_observation, telemetry_key_is_valid
+from .compat_telemetry_schema import apply_compat_telemetry_schema
 from .device_slot_schema import apply_device_slot_schema
 from .device_slots import DeviceSlotStore
 from .sensitive import is_subscription_token_ref, subscription_token_ref
@@ -68,6 +70,11 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._create_tables()
+        self._compat_telemetry_hmac_key = (
+            COMPAT_TELEMETRY_HMAC_KEY
+            if telemetry_key_is_valid(COMPAT_TELEMETRY_HMAC_KEY)
+            else None
+        )
         self.accounts = AccountStore(self._conn, self._lock)
         self.device_slots = DeviceSlotStore(self._conn, self._lock)
 
@@ -323,6 +330,7 @@ class Database:
         self._conn.commit()
         apply_parent_account_schema(self._conn)
         apply_device_slot_schema(self._conn)
+        apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
         self._ensure_stars_invoice_columns()
@@ -865,7 +873,19 @@ class Database:
                 raise
         return counts
 
-    # --- sub_requests ---
+    # --- observe-only PH3-07 compatibility telemetry / sub_requests ---
+
+    def observe_hwid_compatibility(self, token, device_metadata, *, now=None):
+        """Write through an isolated, short-timeout connection or stay disabled."""
+        if not self._compat_telemetry_hmac_key:
+            return None
+        return record_observation(
+            DB_PATH,
+            token,
+            device_metadata or {},
+            self._compat_telemetry_hmac_key,
+            now=int(time.time()) if now is None else int(now),
+        )
 
     @staticmethod
     def _device_select_columns():

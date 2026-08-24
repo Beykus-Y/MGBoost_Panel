@@ -467,11 +467,13 @@ and are not eligible for completion.
 **Accept/tests:** special access только plan/entitlement; ordinary/non-primary admin не получает или не выдаёт unlimited flags; override expiry возвращает вычисление к plan/AUTO; source scan hardcodes.
 **Migration:** internal accounts — canary cohort и тоже child users.
 
-## [ ] PH3-07 — Privacy-safe HWID/client compatibility telemetry
+## [~] PH3-07 — Privacy-safe HWID/client compatibility telemetry
 
 **Depends:** PH1-06. **Scope:** aggregate client/version/HWID-present без raw token/full HWID; retention/access control.
 **Accept:** supported/unsupported client share известна до fail-closed. **Tests:** redaction canary, aggregation, retention.
 **Rollout:** observe-only -> decision -> staged enforce.
+**Implemented/staging verified 2026-08-24:** additive daily subject/rollup schema records only bounded client/version/platform, three compatibility categories, monotonic counts and a subscription-scoped HMAC-SHA256 correlation verifier under a dedicated non-DB key. No username, raw bearer, UUID, IP, full HWID/UA/header or device name enters telemetry. Independent short-timeout `BEGIN IMMEDIATE` writes are fail-open, bounded by daily row caps and protected across workers; detailed pseudonyms retain 30 days and identifier-free rollups 60 days, with opportunistic plus daily systemd cleanup. There is no HTTP endpoint. Focused tests `41 passed`; full regression `486 passed, 3 skipped`. A fresh production DB copy applied the migration idempotently (`true/false`), preserved all 32 pre-existing non-marker table digests, kept legacy device/HWID 71/71 and parent/slot/generation 0/0/0, passed quick/FK checks and persisted zero raw canaries. Contract/runbook: `docs/PHASE3_COMPATIBILITY_TELEMETRY.md`.
+**Remaining before `[x]`:** production encrypted-backup/key/unit/restart gate, exact masked legacy invariants, aggregate live observation report and token-safe log scan. Missing/malformed HWID remains permissive; PH3-03 is not started by this task.
 
 ## [ ] PH3-08 — Parent expiry/status -> all children
 

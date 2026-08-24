@@ -1,0 +1,28 @@
+[Unit]
+Description=MGBoost privacy-safe compatibility telemetry retention
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=mgboost
+Group=mgboost
+UMask=0077
+WorkingDirectory=/opt/MGBoost_Panel
+ExecStart=/opt/mgboost-venvs/ph1-07/bin/python /opt/MGBoost_Panel/scripts/cleanup_ph3_07_telemetry.py --db /opt/MGBoost_Panel/data/db.sqlite3
+Environment=PYTHONPATH=/opt/MGBoost_Panel
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/opt/MGBoost_Panel/data
+
+[Install]
+WantedBy=multi-user.target

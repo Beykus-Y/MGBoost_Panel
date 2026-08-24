@@ -80,6 +80,8 @@ PLATFORMS = {
     "linux": "Linux",
 }
 
+_SUPPORTED_HWID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+\-=/]{5,179}$")
+
 
 def _normalize_header_name(name: str) -> str:
     return name.strip().lower().replace("_", "-")
@@ -138,7 +140,12 @@ def _parse_user_agent(user_agent):
     # Happ commonly appends a stable Android identifier after platform.
     if client_name.lower() == "happ" and len(parts) >= 4:
         candidate = _clean_value(parts[3])
-        if candidate and re.match(r"^[A-Za-z0-9._:-]{6,}$", candidate):
+        legacy_supported = bool(
+            candidate and re.match(r"^[A-Za-z0-9._:-]{6,}$", candidate)
+        )
+        parsed["hwid_candidate_present"] = True
+        parsed["hwid_candidate_supported"] = legacy_supported
+        if legacy_supported:
             parsed["device_id"] = candidate
             parsed["device_id_source"] = "user-agent"
 
@@ -170,6 +177,8 @@ def extract_device_metadata(headers) -> dict:
         "os": None,
         "fingerprint": None,
         "request_key": None,
+        "hwid_candidate_present": False,
+        "hwid_candidate_supported": False,
         "metadata": {
             "headers": {
                 key: value
@@ -186,10 +195,22 @@ def extract_device_metadata(headers) -> dict:
             metadata[field] = value
             metadata["metadata"]["sources"][field] = f"header:{source}"
 
+    if metadata.get("device_id") is not None:
+        metadata["hwid_candidate_present"] = True
+        metadata["hwid_candidate_supported"] = bool(
+            _SUPPORTED_HWID_RE.fullmatch(str(metadata["device_id"]).strip())
+        )
+
     for field in ("device_id", "client_name", "client_version", "platform"):
         if not metadata.get(field) and ua_fields.get(field):
             metadata[field] = ua_fields[field]
             metadata["metadata"]["sources"][field] = ua_fields.get(f"{field}_source", "user-agent")
+
+    if not metadata["hwid_candidate_present"] and ua_fields.get("hwid_candidate_present"):
+        metadata["hwid_candidate_present"] = True
+        metadata["hwid_candidate_supported"] = bool(
+            ua_fields.get("hwid_candidate_supported")
+        )
 
     if metadata["device_id"]:
         seed = f"device:{metadata['device_id']}"
