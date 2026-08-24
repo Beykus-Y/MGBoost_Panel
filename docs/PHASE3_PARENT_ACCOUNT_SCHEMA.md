@@ -156,3 +156,28 @@ No user credential change is part of either deployment or rollback.
   before Phase 4 legacy account population and Phase 5 billing.
 
 PH3-02 must not start automatically as part of this change.
+
+## Production evidence
+
+Production deployment completed on 2026-08-24 after a verified encrypted
+root-only backup. The exact application commit was pulled and only
+`mgboost-panel` restarted. Startup created one matching migration marker and
+zero account/identity/plan/subscription/entitlement/override/WL rows.
+
+Post-deploy results:
+
+- SQLite `quick_check=ok`; foreign-key violations: 0;
+- masked Marzban identity/config digest: exact for 25/25 users, zero fetch
+  errors;
+- masked local device/HWID digest: exact for 71/71 rows;
+- admin and LK: 200; uniform invalid legacy subscription: 404;
+- signed Filin status and localhost broker health: 200;
+- Stars ledger: the same two historical refunded invoices, no new mutation;
+- Telegram runtime through configured proxy: pass; OpenRouter retained its
+  pre-existing baseline 403;
+- MGBoost/broker/nginx active and Marzban container running;
+- new journal/nginx raw subscription paths, UUID-shaped values and migration
+  error markers: 0.
+
+No UUID, legacy token/URL, HWID, expiry, tariff, child user, configuration or
+client reconfiguration changed. PH3-02 was not started.

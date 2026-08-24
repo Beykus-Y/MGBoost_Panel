@@ -418,7 +418,7 @@ and are not eligible for completion.
 
 # Phase 3 — Parent account + child devices
 
-## [~] PH3-01 — Parent account/identity/entitlement schema
+## [x] PH3-01 — Parent account/identity/entitlement schema
 
 **Inputs (approved):** six-plan Stars catalog, `RUB-2026-08-23-v1`, OPD-06 device limits and OPD-14 WL pool model. **Entities:** accounts, Telegram identity links, plan versions, subscriptions, entitlements/overrides. Telegram ID не credential. No open product decision blocks schema design.
 **Accept:** account независим от Marzban username; `billing_required`, WL quota и device limit вычисляются entitlement engine.
@@ -426,7 +426,7 @@ and are not eligible for completion.
 **Migration/rollback:** additive schema/backfill preview; legacy data не удалять.
 **Implemented/staging verified 2026-08-24:** additive `ph3_01_parent_account_v1` schema introduces account identity independent of Telegram/Marzban, revocable unique Telegram owner links, immutable versioned plan/duration and subscription-term snapshots, account-scoped subscription/entitlement state, expiring typed overrides, explicit payment/mutation provenance and sequential WL-period anchors for future ledger/device work. Device limits are data (`3/6/12`, technical ceiling 99) with a separate `UNLIMITED` mode; WL uses decimal-byte quota plus explicit period days; duration rows accept future 180-day SKUs without schema changes. No legacy runtime path reads these tables and no catalog/account/backfill rows are seeded.
 **Production preview:** 25 authoritative Marzban users versus 26 distinct local legacy usernames; 71 device/HWID rows across 24 usernames; 5 Telegram links across 4 usernames, including one multi-link case; two durable Stars events for one username, but zero current six-plan assignments are provable. Automatic backfill is therefore exactly zero. Migration applied twice to an online production DB copy (`first=True`, `second=False`), preserved the exact digest of all 20 legacy tables, left all ten new runtime tables empty, and passed SQLite quick/FK checks. Full regression: `452 passed, 3 skipped`; PH3-01 constraint suite: `19 passed`, including repeated concurrent identity claims and fail-closed incompatible-schema detection. Evidence/runbook: `docs/PHASE3_PARENT_ACCOUNT_SCHEMA.md`.
-**Remaining before `[x]`:** production additive migration/restart gate, empty-table assertion, complete legacy smoke and exact masked pre/post comparison. PH3-02 must not start before the owner receives the PH3-01 report.
+**Production completed 2026-08-24:** a fresh encrypted root-only backup completed successfully before the exact commit was pulled. Restarting only `mgboost-panel` applied one matching checksum marker; all ten new runtime tables remained empty, with `quick_check=ok` and zero FK violations. Exact masked pre/post state matched for 25 Marzban users/configs, 71 device rows and 71 HWID locks. Legacy admin/LK/subscription resolution, durable Stars ledger, signed Filin, broker, Marzban container, Telegram proxy/support, nginx/systemd and token-safe logs passed. UUID, legacy subscription token/URL, HWID, expiry, tariff, child-user creation, forced reconfiguration and unexpected config changes: 0. PH3-02 was not started.
 
 ## [ ] PH3-02 — Atomic device slots with generation
 

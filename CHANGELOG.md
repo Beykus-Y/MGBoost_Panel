@@ -37,7 +37,7 @@
 
 ### Operations
 
-- PH3-01 additive parent-account schema passed isolated production-copy staging: the migration is transactional/idempotent, preserves all legacy tables exactly, creates no accounts/plans/subscriptions/backfill, and remains safe for application-only rollback. Production activation is pending its explicit empty-schema and legacy-invariant gate.
+- PH3-01 additive parent-account schema is deployed: the transactional/idempotent migration preserved all legacy tables exactly and created no accounts, plans, subscriptions, identity links or backfill. Production started with all ten new runtime tables empty; the 25-user/71-device masked compatibility gate and legacy admin/LK/subscription/Stars/Filin/broker checks remained exact. An older application can roll back safely while ignoring the additive tables.
 - Добавлены `ADMIN_SESSION_TTL_SECONDS` и `ADMIN_SESSION_COOKIE_SECURE`; Secure cookie обязателен в production HTTPS, отключение разрешено только для локальной HTTP-разработки.
 - Production permissions существующих Marzban secrets/data сужены: `.env`, live SQLite, Xray credential config и найденные config backup copies теперь `0600 root:root`, private Marzban data directory — `0700`. MGBoost active `.env`/SQLite уже соответствовали `0600` и сохранены; runtime, access-denial и временный backup/restore smoke проверены.
 - Регулярные MGBoost/Marzban SQLite backups теперь создаются ежедневным root-only systemd timer, шифруются GnuPG AES-256 и считаются успешными только после isolated restore/checksum/quick-check; retention — 90 дней.
