@@ -162,9 +162,16 @@ def _safe_legacy_snapshot(
     identities = []
     configs = []
     fetch_errors = 0
+    persisted_configs = []
+    persisted_fetch_errors = 0
+    persisted_tokens: dict[str, list[str]] = {username: [] for username in usernames}
+    for row in connection.execute(
+        "SELECT username,token FROM user_devices ORDER BY username,token"
+    ):
+        if row["username"] in persisted_tokens and row["token"] not in persisted_tokens[row["username"]]:
+            persisted_tokens[row["username"]].append(row["token"])
     for username in sorted(usernames):
         user = client.get_user(username, sentinel)
-        token = _token(user)
         identities.append({
             "username_ref": _hash(username),
             "expire": user.get("expire"),
@@ -173,11 +180,16 @@ def _safe_legacy_snapshot(
             "data_limit_reset_strategy": user.get("data_limit_reset_strategy"),
             "proxies_digest": digest(user.get("proxies") or {}),
             "inbounds_digest": digest(user.get("inbounds") or {}),
-            "subscription_token_ref": subscription_token_ref(token),
         })
+        # Marzban 0.8.4 creates a new timestamped, simultaneously-valid
+        # subscription alias whenever UserResponse is serialized. It is not a
+        # stored credential and therefore must not be compared as a rotation.
+        # Use the durable legacy tokens already held by MGBoost instead.
+        tokens = persisted_tokens[username]
+        representative = tokens[0] if tokens else _token(user)
         try:
             body, _headers = client.get_sub(
-                token, {"User-Agent": "MGBoost-PH3-03-Canary/1"}
+                representative, {"User-Agent": "MGBoost-PH3-03-Canary/1"}
             )
             links = canonical_config(body)
             if not links:
@@ -185,6 +197,21 @@ def _safe_legacy_snapshot(
             configs.append({"username_ref": _hash(username), "links": digest(links)})
         except Exception:
             fetch_errors += 1
+        for token in tokens:
+            try:
+                body, _headers = client.get_sub(
+                    token, {"User-Agent": "MGBoost-PH3-03-Persisted-Token/1"}
+                )
+                links = canonical_config(body)
+                if not links:
+                    raise RuntimeError("persisted legacy subscription contains no VPN links")
+                persisted_configs.append({
+                    "username_ref": _hash(username),
+                    "token_ref": subscription_token_ref(token),
+                    "links": digest(links),
+                })
+            except Exception:
+                persisted_fetch_errors += 1
     devices = [tuple(row) for row in connection.execute(
         "SELECT username,token,request_key,is_active,first_seen "
         "FROM user_devices ORDER BY username,request_key"
@@ -202,6 +229,10 @@ def _safe_legacy_snapshot(
         "legacy_config_count": len(configs),
         "legacy_config_digest": digest(configs),
         "legacy_config_fetch_errors": fetch_errors,
+        "legacy_persisted_token_count": len(persisted_configs),
+        "legacy_persisted_token_user_count": sum(bool(tokens) for tokens in persisted_tokens.values()),
+        "legacy_persisted_token_config_digest": digest(persisted_configs),
+        "legacy_persisted_token_fetch_errors": persisted_fetch_errors,
         "device_count": len(devices),
         "device_digest": digest(devices),
         "hwid_lock_count": len(locks),
@@ -415,7 +446,13 @@ def _source_preflight(
     if counts != ALIAS_DEVICE_COUNTS:
         raise RuntimeError("approved alias device evidence changed")
     baseline = _safe_legacy_snapshot(client, sentinel, connection, usernames)
-    if baseline["legacy_config_fetch_errors"] or baseline["legacy_config_count"] != 25:
+    if (
+        baseline["legacy_config_fetch_errors"]
+        or baseline["legacy_config_count"] != 25
+        or baseline["legacy_persisted_token_count"] != 45
+        or baseline["legacy_persisted_token_user_count"] != 24
+        or baseline["legacy_persisted_token_fetch_errors"]
+    ):
         raise RuntimeError("legacy subscription baseline is incomplete")
     return {
         "legacy_user_count": 25,

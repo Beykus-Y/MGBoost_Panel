@@ -128,10 +128,13 @@ def test_legacy_snapshot_serializes_sqlite_rows_without_raw_output():
     )
 
     class Client:
+        calls = 0
+
         def get_user(self, username, _sentinel):
+            self.calls += 1
             return {
                 "username": username,
-                "subscription_url": "https://example.invalid/sub/bearer",
+                "subscription_url": f"https://example.invalid/sub/generated-{self.calls}",
                 "expire": 0,
                 "status": "active",
                 "data_limit": None,
@@ -143,9 +146,15 @@ def test_legacy_snapshot_serializes_sqlite_rows_without_raw_output():
         def get_sub(self, _token, _headers):
             return b"vless://example", {}
 
-    snapshot = _safe_legacy_snapshot(Client(), object(), connection, ["source"])
+    client = Client()
+    snapshot = _safe_legacy_snapshot(client, object(), connection, ["source"])
+    repeated = _safe_legacy_snapshot(client, object(), connection, ["source"])
+    assert snapshot == repeated
     assert snapshot["device_count"] == 1
     assert snapshot["hwid_lock_count"] == 1
     assert snapshot["stars_tariff_count"] == 1
+    assert snapshot["legacy_persisted_token_count"] == 1
+    assert snapshot["legacy_persisted_token_user_count"] == 1
+    assert snapshot["legacy_persisted_token_fetch_errors"] == 0
     assert "legacy-token" not in repr(snapshot)
     assert "legacy-hwid" not in repr(snapshot)

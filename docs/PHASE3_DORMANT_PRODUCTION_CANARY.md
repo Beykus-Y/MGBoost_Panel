@@ -94,5 +94,13 @@ snapshot is byte-for-byte equal before and after. Raw child UUID/token leakage
 counts must be zero in MGBoost DB, application/nginx logs and the deployment
 journal window.
 
+Marzban 0.8.4 serializes `UserResponse.subscription_url` by minting a fresh
+timestamped alias; multiple aliases remain valid until `sub_revoked_at`. That
+volatile admin-API presentation is not a credential rotation and is excluded
+from the identity digest. The gate instead hashes the unchanged durable tokens
+already present in legacy `user_devices`, fetches every distinct persisted
+token, and compares its functional config before/after. The local device digest
+also covers those stored values without exposing them.
+
 PH3-03 remains partial after this one dormant canary. PH3-04, fail-closed HWID,
 legacy migration and client switching remain explicitly out of scope.
