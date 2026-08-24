@@ -107,10 +107,11 @@ digest covers the verifier rows without exposing them.
 PH3-03 remains partial after this one dormant canary. PH3-04, fail-closed HWID,
 legacy migration and client switching remain explicitly out of scope.
 
-The subsequent durable worker rollout is separately gated by
-`docs/PHASE3_CHILD_WORKER.md`. It may observe/reconcile only this already
-`APPLIED` operation. It must not create another intent, slot, account or child,
-and it does not change this document's dormant/runtime boundary.
+The subsequent durable worker rollout passed its separate gate and is recorded
+in `docs/PHASE3_CHILD_WORKER.md`. Production may observe/reconcile only this
+already `APPLIED` operation. It cannot create another intent, slot, account or
+child in its current mode, and it does not change this document's
+dormant/runtime boundary.
 
 ## Production evidence
 

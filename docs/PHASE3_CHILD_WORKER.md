@@ -126,3 +126,40 @@ If the broker/Marzban is unavailable, reconciliation records `UNAVAILABLE` and
 backs off; it cannot report success. The current legacy `/sub` path bypasses the
 broker and remains functional. Future child subscription refresh still has no
 raw-credential cache and will fail safely during Marzban API outage.
+
+## Production evidence
+
+Production deployed commit `511a117b3663a979e92de0ae493045120214dcd2` after a
+fresh root-only encrypted backup passed create and restore verification. The
+broker restart had one pre-effect connection refusal during its one-second
+listener startup window; the worker was still absent, the listener stabilized,
+and both typed observe and legacy list immediately passed before continuing.
+
+The panel restart applied only `ph3_03_child_workflow_v1`; both workflow tables
+were empty and all parent/slot/intent/outbox cardinality was unchanged. The
+fixed preflight then reported `READ_RECONCILE_ONLY`, zero pending operations,
+one matching remote child and exact 25 VLESS/0 Shadowsocks topology before the
+worker was enabled.
+
+The first production cycle produced exactly `CHECK_STARTED` and `MATCHED` and
+ended `IN_SYNC`: `provisioned=0`, retries/errors/manual-review/divergence=0.
+The only additive runtime state is one workflow row plus its append-only read
+events. Parent=1, aliases=3, slot/generation=1/1, intent=1, outbox=1 and remote
+child=1 remained constant; the outbox remained `APPLIED`, attempt 1, and the
+UUID mask remained `uuid_d4ae1519`.
+
+Pre/post aggregate identity/config digests matched for all 26 remote users with
+26/26 config fetches and no errors. Legacy device/HWID counts and digests
+matched at 71/71. The real legacy MGBoost `/sub` path returned the existing
+source UUID in a functional VLESS config; public admin/LK, signed/unsigned
+Filin, three Stars tariffs/two already-refunded invoices, panel/broker/worker/
+nginx health and SQLite quick/FK checks passed. Raw child UUID/current token and
+generic credential-pattern occurrences in DB/application/broker/worker/nginx
+logs were zero. The worker process contains no Marzban SUDO, Telegram, panel
+secret or Internal API key environment variable.
+
+Production invariants caused by this rollout: legacy UUID changes 0;
+subscription URL/token changes 0; HWID changes 0; expiry changes 0; tariff
+changes 0; forced client reconfiguration 0; unexpected config changes 0; new
+parent/slot/intent/remote-child counts 0. PH3-04, PH3-05, Phase 4 and the
+subscription resolver remain untouched.
