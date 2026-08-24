@@ -192,6 +192,29 @@ requests. Произвольного Marzban proxy в нём нет. При brok
 `/sub/{legacy_token}` продолжает работать напрямую через public Marzban
 subscription endpoint; privileged LK/Stars/bot/Filin операции fail closed.
 
+Filin HMAC replay state is stored durably in SQLite as SHA-256 references,
+so the same signed nonce is rejected across processes and restarts. Legacy
+signature v1 remains byte-compatible. New mutation callers should use v2 and
+send a stable `X-Filin-Idempotency-Key` for one logical operation while using
+a fresh timestamp/nonce for every retry. The v2 signed payload is:
+
+```text
+v2
+METHOD
+RAW_PATH_WITH_QUERY
+TIMESTAMP
+NONCE
+SHA256(IDEMPOTENCY_KEY)
+SHA256(BODY)
+```
+
+MGBoost stores only hashes of the nonce, operation key, request and response.
+Completed/pending duplicate operations return `409` and are not re-executed;
+the caller must reconcile through the corresponding read operation. Keep
+`INTERNAL_API_REQUIRE_V2_MUTATIONS=0` until every external mutation caller has
+adopted v2; switching it to `1` deliberately rejects legacy v1 mutations with
+`428` while leaving signed reads compatible.
+
 Для аварийного rollback существует только явный режим
 `MARZBAN_SERVICE_MODE=direct`: старый код получает текущий service credential
 обратно в своё окружение. Это не production target и не требует изменения

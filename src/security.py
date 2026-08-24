@@ -3,6 +3,7 @@ import hmac
 import secrets
 import threading
 import time
+import re
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 
@@ -13,12 +14,14 @@ from .config import (
     ADMIN_SESSION_COOKIE_SECURE,
     ADMIN_SESSION_TTL_SECONDS,
     INTERNAL_API_ALLOWED_SKEW_SECONDS,
+    INTERNAL_API_IDEMPOTENCY_TTL_SECONDS,
     INTERNAL_API_KEY,
+    INTERNAL_API_REQUIRE_V2_MUTATIONS,
 )
 from .http_utils import error_response, read_body
 
-_SEEN_NONCES: dict[str, float] = {}
-_MAX_TRACKED_NONCES = 2048
+_INTERNAL_IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 ADMIN_SESSION_COOKIE = "mgboost_admin"
 ADMIN_CSRF_HEADER = "X-CSRF-Token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -202,12 +205,6 @@ class AdminLoginRateLimiter:
 _ADMIN_LOGIN_LIMITER = AdminLoginRateLimiter()
 
 
-def _prune_expired(cache: dict[str, float], now: float):
-    expired = [key for key, expires_at in cache.items() if expires_at <= now]
-    for key in expired:
-        cache.pop(key, None)
-
-
 def _cookie_value(handler, name: str) -> str:
     raw = handler.headers.get("Cookie", "") or ""
     try:
@@ -269,9 +266,20 @@ def require_admin_auth(handler) -> bool:
     return True
 
 
-def build_internal_signature(method: str, path: str, timestamp: str, nonce: str, body: bytes) -> str:
+def build_internal_signature(
+    method: str, path: str, timestamp: str, nonce: str, body: bytes, *,
+    version: str = "1", idempotency_key: str = "",
+) -> str:
     body_hash = hashlib.sha256(body).hexdigest()
-    payload = "\n".join([method.upper(), path, timestamp, nonce, body_hash])
+    if version == "1":
+        payload = "\n".join([method.upper(), path, timestamp, nonce, body_hash])
+    elif version == "2":
+        idempotency_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        payload = "\n".join(
+            ["v2", method.upper(), path, timestamp, nonce, idempotency_hash, body_hash]
+        )
+    else:
+        raise ValueError("unsupported internal signature version")
     return hmac.new(INTERNAL_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -283,9 +291,29 @@ def require_internal_auth(handler) -> bool:
     timestamp_raw = (handler.headers.get("X-Filin-Timestamp") or "").strip()
     nonce = (handler.headers.get("X-Filin-Nonce") or "").strip()
     signature = (handler.headers.get("X-Filin-Signature") or "").strip()
+    version = (handler.headers.get("X-Filin-Signature-Version") or "1").strip()
+    idempotency_key = (handler.headers.get("X-Filin-Idempotency-Key") or "").strip()
 
     if not timestamp_raw or not nonce or not signature:
         error_response(handler, 401, "Missing internal authentication headers")
+        return False
+
+    if version not in {"1", "2"}:
+        error_response(handler, 401, "Unsupported internal signature version")
+        return False
+    # Legacy Filin accepted arbitrary non-empty header nonces.  Keep that
+    # contract while bounding storage/work; the DB stores only SHA-256 refs.
+    if len(nonce) > 128:
+        error_response(handler, 401, "Invalid nonce")
+        return False
+
+    method = handler.command.upper()
+    if version == "2" and method in _UNSAFE_METHODS:
+        if not _INTERNAL_IDEMPOTENCY_RE.fullmatch(idempotency_key):
+            error_response(handler, 400, "Valid idempotency key is required")
+            return False
+    if version == "1" and method in _UNSAFE_METHODS and INTERNAL_API_REQUIRE_V2_MUTATIONS:
+        error_response(handler, 428, "Signed v2 idempotency is required")
         return False
 
     try:
@@ -299,20 +327,67 @@ def require_internal_auth(handler) -> bool:
         error_response(handler, 401, "Signature expired")
         return False
 
-    _prune_expired(_SEEN_NONCES, float(now))
-    if nonce in _SEEN_NONCES:
-        error_response(handler, 409, "Replay detected")
-        return False
-
     body = read_body(handler)
-    expected = build_internal_signature(handler.command, handler.path, timestamp_raw, nonce, body)
+    expected = build_internal_signature(
+        method, handler.path, timestamp_raw, nonce, body,
+        version=version, idempotency_key=idempotency_key,
+    )
     if not secrets.compare_digest(signature, expected):
         error_response(handler, 403, "Invalid internal signature")
         return False
 
-    _SEEN_NONCES[nonce] = float(now + INTERNAL_API_ALLOWED_SKEW_SECONDS)
-    if len(_SEEN_NONCES) > _MAX_TRACKED_NONCES:
-        oldest = min(_SEEN_NONCES.items(), key=lambda item: item[1])[0]
-        _SEEN_NONCES.pop(oldest, None)
+    request_hash = hashlib.sha256(
+        "\n".join([
+            version, method, handler.path, timestamp_raw, nonce,
+            hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest(),
+            hashlib.sha256(body).hexdigest(),
+        ]).encode("utf-8")
+    ).hexdigest()
+    db = getattr(getattr(handler, "server", None), "db", None)
+    if db is None:
+        error_response(handler, 503, "Internal replay store is unavailable")
+        return False
+    try:
+        consumed = db.consume_internal_nonce(
+            nonce, request_hash, now=now,
+            ttl_seconds=INTERNAL_API_ALLOWED_SKEW_SECONDS,
+        )
+    except Exception:
+        error_response(handler, 503, "Internal replay store is unavailable")
+        return False
+    if not consumed:
+        error_response(handler, 409, "Replay detected")
+        return False
+
+    if version == "2" and method in _UNSAFE_METHODS:
+        operation_hash = hashlib.sha256(
+            "\n".join([method, handler.path, hashlib.sha256(body).hexdigest()]).encode("utf-8")
+        ).hexdigest()
+        try:
+            operation = db.begin_internal_idempotency(
+                idempotency_key, operation_hash, now=now,
+                ttl_seconds=INTERNAL_API_IDEMPOTENCY_TTL_SECONDS,
+            )
+        except Exception:
+            error_response(handler, 503, "Internal idempotency store is unavailable")
+            return False
+        state = operation["state"]
+        if state == "conflict":
+            error_response(handler, 409, "Idempotency key conflicts with another request")
+            return False
+        if state == "pending":
+            error_response(handler, 409, "Idempotent operation is pending reconciliation")
+            return False
+        if state == "completed":
+            error_response(
+                handler, 409, "Idempotent operation already completed",
+                details={"original_status": operation.get("response_status")},
+            )
+            return False
+        handler._internal_idempotency = {
+            "key": idempotency_key,
+            "request_hash": operation_hash,
+            "ttl_seconds": INTERNAL_API_IDEMPOTENCY_TTL_SECONDS,
+        }
 
     return True

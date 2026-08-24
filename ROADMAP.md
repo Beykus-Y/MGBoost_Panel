@@ -356,11 +356,14 @@ order and with the residual/dependency constraints recorded in
 **Evidence:** malicious quotes/entities/tags/backslashes remain inert text under the production LK CSP; real Chromium rename and delete flows pass with hostile device/API values. Full regression: `404 passed, 2 skipped` in the base environment and `406 passed` with browser dependencies. Deployment runbook and production gate: `docs/PHASE2_LK_XSS_HARDENING.md`.
 **Production completed 2026-08-24:** exact deploy commit was pulled and only `mgboost-panel` restarted. LK/admin/assets, authenticated Filin status, durable Stars tables, Telegram bot through the configured proxy, broker/nginx/Marzban health and token-safe journals passed. The post-deploy snapshot exactly matched the pre-state for 25 users/configs, 71 device rows and 71 HWID locks with zero config fetch errors. UUID, legacy subscription token/URL, HWID, expiry, tariff, forced client reconfiguration and unexpected effective config changes: 0.
 
-## [ ] PH2-03 — Shared durable Internal HMAC replay protection — P2
+## [~] PH2-03 — Shared durable Internal HMAC replay protection — P2
 
 **Keep:** HMAC-SHA256, timestamp, nonce, body hash, constant-time. **Add:** atomic shared nonce consume+TTL, idempotency/CAS.
 **Accept/tests:** replay блокируется same/other worker и после restart/cache flood.
 **Rollback:** fail closed при store outage.
+**Implemented/staging verified 2026-08-24:** signed nonce consumption moved from a bounded process-local dict to an additive SQLite table with SHA-256 nonce refs, TTL pruning, row cap and `BEGIN IMMEDIATE`/primary-key CAS. Signature verification happens before storage, store/capacity outage returns `503`, and replay returns `409` across separate DB connections/restart. Legacy v1 signature/payload/response contract is unchanged. Optional signed v2 binds a high-entropy idempotency key into the HMAC; one logical mutation is atomically `pending -> completed`, mismatched reuse and same/other-worker retry are rejected, only request/response/key hashes are stored, and a crash/ACK failure leaves a non-expiring `pending` reconciliation state instead of blind re-execution.
+**Tests:** concurrent two-connection consume, restart replay, invalid-signature non-consumption, expiry/capacity, store outage, hashed-at-rest assertions, v1 compatibility, v2 completed/conflict/pending crash-retry and acknowledgement failure. Full regression and production gate are required before deploy; runbook: `docs/PHASE2_INTERNAL_HMAC.md`.
+**Remaining before `[x]`:** deploy durable replay in compatibility mode, update the external Filin mutation caller to generate/reuse stable v2 operation IDs, verify create/renew/delete retry/reconciliation end-to-end, then enable `INTERNAL_API_REQUIRE_V2_MUTATIONS=1`. Until caller adoption, v1 mutations remain intentionally accepted and cannot be safely deduplicated when a caller retries the same logical action with a fresh nonce.
 
 ## [ ] PH2-04 — Headers/cache/error hardening — P3
 

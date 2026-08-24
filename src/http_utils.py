@@ -1,5 +1,7 @@
 import json
 import ipaddress
+import hashlib
+import time
 
 
 def read_body(handler) -> bytes:
@@ -15,6 +17,26 @@ def read_body(handler) -> bytes:
 
 def json_response(handler, status: int, data):
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    idempotency = getattr(handler, "_internal_idempotency", None)
+    if idempotency:
+        # Complete the local CAS before acknowledging a potentially remote
+        # mutation.  A failure leaves the row pending/unknown and responds
+        # fail-closed, so a retry cannot blindly repeat the operation.
+        try:
+            handler.server.db.complete_internal_idempotency(
+                idempotency["key"], idempotency["request_hash"],
+                response_status=status,
+                response_hash=hashlib.sha256(body).hexdigest(),
+                now=int(time.time()),
+                ttl_seconds=idempotency["ttl_seconds"],
+            )
+            handler._internal_idempotency = None
+        except Exception:
+            status = 503
+            body = json.dumps(
+                {"error": "Internal idempotency acknowledgement failed"},
+                ensure_ascii=False,
+            ).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")

@@ -295,6 +295,24 @@ class Database:
                 refund_reconciled_at INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS internal_hmac_nonces (
+                nonce_hash TEXT PRIMARY KEY,
+                request_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS internal_idempotency (
+                key_hash TEXT PRIMARY KEY,
+                request_hash TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending', 'completed')),
+                response_status INTEGER,
+                response_hash TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER
+            );
+
         """)
         self._conn.commit()
         self._ensure_sub_request_columns()
@@ -331,8 +349,130 @@ class Database:
                 ON stars_orphan_payments(status);
             CREATE INDEX IF NOT EXISTS idx_stars_orphan_payments_payer
                 ON stars_orphan_payments(payer_telegram_id);
+            CREATE INDEX IF NOT EXISTS idx_internal_hmac_nonces_expires
+                ON internal_hmac_nonces(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_internal_idempotency_expires
+                ON internal_idempotency(state, expires_at);
         """)
         self._conn.commit()
+
+    @staticmethod
+    def _internal_key_hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def consume_internal_nonce(
+        self, nonce: str, request_hash: str, *, now: int, ttl_seconds: int,
+        max_rows: int = 50000,
+    ) -> bool:
+        """Atomically consume a signed-request nonce across processes.
+
+        Only a SHA-256 reference is stored.  SQLite's write transaction and
+        the primary key are the cross-process compare-and-set boundary.
+        """
+        nonce_hash = self._internal_key_hash(nonce)
+        expires_at = now + max(1, int(ttl_seconds))
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "DELETE FROM internal_hmac_nonces WHERE expires_at<=?", (now,)
+                )
+                existing = self._conn.execute(
+                    "SELECT 1 FROM internal_hmac_nonces WHERE nonce_hash=?",
+                    (nonce_hash,),
+                ).fetchone()
+                if existing:
+                    self._conn.rollback()
+                    return False
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM internal_hmac_nonces"
+                ).fetchone()[0]
+                if count >= max(1, int(max_rows)):
+                    raise RuntimeError("internal nonce store capacity reached")
+                self._conn.execute(
+                    "INSERT INTO internal_hmac_nonces "
+                    "(nonce_hash, request_hash, created_at, expires_at) VALUES (?,?,?,?)",
+                    (nonce_hash, request_hash, now, expires_at),
+                )
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def begin_internal_idempotency(
+        self, key: str, request_hash: str, *, now: int, ttl_seconds: int,
+        max_rows: int = 50000,
+    ) -> dict:
+        """CAS a signed v2 mutation into a durable pending state.
+
+        Pending rows deliberately have no automatic expiry: a process can die
+        after the remote effect and before the local acknowledgement.  Such an
+        operation must be reconciled, never silently re-executed after a TTL.
+        """
+        key_hash = self._internal_key_hash(key)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "DELETE FROM internal_idempotency "
+                    "WHERE state='completed' AND expires_at IS NOT NULL AND expires_at<=?",
+                    (now,),
+                )
+                row = self._conn.execute(
+                    "SELECT request_hash, state, response_status "
+                    "FROM internal_idempotency WHERE key_hash=?",
+                    (key_hash,),
+                ).fetchone()
+                if row:
+                    self._conn.rollback()
+                    if not secrets.compare_digest(row["request_hash"], request_hash):
+                        return {"state": "conflict"}
+                    return {
+                        "state": row["state"],
+                        "response_status": row["response_status"],
+                    }
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM internal_idempotency"
+                ).fetchone()[0]
+                if count >= max(1, int(max_rows)):
+                    raise RuntimeError("internal idempotency store capacity reached")
+                self._conn.execute(
+                    "INSERT INTO internal_idempotency "
+                    "(key_hash, request_hash, state, created_at, updated_at, expires_at) "
+                    "VALUES (?,?,'pending',?,?,NULL)",
+                    (key_hash, request_hash, now, now),
+                )
+                self._conn.commit()
+                return {"state": "new"}
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def complete_internal_idempotency(
+        self, key: str, request_hash: str, *, response_status: int,
+        response_hash: str, now: int, ttl_seconds: int,
+    ) -> None:
+        key_hash = self._internal_key_hash(key)
+        expires_at = now + max(1, int(ttl_seconds))
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute(
+                    "UPDATE internal_idempotency SET state='completed', "
+                    "response_status=?, response_hash=?, updated_at=?, expires_at=? "
+                    "WHERE key_hash=? AND request_hash=? AND state='pending'",
+                    (
+                        int(response_status), response_hash, now, expires_at,
+                        key_hash, request_hash,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("internal idempotency CAS failed")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def _ensure_sub_request_columns(self):
         columns = {
