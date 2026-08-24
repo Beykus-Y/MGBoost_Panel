@@ -117,7 +117,7 @@ def test_legacy_snapshot_serializes_sqlite_rows_without_raw_output():
     )
     connection.execute(
         "INSERT INTO user_devices VALUES (?,?,?,?,?)",
-        ("source", "legacy-token", "legacy-hwid", 1, 100),
+        ("source", "sha256:" + "a" * 64, "legacy-hwid", 1, 100),
     )
     connection.execute(
         "INSERT INTO hwid_lock VALUES (?,?,?)", ("legacy-hwid", "source", 100)
@@ -153,8 +153,11 @@ def test_legacy_snapshot_serializes_sqlite_rows_without_raw_output():
     assert snapshot["device_count"] == 1
     assert snapshot["hwid_lock_count"] == 1
     assert snapshot["stars_tariff_count"] == 1
-    assert snapshot["legacy_persisted_token_count"] == 1
-    assert snapshot["legacy_persisted_token_user_count"] == 1
-    assert snapshot["legacy_persisted_token_fetch_errors"] == 0
-    assert "legacy-token" not in repr(snapshot)
+    assert snapshot["legacy_stored_token_ref_count"] == 1
+    assert snapshot["legacy_stored_token_ref_user_count"] == 1
+    assert snapshot["legacy_stored_token_ref_digest"]
+    assert "generated-" not in repr(snapshot)
     assert "legacy-hwid" not in repr(snapshot)
+    connection.execute("UPDATE user_devices SET token='raw-bearer'")
+    with pytest.raises(RuntimeError, match="raw legacy subscription bearer"):
+        _safe_legacy_snapshot(client, object(), connection, ["source"])

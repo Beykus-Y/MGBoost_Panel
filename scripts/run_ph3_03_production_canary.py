@@ -51,7 +51,7 @@ from src.database import Database
 from src.internal_entitlements import derive_reviewed_account_public_id
 from src.marzban import MarzbanClient
 from src.security import AdminSessionStore
-from src.sensitive import subscription_token_ref
+from src.sensitive import is_subscription_token_ref
 from src.service_marzban import ServiceMarzbanClient
 from src.shadowsocks_retirement import retirement_snapshot
 
@@ -162,18 +162,17 @@ def _safe_legacy_snapshot(
     identities = []
     configs = []
     fetch_errors = 0
-    persisted_configs = []
-    persisted_fetch_errors = 0
-    persisted_tokens: dict[str, list[str]] = {username: [] for username in usernames}
-    for row in connection.execute(
-        "SELECT username,token FROM user_devices ORDER BY username,token"
-    ):
-        if row["username"] in persisted_tokens and row["token"] not in persisted_tokens[row["username"]]:
-            persisted_tokens[row["username"]].append(row["token"])
+    stored_token_refs = [tuple(row) for row in connection.execute(
+        "SELECT DISTINCT username,token FROM user_devices ORDER BY username,token"
+    )]
+    if any(not is_subscription_token_ref(row[1]) for row in stored_token_refs):
+        raise RuntimeError("raw legacy subscription bearer found in user_devices")
     for username in sorted(usernames):
         user = client.get_user(username, sentinel)
         identities.append({
             "username_ref": _hash(username),
+            "created_at": user.get("created_at"),
+            "sub_revoked_at": user.get("sub_revoked_at"),
             "expire": user.get("expire"),
             "status": user.get("status"),
             "data_limit": user.get("data_limit"),
@@ -184,9 +183,11 @@ def _safe_legacy_snapshot(
         # Marzban 0.8.4 creates a new timestamped, simultaneously-valid
         # subscription alias whenever UserResponse is serialized. It is not a
         # stored credential and therefore must not be compared as a rotation.
-        # Use the durable legacy tokens already held by MGBoost instead.
-        tokens = persisted_tokens[username]
-        representative = tokens[0] if tokens else _token(user)
+        # PH1-06 deliberately retained only hashes of historical raw bearers;
+        # created_at/sub_revoked_at and those stable verifier rows are the
+        # credential-validity invariant. This fresh alias only verifies that
+        # the current functional subscription contract remains renderable.
+        representative = _token(user)
         try:
             body, _headers = client.get_sub(
                 representative, {"User-Agent": "MGBoost-PH3-03-Canary/1"}
@@ -197,21 +198,6 @@ def _safe_legacy_snapshot(
             configs.append({"username_ref": _hash(username), "links": digest(links)})
         except Exception:
             fetch_errors += 1
-        for token in tokens:
-            try:
-                body, _headers = client.get_sub(
-                    token, {"User-Agent": "MGBoost-PH3-03-Persisted-Token/1"}
-                )
-                links = canonical_config(body)
-                if not links:
-                    raise RuntimeError("persisted legacy subscription contains no VPN links")
-                persisted_configs.append({
-                    "username_ref": _hash(username),
-                    "token_ref": subscription_token_ref(token),
-                    "links": digest(links),
-                })
-            except Exception:
-                persisted_fetch_errors += 1
     devices = [tuple(row) for row in connection.execute(
         "SELECT username,token,request_key,is_active,first_seen "
         "FROM user_devices ORDER BY username,request_key"
@@ -229,10 +215,9 @@ def _safe_legacy_snapshot(
         "legacy_config_count": len(configs),
         "legacy_config_digest": digest(configs),
         "legacy_config_fetch_errors": fetch_errors,
-        "legacy_persisted_token_count": len(persisted_configs),
-        "legacy_persisted_token_user_count": sum(bool(tokens) for tokens in persisted_tokens.values()),
-        "legacy_persisted_token_config_digest": digest(persisted_configs),
-        "legacy_persisted_token_fetch_errors": persisted_fetch_errors,
+        "legacy_stored_token_ref_count": len(stored_token_refs),
+        "legacy_stored_token_ref_user_count": len({row[0] for row in stored_token_refs}),
+        "legacy_stored_token_ref_digest": digest(stored_token_refs),
         "device_count": len(devices),
         "device_digest": digest(devices),
         "hwid_lock_count": len(locks),
@@ -449,9 +434,8 @@ def _source_preflight(
     if (
         baseline["legacy_config_fetch_errors"]
         or baseline["legacy_config_count"] != 25
-        or baseline["legacy_persisted_token_count"] != 45
-        or baseline["legacy_persisted_token_user_count"] != 24
-        or baseline["legacy_persisted_token_fetch_errors"]
+        or baseline["legacy_stored_token_ref_count"] != 45
+        or baseline["legacy_stored_token_ref_user_count"] != 24
     ):
         raise RuntimeError("legacy subscription baseline is incomplete")
     return {
