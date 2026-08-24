@@ -3,13 +3,18 @@ import os
 import sqlite3
 import tempfile
 import threading
-from types import SimpleNamespace
 
 import pytest
 
 
 PRIMARY = "owner:primary-admin-stable-id"
 PRIMARY_LOGIN = "authenticated-primary-login"
+
+
+def _capability(db, username=PRIMARY_LOGIN):
+    from src.security import AdminSessionStore
+    _raw, session = AdminSessionStore().create(username, "test-server-jwt")
+    return db.primary_admin_authority.authorize_session(session)
 
 
 @pytest.fixture
@@ -29,9 +34,7 @@ def db(monkeypatch):
 
 
 def _plan(db, *, mode="LIMITED", limit=6, code="INTERNAL_CANARY"):
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     return db.internal_entitlements.create_internal_plan(
         capability=capability,
         plan_code=code,
@@ -46,9 +49,7 @@ def _plan(db, *, mode="LIMITED", limit=6, code="INTERNAL_CANARY"):
 
 
 def _reviewed(db, plan, *, username="legacy-internal-a", tg=123456):
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     return db.internal_entitlements.create_reviewed_account(
         capability=capability,
         plan_version_id=plan["id"],
@@ -98,8 +99,10 @@ def test_non_primary_cannot_create_internal_plan_or_unlimited(db):
     from src.admin_authority import PrimaryAdminAuthorizationError, PrimaryAdminCapability
     from src.internal_entitlements import PrimaryAdminRequired
     with pytest.raises(PrimaryAdminAuthorizationError):
+        _capability(db, "secondary-admin")
+    with pytest.raises(PrimaryAdminAuthorizationError):
         db.primary_admin_authority.authorize_session(
-            SimpleNamespace(username="secondary-admin")
+            type("CallerShapedSession", (), {"username": PRIMARY_LOGIN})()
         )
     with pytest.raises(PrimaryAdminRequired):
         db.internal_entitlements.create_internal_plan(
@@ -114,9 +117,7 @@ def test_non_primary_cannot_create_internal_plan_or_unlimited(db):
 def test_reviewed_account_requires_unambiguous_evidence_and_is_idempotent(db):
     from src.internal_entitlements import ReviewedEvidenceRequired
     plan = _plan(db)
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     with pytest.raises(ReviewedEvidenceRequired, match="ambiguous"):
         db.internal_entitlements.create_reviewed_account(
             capability=capability, plan_version_id=plan["id"],
@@ -144,9 +145,7 @@ def test_reviewed_account_requires_unambiguous_evidence_and_is_idempotent(db):
 
 
 def test_owner_approved_multi_aliases_map_to_one_parent_and_remain_immutable(db):
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     plan = _plan(db, limit=10)
     aliases = [
         {
@@ -231,9 +230,7 @@ def test_ordinary_account_cannot_receive_or_resolve_internal_override(db):
         db.internal_entitlements.effective_entitlements(account["id"], now=2)
     with pytest.raises(InternalEntitlementError, match="ordinary"):
         db.internal_entitlements.add_override(
-            account["id"], capability=db.primary_admin_authority.authorize_session(
-                SimpleNamespace(username=PRIMARY_LOGIN)
-            ), entitlement_key="DEVICE_LIMIT",
+            account["id"], capability=_capability(db), entitlement_key="DEVICE_LIMIT",
             value_type="UNLIMITED", value=None,
             reason="Not allowed for a commercial account", expires_at=1000,
             idempotency_key="ordinary-account-override", now=2,
@@ -244,9 +241,7 @@ def test_override_reason_expiry_and_auto_fallback(db):
     from src.internal_entitlements import InternalEntitlementError
     plan = _plan(db, limit=5)
     account = _reviewed(db, plan)
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     with pytest.raises(InternalEntitlementError, match="reason"):
         db.internal_entitlements.add_override(
             account["account_id"], capability=capability,
@@ -285,9 +280,7 @@ def test_concurrent_same_override_is_single_idempotent_mutation(db):
     second = InternalEntitlementStore(
         second_conn, threading.RLock(), db.primary_admin_authority
     )
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     barrier = threading.Barrier(2)
     results = []
 
@@ -319,9 +312,7 @@ def test_account_isolation_and_no_username_special_cases(db):
     second_plan = _plan(db, code="INT_B")
     first = _reviewed(db, first_plan, username="internal-a", tg=111)
     second = _reviewed(db, second_plan, username="internal-b", tg=222)
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    capability = _capability(db)
     db.internal_entitlements.add_override(
         first["account_id"], capability=capability, entitlement_key="DEVICE_LIMIT",
         value_type="INTEGER", value=2, reason="Scoped first-account override",

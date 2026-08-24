@@ -2,7 +2,6 @@ import importlib
 import json
 import os
 import tempfile
-from types import SimpleNamespace
 
 import pytest
 
@@ -33,9 +32,9 @@ def db(monkeypatch):
 
 
 def _account(db, *, mapping="INTERNAL_OWNER_PRIMARY", tg=905302972, alias="alice"):
-    capability = db.primary_admin_authority.authorize_session(
-        SimpleNamespace(username=PRIMARY_LOGIN)
-    )
+    from src.security import AdminSessionStore
+    _raw, session = AdminSessionStore().create(PRIMARY_LOGIN, "test-server-jwt")
+    capability = db.primary_admin_authority.authorize_session(session)
     plan = db.internal_entitlements.create_internal_plan(
         capability=capability,
         plan_code="INTERNAL_CANARY",

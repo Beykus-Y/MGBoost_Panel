@@ -11,6 +11,8 @@ import hmac
 import secrets
 from dataclasses import dataclass
 
+from .security import is_server_authenticated_admin_session
+
 
 class PrimaryAdminAuthorizationError(PermissionError):
     pass
@@ -36,6 +38,7 @@ class PrimaryAdminAuthority:
         username = getattr(session, "username", "")
         if (
             not self.enabled
+            or not is_server_authenticated_admin_session(session)
             or not isinstance(username, str)
             or not hmac.compare_digest(username, self._admin_login)
         ):

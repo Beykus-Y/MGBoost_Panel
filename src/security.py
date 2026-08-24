@@ -28,6 +28,7 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _MAX_ADMIN_SESSIONS = 256
 _MAX_LOGIN_IDENTITIES = 4096
 _MAX_LOGIN_IPS = 1024
+_ADMIN_SESSION_SEAL = object()
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class AdminSession:
     csrf_token: str
     created_at: float
     expires_at: float
+    _server_seal: object
 
 
 class AdminSessionStore:
@@ -74,6 +76,7 @@ class AdminSessionStore:
             csrf_token=csrf_token,
             created_at=issued_at,
             expires_at=issued_at + ADMIN_SESSION_TTL_SECONDS,
+            _server_seal=_ADMIN_SESSION_SEAL,
         )
         with self._lock:
             self._prune_locked(issued_at)
@@ -110,6 +113,7 @@ class AdminSessionStore:
                 csrf_token=secrets.token_urlsafe(32),
                 created_at=rotated_at,
                 expires_at=rotated_at + ADMIN_SESSION_TTL_SECONDS,
+                _server_seal=_ADMIN_SESSION_SEAL,
             )
             self._sessions[self._key(new_raw)] = new_session
             return new_raw, new_session
@@ -121,6 +125,23 @@ class AdminSessionStore:
 
 
 _ADMIN_SESSIONS = AdminSessionStore()
+
+
+def is_server_authenticated_admin_session(
+    session, *, now: float | None = None
+) -> bool:
+    """Reject caller-shaped objects and expired/revoked-looking session data.
+
+    The marker is created only by this process' AdminSessionStore and is never
+    serialized to a browser. Normal callers obtain a session only after the
+    store has resolved an opaque HttpOnly cookie.
+    """
+    checked_at = time.time() if now is None else float(now)
+    return (
+        isinstance(session, AdminSession)
+        and session._server_seal is _ADMIN_SESSION_SEAL
+        and session.created_at <= checked_at < session.expires_at
+    )
 
 
 class AdminLoginRateLimiter:

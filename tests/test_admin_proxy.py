@@ -34,12 +34,8 @@ class FakeHandler:
 
 
 def _attach_session(handler, token="server-only-jwt"):
-    handler._admin_session = security.AdminSession(
-        username="admin",
-        marzban_token=token,
-        csrf_token="csrf",
-        created_at=1,
-        expires_at=9999999999,
+    _raw, handler._admin_session = security.AdminSessionStore().create(
+        "admin", token
     )
 
 
