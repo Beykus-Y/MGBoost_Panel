@@ -8,6 +8,8 @@ import time
 import threading
 
 from .config import DATA_DIR
+from .account_schema import apply_parent_account_schema
+from .account_store import AccountStore
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,7 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._create_tables()
+        self.accounts = AccountStore(self._conn, self._lock)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -315,6 +318,7 @@ class Database:
 
         """)
         self._conn.commit()
+        apply_parent_account_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
         self._ensure_stars_invoice_columns()
