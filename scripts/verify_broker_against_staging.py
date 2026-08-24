@@ -8,8 +8,10 @@ client with the typed localhost broker, and deletes only those exact users in
 or admin JWT.
 """
 
+import base64
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -74,9 +76,23 @@ def comparable_user(user):
 def identity_snapshot(user):
     return {
         "proxies": user.get("proxies"),
-        "subscription_url": user.get("subscription_url"),
         "inbounds": user.get("inbounds"),
     }
+
+
+_DYNAMIC_SID_RE = re.compile(r"([?&]sid=)[^&#]*")
+
+
+def canonical_subscription(body):
+    try:
+        decoded = base64.b64decode(body, validate=True).decode("utf-8")
+    except Exception:
+        decoded = body.decode("utf-8")
+    return sorted(
+        _DYNAMIC_SID_RE.sub(r"\1<DYNAMIC-SID>", line.strip())
+        for line in decoded.splitlines()
+        if line.strip()
+    )
 
 
 def main():
@@ -137,6 +153,13 @@ def main():
 
             broker_identity = identity_snapshot(broker_created)
             direct_identity = identity_snapshot(direct_created)
+            initial_url = broker_created.get("subscription_url") or ""
+            legacy_token = initial_url.rstrip("/").rsplit("/", 1)[-1]
+            if not legacy_token or legacy_token == initial_url:
+                raise AssertionError("Staging user did not receive a subscription URL")
+            legacy_body_before, _ = service.get_sub(
+                legacy_token, {"User-Agent": "Happ/PH1-05"}
+            )
 
             direct_get = marzban.get_user(broker_name, admin_token)
             broker_get = service.get_user(broker_name, sentinel)
@@ -195,13 +218,12 @@ def main():
 
             # A real legacy subscription remains a direct non-SUDO path, and
             # an expire-only broker mutation does not alter its body/identity.
-            raw_url = broker_current.get("subscription_url") or ""
-            legacy_token = raw_url.rstrip("/").rsplit("/", 1)[-1]
-            if not legacy_token or legacy_token == raw_url:
-                raise AssertionError("Staging user did not receive a subscription URL")
-            before_body, _ = service.get_sub(legacy_token, {"User-Agent": "Happ/PH1-05"})
-            after_body, _ = marzban.get_sub(legacy_token, {"User-Agent": "Happ/PH1-05"})
-            assert before_body == after_body
+            legacy_body_after, _ = marzban.get_sub(
+                legacy_token, {"User-Agent": "Happ/PH1-05"}
+            )
+            assert canonical_subscription(legacy_body_before) == canonical_subscription(
+                legacy_body_after
+            )
 
             service.delete_user(broker_name, sentinel)
             created_names.remove(broker_name)

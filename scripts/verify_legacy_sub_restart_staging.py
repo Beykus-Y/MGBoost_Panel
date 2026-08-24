@@ -3,7 +3,7 @@
 
 Only a synthetic ``mgboost_stage_`` Marzban user is created and removed.  No
 token or UUID is printed.  The script deliberately restarts MGBoost while its
-localhost broker is unavailable and verifies byte-identical legacy output.
+localhost broker is unavailable and verifies equivalent legacy VPN output.
 """
 
 import base64
@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -31,6 +32,16 @@ from src.marzban import MarzbanClient
 AUTH_KEY = "staging-restart-key-" + secrets.token_urlsafe(32)
 CLIENT_ID = "mgboost-main"
 INTERNAL_KEY = "staging-filin-hmac-key-" + secrets.token_urlsafe(32)
+_DYNAMIC_SID_RE = re.compile(r"([?&]sid=)[^&#]*")
+
+
+def canonical_subscription(body):
+    decoded = base64.b64decode(body, validate=True).decode("utf-8")
+    return sorted(
+        _DYNAMIC_SID_RE.sub(r"\1<DYNAMIC-SID>", line.strip())
+        for line in decoded.splitlines()
+        if line.strip()
+    )
 
 
 def unused_port():
@@ -284,7 +295,8 @@ def main():
             status, during, during_headers = fetch_when_ready(
                 f"http://127.0.0.1:{listen_port}/sub/{token}", process
             )
-            assert status == 200 and during == before
+            assert status == 200
+            assert canonical_subscription(during) == canonical_subscription(before)
             assert during_headers.get("profile-web-page-url") == before_headers.get("profile-web-page-url")
 
             stop_process(process)
@@ -297,7 +309,8 @@ def main():
             status, restarted, restarted_headers = fetch_when_ready(
                 f"http://127.0.0.1:{listen_port}/sub/{token}", process
             )
-            assert status == 200 and restarted == before
+            assert status == 200
+            assert canonical_subscription(restarted) == canonical_subscription(before)
             assert restarted_headers.get("subscription-userinfo") == before_headers.get("subscription-userinfo")
             assert marzban.get_user(username, admin_token)["proxies"]["vless"]["id"] == identity
 

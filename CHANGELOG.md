@@ -26,6 +26,7 @@
 - Production Marzban SUDO username/password заменены атомарно на высокоэнтропийную CSPRNG service-пару после broker isolation. Старые password и admin JWT отозваны; общий JWT signing secret и все legacy subscription credentials намеренно сохранены. Новый active и отдельный fallback credential доступны только владельцу через root-only files и не выводились в логи.
 - PH1-06 развёрнут на production: локальные subscription references хранятся как SHA-256 verifier, application paths/query и nginx sensitive routes не логируют raw bearer, а LK удаляет legacy `?token=` из browser URL и далее использует same-origin header. Реальные legacy token/URL не вращались и продолжают работать до staged Phase 4 migration.
 - PH1-07 dependency hardening развёрнут на production без обновления Marzban application/schema: immutable Marzban 0.8.4 base использует hash-pinned `python-multipart 0.0.32`, а MGBoost — изолированный hash-locked Python runtime с `aiohttp 3.14.3`/`aiogram 3.30.0`/`aiohttp-socks 0.12.0`. Masked semantic pre/post gate подтвердил нулевые изменения UUID, legacy token/URL, expiry, HWID/device bindings, tariffs и рабочих VPN-конфигураций.
+- Подготовлен PH1-08 Marzban login-notification hardening: failed-login Telegram/Discord report получает фиксированный `🔒` вместо введённого пароля. Узкий AST-validated build patch не меняет password validation, login HTTP contract или пользовательские VPN credentials; production cutover остаётся закрыт отдельным masked/canary gate.
 
 ### Changed
 
@@ -43,6 +44,7 @@
 - PH1-06 production gate завершён: one-time encrypted quarantine snapshot (180 дней) и pre/post-migration DB backups прошли restore; 198 request и 71 device raw-token rows атомарно заменены verifier-ссылками; strict canary scan подтвердил 0 новых raw bearer в nginx/application/journal/active DB/backups. Masked 25-user/71-device state и legacy config/UUID/expiry остались без изменений.
 - PH1-07 staging прошёл на production Python 3.10 и двух isolated Marzban containers (baseline/target): full regression, all-10 broker operations, legacy `/sub`, UUID/config continuity, Filin, restart/outage, parser load и Telegram SOCKS proxy совместимы. OpenRouter возвращает одинаковый pre-existing HTTP 403 на старом и новом runtime; это не dependency regression и зафиксировано как внешний operational residual.
 - PH1-07 production cutover выполнен двумя gates с проверенным rollback между попытками: Marzban parser overlay и MGBoost isolated runtime включены, admin/LK/Stars/Filin/broker/25 legacy subscriptions и token-safe logs прошли smoke. Verifier учитывает существующую динамическую info-node и случайный Reality `sid`, но продолжает строго сравнивать credentials/UUID, endpoints, transports/TLS и остальные config fields.
+- PH1-08 isolated staging прошёл на реальном Marzban 0.8.4 contract: built-image AST/report capture, настоящий failed login при включённом `NOTIFY_LOGIN`, all-10 broker operations, legacy `/sub` при broker outage/restart, Filin create/renew/delete и full Python 3.10 regression совместимы; canary password не появился в report/response/container logs.
 
 ### Documentation
 

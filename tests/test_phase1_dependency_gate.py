@@ -89,3 +89,25 @@ def test_runtime_integration_settings_reader_is_read_only(tmp_path):
     before = db_path.read_bytes()
     assert module.read_settings(db_path)["bot:token"] == "synthetic-secret"
     assert db_path.read_bytes() == before
+
+
+def test_staging_subscription_comparison_preserves_identity_but_normalizes_sid():
+    module = load_script("verify_broker_against_staging.py")
+    first = base64.b64encode(
+        b"vless://stable-id@example.test:443?security=reality&sid=first#Node"
+    )
+    second = base64.b64encode(
+        b"vless://stable-id@example.test:443?security=reality&sid=second#Node"
+    )
+    changed_identity = base64.b64encode(
+        b"vless://changed-id@example.test:443?security=reality&sid=second#Node"
+    )
+    assert module.canonical_subscription(first) == module.canonical_subscription(second)
+    assert module.canonical_subscription(first) != module.canonical_subscription(
+        changed_identity
+    )
+
+    restart_module = load_script("verify_legacy_sub_restart_staging.py")
+    assert restart_module.canonical_subscription(first) == restart_module.canonical_subscription(
+        second
+    )

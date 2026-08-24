@@ -19,3 +19,12 @@ RUN python -m pip install \
 LABEL fun.beykus.mgboost.phase1="PH1-07" \
       fun.beykus.mgboost.marzban-base="0.8.4@sha256:8e422c21997e5d2e3fa231eeff73c0a19193c20fc02fa4958e9368abb9623b8d" \
       fun.beykus.mgboost.python-multipart="0.0.32"
+
+FROM ph1-07 AS ph1-08
+
+COPY scripts/patch_marzban_login_report.py /tmp/patch_marzban_login_report.py
+RUN python /tmp/patch_marzban_login_report.py /code/app/routers/admin.py \
+    && rm -f /tmp/patch_marzban_login_report.py
+
+LABEL fun.beykus.mgboost.phase1="PH1-08" \
+      fun.beykus.mgboost.login-report-password="redacted"
