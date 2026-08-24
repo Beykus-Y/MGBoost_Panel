@@ -1,0 +1,369 @@
+"""Transactional PH3-02 device slots.
+
+This repository is dormant: no legacy route imports or calls it. SQLite write
+transactions and constraints, not the process-local connection lock, are the
+capacity and generation correctness boundary.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import sqlite3
+import time
+
+
+TECHNICAL_SLOT_CAP = 99
+PAID_BASELINE_LIMITS = frozenset({3, 6, 12})
+
+
+class DeviceSlotError(RuntimeError):
+    pass
+
+
+class InvalidHWID(DeviceSlotError):
+    pass
+
+
+class EntitlementUnavailable(DeviceSlotError):
+    pass
+
+
+class CapacityReached(DeviceSlotError):
+    pass
+
+
+class CapacityConflict(DeviceSlotError):
+    def __init__(self, active_count: int, effective_limit: int):
+        self.active_count = active_count
+        self.effective_limit = effective_limit
+        super().__init__("active device count exceeds current entitlement")
+
+
+class CrossAccountHWID(DeviceSlotError):
+    pass
+
+
+class StaleSlotGeneration(DeviceSlotError):
+    pass
+
+
+def privacy_safe_hwid(raw_hwid: str, hmac_key: bytes | str) -> tuple[str, str]:
+    """Return stable keyed verifier and non-reversible short display mask."""
+    if not isinstance(raw_hwid, str):
+        raise InvalidHWID("HWID must be text")
+    canonical = raw_hwid.strip()
+    if not canonical or len(canonical) > 512:
+        raise InvalidHWID("HWID length is invalid")
+    key = hmac_key.encode("utf-8") if isinstance(hmac_key, str) else hmac_key
+    if not isinstance(key, bytes) or len(key) < 32:
+        raise InvalidHWID("HWID verifier key must contain at least 32 bytes")
+    digest = hmac.new(key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "hmac-sha256:" + digest, "hwid_" + digest[:12]
+
+
+class DeviceSlotStore:
+    def __init__(self, connection: sqlite3.Connection, lock):
+        self._conn = connection
+        self._lock = lock
+
+    @staticmethod
+    def _slot_result(slot, generation, *, result: str) -> dict:
+        return {
+            "result": result,
+            "slot_id": slot["id"],
+            "slot_number": slot["slot_number"],
+            "slot_kind": slot["slot_kind"],
+            "generation": generation["generation"],
+            "generation_id": generation["id"],
+            "hwid_masked": generation["hwid_masked"],
+            "desired_state": slot["desired_state"],
+            "observed_state": slot["observed_state"],
+        }
+
+    def _entitlement_capacity(self, account_id: int, now: int) -> dict:
+        row = self._conn.execute(
+            "SELECT a.account_source,a.status AS account_status,"
+            "s.id AS subscription_id,s.status AS subscription_status,s.current_expiry,"
+            "p.plan_kind,p.device_limit_mode,p.device_limit "
+            "FROM mgboost_accounts AS a "
+            "JOIN mgboost_subscriptions AS s ON s.account_id=a.id "
+            "JOIN mgboost_plan_versions AS p ON p.id=s.current_plan_version_id "
+            "WHERE a.id=? AND s.status IN ('ACTIVE','UNLIMITED')",
+            (account_id,),
+        ).fetchone()
+        if not row or row["account_status"] != "ACTIVE":
+            raise EntitlementUnavailable("active account entitlement is required")
+        if (row["subscription_status"] != "UNLIMITED"
+                and row["current_expiry"] is not None
+                and int(row["current_expiry"]) <= now):
+            raise EntitlementUnavailable("subscription is expired")
+
+        source = row["account_source"]
+        if source == "INTERNAL":
+            if row["plan_kind"] != "INTERNAL":
+                raise EntitlementUnavailable("internal account requires internal plan")
+        elif source == "DIRECT":
+            if row["plan_kind"] != "COMMERCIAL":
+                raise EntitlementUnavailable("direct account requires commercial plan")
+        else:
+            raise EntitlementUnavailable("legacy account requires reviewed entitlement")
+
+        mode = row["device_limit_mode"]
+        limit = row["device_limit"]
+        if source == "DIRECT":
+            if mode != "LIMITED" or limit not in PAID_BASELINE_LIMITS:
+                raise EntitlementUnavailable("commercial device baseline is not approved")
+        elif mode == "LIMITED":
+            if limit is None or not 1 <= int(limit) <= TECHNICAL_SLOT_CAP:
+                raise EntitlementUnavailable("internal device limit is invalid")
+        elif mode != "UNLIMITED":
+            raise EntitlementUnavailable("internal device limit mode is invalid")
+
+        override = self._conn.execute(
+            "SELECT value_type,integer_value FROM mgboost_entitlement_overrides "
+            "WHERE account_id=? AND entitlement_key='DEVICE_LIMIT' "
+            "AND revoked_at IS NULL AND starts_at<=? AND expires_at>? "
+            "AND (subscription_id IS NULL OR subscription_id=?) "
+            "ORDER BY starts_at DESC,id DESC LIMIT 1",
+            (account_id, now, now, row["subscription_id"]),
+        ).fetchone()
+        if override:
+            if override["value_type"] == "UNLIMITED":
+                if source != "INTERNAL":
+                    raise EntitlementUnavailable("commercial unlimited override is disabled")
+                mode, limit = "UNLIMITED", None
+            elif override["value_type"] == "INTEGER":
+                proposed = int(override["integer_value"])
+                if not 1 <= proposed <= TECHNICAL_SLOT_CAP:
+                    raise EntitlementUnavailable("device override exceeds technical cap")
+                if source == "DIRECT" and proposed > int(limit):
+                    raise EntitlementUnavailable(
+                        "commercial capacity increase is not enabled in PH3-02"
+                    )
+                mode, limit = "LIMITED", proposed
+            else:
+                raise EntitlementUnavailable("device override type is invalid")
+
+        active_count = int(self._conn.execute(
+            "SELECT COUNT(*) FROM mgboost_device_slot_generations "
+            "WHERE account_id=? AND status='ACTIVE'",
+            (account_id,),
+        ).fetchone()[0])
+        effective_limit = TECHNICAL_SLOT_CAP if mode == "UNLIMITED" else int(limit)
+        return {
+            "account_source": source,
+            "subscription_id": row["subscription_id"],
+            "limit_mode": mode,
+            "entitled_limit": None if mode == "UNLIMITED" else int(limit),
+            "technical_limit": TECHNICAL_SLOT_CAP,
+            "effective_limit": effective_limit,
+            "active_count": active_count,
+            "conflict": active_count > effective_limit,
+            "overage": max(0, active_count - effective_limit),
+        }
+
+    def get_capacity_state(self, account_id: int, *, now: int | None = None) -> dict:
+        timestamp = int(time.time()) if now is None else int(now)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                result = self._entitlement_capacity(int(account_id), timestamp)
+                self._conn.commit()
+                return result
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def claim(
+        self,
+        account_id: int,
+        raw_hwid: str,
+        hmac_key: bytes | str,
+        *,
+        verifier_version: int = 1,
+        now: int | None = None,
+    ) -> dict:
+        verifier, masked = privacy_safe_hwid(raw_hwid, hmac_key)
+        if (isinstance(verifier_version, bool) or not isinstance(verifier_version, int)
+                or not 1 <= verifier_version <= 1_000_000):
+            raise InvalidHWID("HWID verifier version is invalid")
+        timestamp = int(time.time()) if now is None else int(now)
+        account_id = int(account_id)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existing = self._conn.execute(
+                    "SELECT g.*,s.slot_kind,s.current_generation,s.desired_state,"
+                    "s.observed_state,s.updated_at,s.row_version "
+                    "FROM mgboost_device_slot_generations AS g "
+                    "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
+                    "WHERE g.hwid_verifier_version=? AND g.hwid_verifier=? "
+                    "AND g.status='ACTIVE'",
+                    (verifier_version, verifier),
+                ).fetchone()
+                if existing:
+                    if existing["account_id"] != account_id:
+                        raise CrossAccountHWID(
+                            "active HWID verifier belongs to another account"
+                        )
+                    slot = {
+                        "id": existing["slot_id"],
+                        "slot_number": existing["slot_number"],
+                        "slot_kind": existing["slot_kind"],
+                        "desired_state": existing["desired_state"],
+                        "observed_state": existing["observed_state"],
+                    }
+                    self._conn.commit()
+                    return self._slot_result(slot, existing, result="EXISTING")
+
+                capacity = self._entitlement_capacity(account_id, timestamp)
+                if capacity["conflict"]:
+                    raise CapacityConflict(
+                        capacity["active_count"], capacity["effective_limit"]
+                    )
+                if capacity["active_count"] >= capacity["effective_limit"]:
+                    raise CapacityReached("device slot capacity reached")
+
+                slot = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slots "
+                    "WHERE account_id=? AND desired_state='FREE' "
+                    "ORDER BY slot_number LIMIT 1",
+                    (account_id,),
+                ).fetchone()
+                if slot is None:
+                    used_numbers = {
+                        int(row[0]) for row in self._conn.execute(
+                            "SELECT slot_number FROM mgboost_device_slots WHERE account_id=?",
+                            (account_id,),
+                        )
+                    }
+                    slot_number = next(
+                        (number for number in range(1, TECHNICAL_SLOT_CAP + 1)
+                         if number not in used_numbers),
+                        None,
+                    )
+                    if slot_number is None:
+                        raise CapacityReached("technical device slot cap reached")
+                    slot_kind = (
+                        "INTERNAL" if capacity["account_source"] == "INTERNAL" else "BASE"
+                    )
+                    cursor = self._conn.execute(
+                        "INSERT INTO mgboost_device_slots "
+                        "(account_id,slot_number,slot_kind,current_generation,"
+                        "desired_state,observed_state,created_at,updated_at) "
+                        "VALUES (?,?,?,0,'FREE','FREE',?,?)",
+                        (account_id, slot_number, slot_kind, timestamp, timestamp),
+                    )
+                    slot = self._conn.execute(
+                        "SELECT * FROM mgboost_device_slots WHERE id=?",
+                        (cursor.lastrowid,),
+                    ).fetchone()
+
+                next_generation = int(slot["current_generation"]) + 1
+                generation_cursor = self._conn.execute(
+                    "INSERT INTO mgboost_device_slot_generations "
+                    "(account_id,slot_id,slot_number,generation,hwid_verifier_version,"
+                    "hwid_verifier,hwid_masked,status,claimed_at) "
+                    "VALUES (?,?,?,?,?,?,?,'ACTIVE',?)",
+                    (
+                        account_id, slot["id"], slot["slot_number"], next_generation,
+                        verifier_version, verifier, masked, timestamp,
+                    ),
+                )
+                updated = self._conn.execute(
+                    "UPDATE mgboost_device_slots SET current_generation=?,"
+                    "desired_state='ACTIVE',observed_state='ACTIVE',updated_at=?,"
+                    "row_version=row_version+1 "
+                    "WHERE id=? AND account_id=? AND desired_state='FREE' "
+                    "AND current_generation=?",
+                    (
+                        next_generation, timestamp, slot["id"], account_id,
+                        slot["current_generation"],
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("slot generation compare-and-set failed")
+                slot = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slots WHERE id=?", (slot["id"],)
+                ).fetchone()
+                generation = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slot_generations WHERE id=?",
+                    (generation_cursor.lastrowid,),
+                ).fetchone()
+                self._conn.commit()
+                return self._slot_result(slot, generation, result="CLAIMED")
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def release(
+        self,
+        account_id: int,
+        slot_id: int,
+        expected_generation: int,
+        *,
+        reason: str,
+        now: int | None = None,
+    ) -> dict:
+        reason = str(reason or "").strip()
+        if not reason or len(reason) > 500:
+            raise DeviceSlotError("release reason is required and bounded")
+        timestamp = int(time.time()) if now is None else int(now)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                slot = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slots WHERE id=? AND account_id=?",
+                    (int(slot_id), int(account_id)),
+                ).fetchone()
+                if not slot:
+                    raise StaleSlotGeneration("slot does not belong to account")
+                generation = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slot_generations "
+                    "WHERE slot_id=? AND account_id=? AND status='ACTIVE'",
+                    (int(slot_id), int(account_id)),
+                ).fetchone()
+                if not generation or generation["generation"] != int(expected_generation):
+                    raise StaleSlotGeneration("active slot generation changed")
+                updated = self._conn.execute(
+                    "UPDATE mgboost_device_slot_generations "
+                    "SET status='RELEASED',ended_at=?,end_reason=? "
+                    "WHERE id=? AND status='ACTIVE' AND generation=?",
+                    (timestamp, reason, generation["id"], int(expected_generation)),
+                )
+                if updated.rowcount != 1:
+                    raise StaleSlotGeneration("active slot generation changed")
+                updated = self._conn.execute(
+                    "UPDATE mgboost_device_slots SET desired_state='FREE',"
+                    "observed_state='FREE',updated_at=?,row_version=row_version+1 "
+                    "WHERE id=? AND account_id=? AND desired_state='ACTIVE' "
+                    "AND current_generation=?",
+                    (timestamp, int(slot_id), int(account_id), int(expected_generation)),
+                )
+                if updated.rowcount != 1:
+                    raise StaleSlotGeneration("slot state changed")
+                self._conn.commit()
+                return {
+                    "slot_id": int(slot_id),
+                    "slot_number": slot["slot_number"],
+                    "released_generation": int(expected_generation),
+                    "desired_state": "FREE",
+                }
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def list_for_account(self, account_id: int) -> list[dict]:
+        """Return account-scoped safe metadata; never expose verifier values."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT s.id,s.slot_number,s.slot_kind,s.current_generation,"
+                "s.desired_state,s.observed_state,g.hwid_masked,g.status "
+                "FROM mgboost_device_slots AS s "
+                "LEFT JOIN mgboost_device_slot_generations AS g "
+                "ON g.slot_id=s.id AND g.status='ACTIVE' "
+                "WHERE s.account_id=? ORDER BY s.slot_number",
+                (int(account_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
