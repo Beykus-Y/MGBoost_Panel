@@ -1,7 +1,7 @@
 import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .http_utils import error_response
+from .http_utils import DEFAULT_SECURITY_HEADERS, error_response
 from .routes.admin import (
     handle_admin_remove_device,
     handle_admin_set_device_limit,
@@ -90,6 +90,7 @@ from .sensitive import redact_request_target
 
 # (method, regex_pattern) -> handler(request_handler, **groups)
 _ROUTES = [
+    ("GET",    re.compile(r"^/(?:docs|redoc|openapi\.json|debug|version)/?$"), lambda h: error_response(h, 404, "Not found")),
     ("GET",    re.compile(r"^/lk/$"),                            lambda h: handle_lk_page(h)),
     ("GET",    re.compile(r"^/lk/api/info$"),                   lambda h: handle_lk_info(h)),
     ("GET",    re.compile(r"^/lk/api/usage$"),                  lambda h: handle_lk_usage(h)),
@@ -174,6 +175,31 @@ _ROUTES = [
 
 
 class _Handler(BaseHTTPRequestHandler):
+    # Do not expose the stdlib/Python patch version in every response.
+    server_version = "MGBoost"
+    sys_version = ""
+
+    def version_string(self):
+        return self.server_version
+
+    def send_response(self, code, message=None):
+        self._sent_header_names = set()
+        super().send_response(code, message)
+
+    def send_header(self, keyword, value):
+        sent = getattr(self, "_sent_header_names", None)
+        if sent is None:
+            sent = self._sent_header_names = set()
+        sent.add(keyword.lower())
+        super().send_header(keyword, value)
+
+    def end_headers(self):
+        sent = getattr(self, "_sent_header_names", set())
+        for name, value in DEFAULT_SECURITY_HEADERS.items():
+            if name.lower() not in sent:
+                self.send_header(name, value)
+        super().end_headers()
+
     def log_message(self, format, *args):
         status = str(args[1]) if len(args) > 1 else "-"
         print(
@@ -198,8 +224,7 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                     error_response(self, 500, "Internal server error")
                 return
-        self.send_response(404)
-        self.end_headers()
+        error_response(self, 404, "Not found")
 
     def do_GET(self):
         self._dispatch("GET")

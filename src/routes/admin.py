@@ -266,8 +266,7 @@ def handle_configs_delete(handler, config_id):
     try:
         config_id = int(config_id)
     except ValueError:
-        handler.send_response(400)
-        handler.end_headers()
+        _json_response(handler, 400, {"error": "Invalid config id"})
         return
     handler.server.db.delete_extra_config(config_id)
     _json_response(handler, 200, {"ok": True})
@@ -304,8 +303,7 @@ def handle_stats_update(handler):
         upload = data.get("upload", 0)
         download = data.get("download", 0)
     except Exception:
-        handler.send_response(400)
-        handler.end_headers()
+        _json_response(handler, 400, {"error": "Invalid stats payload"})
         return
     db.update_hysteria_stats(token, upload, download)
     _json_response(handler, 200, {"ok": True})
@@ -795,8 +793,8 @@ def handle_stars_payment_recheck(handler, payment_id):
         return
     try:
         user = client.get_user(row["marzban_username"], admin_token)
-    except Exception as e:
-        _json_response(handler, 502, {"error": f"Could not load Marzban user: {e}"})
+    except Exception:
+        _json_response(handler, 502, {"error": "Could not load Marzban user"})
         return
     _json_response(handler, 200, {"invoice": row, "live_expire": user.get("expire"), "live_status": user.get("status")})
 
@@ -821,8 +819,8 @@ def handle_stars_payment_confirm_applied(handler, payment_id):
         return
     try:
         user = client.get_user(row["marzban_username"], admin_token)
-    except Exception as e:
-        _json_response(handler, 502, {"error": f"Could not load Marzban user: {e}"})
+    except Exception:
+        _json_response(handler, 502, {"error": "Could not load Marzban user"})
         return
     live_expire = int(user.get("expire") or 0)
     ok = db.resolve_manual_review_confirm_applied(invoice_id, applied_expire=live_expire)
@@ -903,7 +901,10 @@ def _issue_stars_refund(handler, row, payment_id: int, *, orphan: bool = False):
             future.cancel()
         else:
             refund_coro.close()
-        unknown(payment_id, f"{type(e).__name__}: {e}")
+        # Exception strings from HTTP clients can contain URLs, query values
+        # or remote identifiers. The state/correlation is enough for safe
+        # reconciliation; persist only the exception class.
+        unknown(payment_id, type(e).__name__)
         _json_response(handler, 202, {
             "ok": False,
             "status": "refund_unknown",
@@ -1008,9 +1009,9 @@ def _reconcile_stars_refund(handler, row, payment_id: int, *, orphan: bool = Fal
     )
     try:
         confirmed = future.result(timeout=REFUND_RECONCILE_TIMEOUT_SECONDS)
-    except Exception as e:
+    except Exception:
         future.cancel()
-        _json_response(handler, 502, {"error": f"Could not reconcile Telegram transactions: {e}"})
+        _json_response(handler, 502, {"error": "Could not reconcile Telegram transactions"})
         return
     if not confirmed:
         _json_response(handler, 200, {

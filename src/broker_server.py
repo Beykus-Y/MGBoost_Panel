@@ -19,6 +19,7 @@ from .broker_protocol import (
     validate_loopback_host,
     validate_shared_key,
 )
+from .http_utils import DEFAULT_SECURITY_HEADERS
 
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,11 @@ class BrokerApplication:
 
 
 class BrokerHandler(BaseHTTPRequestHandler):
-    server_version = "MGBoostBroker/1"
+    server_version = "MGBoostBroker"
+    sys_version = ""
+
+    def version_string(self):
+        return self.server_version
 
     def log_message(self, _format, *_args):
         return
@@ -94,7 +99,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in DEFAULT_SECURITY_HEADERS.items():
+            if name.lower() != "cache-control":
+                self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

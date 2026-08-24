@@ -29,6 +29,9 @@ INTERNAL_API_IDEMPOTENCY_TTL_SECONDS = int(
 INTERNAL_API_REQUIRE_V2_MUTATIONS = os.getenv(
     "INTERNAL_API_REQUIRE_V2_MUTATIONS", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+SUB_BROWSER_CSP_ENFORCE = os.getenv(
+    "SUB_BROWSER_CSP_ENFORCE", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "1800"))
 ADMIN_SESSION_COOKIE_SECURE = os.getenv("ADMIN_SESSION_COOKIE_SECURE", "1").strip().lower() not in {
     "0", "false", "no", "off",

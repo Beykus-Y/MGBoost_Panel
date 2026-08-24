@@ -4,6 +4,20 @@ import hashlib
 import time
 
 
+DEFAULT_SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Strict-Transport-Security": "max-age=31536000",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    "Content-Security-Policy": (
+        "default-src 'none'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'none'"
+    ),
+}
+
+
 def read_body(handler) -> bytes:
     cached = getattr(handler, "_cached_body", None)
     if cached is not None:

@@ -1,4 +1,5 @@
     # Define once in nginx's http {} scope, outside server/location blocks.
+    server_tokens off;
     # Sensitive route logs retain operational status without path/query,
     # Referer or User-Agent (all can contain a subscription bearer):
     # log_format mgboost_sensitive '$remote_addr [$time_local] '
@@ -6,6 +7,11 @@
     #     '$status $body_bytes_sent';
     #
     # limit_req_zone $binary_remote_addr zone=marzban_admin_login:10m rate=5r/m;
+    #
+    # Add to every HTTPS server block. Repeat it in any child location that
+    # has its own add_header directives, because nginx stops inheriting the
+    # parent add_header set in that case:
+    # add_header Strict-Transport-Security "max-age=31536000" always;
     #
     # Any public server that proxies Marzban must override its generic `/`
     # location with this exact login route.  MGBoost's own admin login has an

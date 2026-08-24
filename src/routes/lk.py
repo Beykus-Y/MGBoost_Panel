@@ -328,7 +328,7 @@ def handle_lk_info(handler):
             "subscription_url": subscription_url,
         })
     except Exception as e:
-        print(f"[LK] info error: {e}")
+        print(f"[LK] info error: {type(e).__name__}")
         _error(handler, 500, "Internal error")
 
 
@@ -369,13 +369,13 @@ def handle_lk_usage(handler):
                     "percent": round(used / total * 100) if total > 0 else 0,
                 })
         except Exception as e:
-            print(f"[LK] usage fetch error: {e}")
+            print(f"[LK] usage fetch error: {type(e).__name__}")
             _error(handler, 503, "Traffic service temporarily unavailable")
             return
 
         _json_ok(handler, {"usages": nodes_usage})
     except Exception as e:
-        print(f"[LK] usage error: {e}")
+        print(f"[LK] usage error: {type(e).__name__}")
         _error(handler, 500, "Internal error")
 
 

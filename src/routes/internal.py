@@ -55,17 +55,17 @@ def _marzban_error(handler, exc: Exception, fallback: str):
         return
 
     if isinstance(exc, URLError):
-        error_response(handler, 502, fallback, details={"reason": str(exc.reason)})
+        error_response(handler, 502, fallback)
         return
 
-    error_response(handler, 502, fallback, details={"reason": str(exc)})
+    error_response(handler, 502, fallback)
 
 
 def _get_admin_token(handler):
     try:
         return _client.get_admin_token_from_env()
-    except Exception as exc:
-        error_response(handler, 503, "Marzban admin credentials are not configured", details={"reason": str(exc)})
+    except Exception:
+        error_response(handler, 503, "Marzban admin credentials are not configured")
         return None
 
 

@@ -366,11 +366,14 @@ order and with the residual/dependency constraints recorded in
 **Production compatibility rollout 2026-08-24:** encrypted backup and restored-copy additive-schema/CAS gate passed before restart. Real signed v1 status succeeded, the exact nonce was rejected after MGBoost restart, and a fresh nonce succeeded. Active DB quick-check/hash-only assertions, broker/Marzban/admin/LK/Stars/Telegram/support and token-safe logs passed. Masked 25-user/config and 71-device/HWID state matched exactly; user credential/config/expiry/tariff changes: 0. `INTERNAL_API_REQUIRE_V2_MUTATIONS=0` is confirmed.
 **Remaining before `[x]`:** update the external Filin mutation caller to generate/reuse stable v2 operation IDs, verify create/renew/delete retry/reconciliation end-to-end, then enable `INTERNAL_API_REQUIRE_V2_MUTATIONS=1`. Until caller adoption, v1 mutations remain intentionally accepted and cannot be safely deduplicated when a caller retries the same logical action with a fresh nonce.
 
-## [ ] PH2-04 — Headers/cache/error hardening — P3
+## [~] PH2-04 — Headers/cache/error hardening — P3
 
 **Depends:** PH1-01, PH2-02 перед strict CSP.
 **Scope:** no-store, Referrer-Policy, HSTS, CSP, frame protection, uniform invalid subscription, hide unnecessary docs/version.
 **Tests:** header/frame/cache/referrer/status/body/timing. **Rollout:** CSP report-only first.
+**Implemented/staging verified 2026-08-24:** every application response now inherits no-store (unless an explicit static-asset cache policy exists), no-referrer, nosniff, DENY/frame-ancestors, restrictive Permissions-Policy, HSTS and default-deny CSP; stdlib/Python patch versions are removed from `Server`. Admin/LK retain their stricter executable CSP. Browser subscription uses a safe baseline plus strict report-only policy until the production gate flips `SUB_BROWSER_CSP_ENFORCE=1`. Invalid upstream 401/403/404 subscriptions receive the same fixed 404 body and minimum response floor; outages receive a generic 502 without upstream details. `/docs`, `/redoc`, `/openapi.json`, `/debug`, `/version` are explicit 404. Non-base64 upstream response headers now use the same allowlist as normal subscriptions and CR/LF/oversized response header values are dropped.
+**Tests:** real HTTP dynamic/static/error header matrix, runtime version hiding, uniform invalid status/body/timing, outage redaction, report-only/enforce CSP contract, oversized token, upstream header allowlist, and real Chromium browser-copy execution with zero CSP violations. Full regression, production report-only observation, nginx HSTS/server-token gate and enforced-CSP cutover remain before `[x]`; runbook: `docs/PHASE2_HTTP_HARDENING.md`.
+**Compatibility:** valid legacy `/sub/{token}` body, UUID, filters, response metadata allowlist and client configuration semantics remain unchanged. No token/UUID/HWID/expiry/tariff migration.
 
 ## [ ] PH2-05 — Admin/user session and ownership lifecycle
 

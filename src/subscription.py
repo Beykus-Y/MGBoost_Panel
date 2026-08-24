@@ -248,7 +248,10 @@ def process_subscription(body, marzban_headers, token, username, db):
         lines = [l for l in decoded.strip().split("\n") if l.strip()]
     except Exception:
         # Not base64 — pass through as-is
-        out_headers = {k: v for k, v in marzban_headers.items() if k.lower() not in SKIP_HEADERS}
+        out_headers = {
+            k: v for k, v in marzban_headers.items()
+            if k.lower() in FORWARD_HEADERS and k.lower() not in SKIP_HEADERS
+        }
         return body, out_headers
 
     lines = filter_by_node_filters(lines, username, db)

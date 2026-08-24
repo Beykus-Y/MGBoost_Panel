@@ -74,3 +74,23 @@ def test_upstream_description_and_announce_are_forwarded_without_override():
 
     assert out_headers["Profile-Description"] == "upstream description"
     assert out_headers["Announce"] == "upstream announce"
+
+
+def test_non_base64_subscription_forwards_only_allowlisted_headers():
+    body = b"not-base64-subscription"
+    headers = {
+        "Profile-Title": "safe title",
+        "Subscription-Userinfo": "upload=1; download=2",
+        "Set-Cookie": "upstream-secret=must-not-pass",
+        "Server": "upstream-version",
+        "X-Debug-Token": "must-not-pass",
+        "Content-Length": "999",
+    }
+
+    new_body, out_headers = process_subscription(body, headers, "token", "user", FakeDB())
+
+    assert new_body == body
+    assert out_headers == {
+        "Profile-Title": "safe title",
+        "Subscription-Userinfo": "upload=1; download=2",
+    }
