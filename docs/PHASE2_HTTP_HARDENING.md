@@ -89,3 +89,41 @@ For nginx failure, restore the root-only pre-change config copies, run
 `nginx -t`, then reload. HSTS cannot be instantly revoked from browsers once
 observed, so it is added only to hostnames already HTTPS-only in production.
 No rollback step may rotate UUIDs, legacy subscription tokens, HWIDs or expiry.
+
+## Production evidence
+
+Production rollout completed on 2026-08-24 in three gates. First, commit
+`e6173b1` was deployed with `SUB_BROWSER_CSP_ENFORCE=0`; a valid legacy browser
+page returned the strict report-only policy, loaded its external script and
+showed no runtime/header error. Uniform invalid subscription and hidden-route
+checks passed. The full final candidate suite passed with `433 passed, 3
+skipped` in the base environment and `436 passed` with Chromium.
+
+Second, commit `5626676` moved HSTS responsibility exclusively to the TLS
+boundary and added an idempotent nginx installer. Dry-run expected four changed
+files and five sensitive child locations. The actual run created root-only
+backup `/var/backups/mgboost/ph2-04-nginx-20260824-1550`, changed exactly those
+files/locations, passed `nginx -t`, reloaded cleanly, then returned zero changes
+on a second dry-run. Active `panel.beykus.fun` and `sub.beykus.fun` externally
+served `Strict-Transport-Security: max-age=31536000` and `Server: nginx` without
+a version. The legacy `mgboostmsk.ddns.net` DNS name did not resolve during the
+external check; its installed nginx block was nevertheless patched and syntax
+validated.
+
+Third, `SUB_BROWSER_CSP_ENFORCE=1` was set in the root-owned production env and
+MGBoost/broker restarted. A valid browser subscription externally returned the
+strict enforced CSP, no report-only header, HSTS and the versionless nginx
+header. Broker health used its versionless product header. Admin/LK, durable
+Stars state, authenticated Filin v1, Marzban/broker, Telegram through proxy and
+support runtime passed; OpenRouter retained its pre-existing HTTP 403 baseline.
+
+The masked pre/post snapshot matched exactly for 25 users/configs, zero config
+fetch errors, 71 device rows and 71 HWID locks. UUID, legacy URL/token, HWID,
+expiry, tariff, forced client reconfiguration and unexpected effective config
+changes were all zero. Journal/nginx scans found no raw subscription path or
+stable runtime/security error. No rollback was required.
+
+Both MGBoost and broker showed an existing readiness race: systemd can report
+active briefly before the HTTP listener accepts connections. The rollout's
+explicit readiness loop handled it; future availability/multi-worker work must
+retain a real readiness probe rather than treating `is-active` as sufficient.
