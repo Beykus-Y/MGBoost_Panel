@@ -88,3 +88,16 @@ renewal and source scan/API proof that username/note inference is absent.
 The migration is additive/checksum-pinned and both new tables begin empty.
 Rollback is application-only; older code ignores them. Once real evidence is
 recorded, do not drop these immutable tables during rollback.
+
+## Production evidence
+
+Production deployment completed on exact commit `08397f3` after a fresh
+verified encrypted backup. Only `mgboost-panel` restarted. The migration
+marker, SQLite quick check and foreign-key check passed; payment/link,
+account/review/slot/generation tables remain empty.
+
+Masked pre/post digests match exactly for 25 Marzban users/configs and 71
+legacy device/HWID rows. Admin, LK, uniform invalid subscription, signed Filin,
+localhost broker, Telegram proxy, nginx/systemd and token-safe journal/access
+logs passed. No existing expiry, credential, config or runtime entitlement was
+changed. PH3-03 was not activated.
