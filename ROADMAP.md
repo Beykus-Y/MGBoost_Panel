@@ -346,7 +346,7 @@ order and with the residual/dependency constraints recorded in
 **Accept/tests:** DB leak не даёт URL; entropy/tamper/enumeration/timing; per-token revoke; ordinary ownership rebind preserves token; compromise flow invalidates old opaque token and issues a new one without implicit UUID rotation.
 **Migration/rollback:** versioned legacy alias; revoked token никогда не реактивируется.
 
-## [~] PH2-02 — LK device-name XSS и inline handlers — P2
+## [x] PH2-02 — LK device-name XSS и inline handlers — P2
 
 **Depends:** PH1-01 frontend conventions. **Files:** `frontend/assets/lk.js`, `frontend/lk.html`, весь frontend.
 **Scope:** `textContent`, opaque dataset IDs, `addEventListener`; no inline onclick.
@@ -354,7 +354,7 @@ order and with the residual/dependency constraints recorded in
 **Rollback:** не возвращать unsafe handlers.
 **Implemented and staging verified 2026-08-24:** LK/API-controlled username, node, error and device values are now rendered only through DOM construction and `textContent`; device mutations use validated positive integer opaque `data-device-id` values and `addEventListener`, never a device name inside JavaScript/HTML. All LK inline event attributes and HTML-string render sinks were removed. The browser subscription copy page also moved its handler to a same-origin external script and keeps the legacy URL only as HTML-escaped text, not JavaScript source. Static whole-frontend scan found no inline event attributes; the only remaining `innerHTML` is the PH1-01 admin controlled `SafeMarkup` renderer covered by its sanitizer tests.
 **Evidence:** malicious quotes/entities/tags/backslashes remain inert text under the production LK CSP; real Chromium rename and delete flows pass with hostile device/API values. Full regression: `404 passed, 2 skipped` in the base environment and `406 passed` with browser dependencies. Deployment runbook and production gate: `docs/PHASE2_LK_XSS_HARDENING.md`.
-**Remaining:** production cutover and masked no-user-impact verification; do not mark complete until that gate passes.
+**Production completed 2026-08-24:** exact deploy commit was pulled and only `mgboost-panel` restarted. LK/admin/assets, authenticated Filin status, durable Stars tables, Telegram bot through the configured proxy, broker/nginx/Marzban health and token-safe journals passed. The post-deploy snapshot exactly matched the pre-state for 25 users/configs, 71 device rows and 71 HWID locks with zero config fetch errors. UUID, legacy subscription token/URL, HWID, expiry, tariff, forced client reconfiguration and unexpected effective config changes: 0.
 
 ## [ ] PH2-03 — Shared durable Internal HMAC replay protection — P2
 

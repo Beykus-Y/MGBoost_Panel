@@ -62,6 +62,26 @@ Chromium/Playwright. JavaScript syntax, Python compilation and `git diff
 6. Inspect new application/nginx/journal entries for errors and raw bearer
    leakage. Require every compatibility invariant above to remain zero.
 
+## Production evidence
+
+Production deployment completed on 2026-08-24 from commit `fac7a78`. The
+repository fast-forwarded cleanly while preserving the pre-existing untracked
+`extra_configs.json`; no data or nginx/Marzban/broker configuration changed.
+Only `mgboost-panel` was restarted.
+
+The LK and admin pages, cache-busted LK and browser-copy assets, authenticated
+Filin status, durable Stars tables, Telegram bot through the configured proxy,
+broker/nginx/Marzban health and DB quick-check passed. OpenRouter retained its
+pre-existing HTTP 403 baseline and did not receive any new context from this
+change. Application/nginx/journal scans found no new raw subscription path and
+no stable runtime error.
+
+The post-deploy masked snapshot exactly matched the pre-deploy snapshot: 25
+users, 25 functional legacy configs, zero fetch errors, 71 device rows and 71
+HWID locks. UUID, legacy subscription URL/token, HWID, expiry, tariff, forced
+client reconfiguration and unexpected effective config changes were all zero.
+No rollback was required.
+
 ## Rollback
 
 If the LK/browser assets fail or any invariant differs, restore the previous
