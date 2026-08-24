@@ -52,8 +52,8 @@ Staging used two localhost-only containers with separate synthetic SQLite and
 VLESS configs: the immutable production baseline and the PH1-07 target.
 Production DB, Xray config, users and listeners were not mounted.
 
-- local Python 3.14 regression: `396 passed, 1 skipped`;
-- isolated production-Python 3.10 regression: `395 passed, 2 skipped`;
+- local Python 3.14 regression: `394 passed, 1 skipped`;
+- isolated production-Python 3.10 regression: `393 passed, 2 skipped`;
 - both hash-locked requirement sets: `pip-audit` reported no known
   vulnerabilities;
 - all ten legacy broker operations: PASS;
@@ -85,6 +85,31 @@ renewal. The compatibility contract is therefore not equality of the admin
 API's current URL across an intentional renewal. The real contract, verified
 on both baseline and target, is that the already-issued alias continues to
 resolve the same UUID/config and existing clients require no reconfiguration.
+
+## Production evidence
+
+Production cutover completed on 2026-08-24 in two steps: first the immutable
+Marzban parser-overlay image, then the isolated MGBoost Python runtime. The
+first full-body comparison changed and therefore triggered the documented
+rollback before the runtime step. A repeated baseline proved that the existing
+config output is intentionally non-deterministic: the synthetic information
+node contains live description data and Marzban selects a Reality `sid` value
+per response. No credential, endpoint, port, query key, non-`sid` query value,
+transport/TLS field or fragment changed.
+
+The masked verifier now excludes only the exact synthetic information-node
+shape and normalizes only the value of an already-present `sid`; it continues
+to hash the complete remaining VPN links. Two rollback-image captures were
+then identical, and the same digest matched after both production deploy
+steps. All 25 users/configs were fetched with zero errors; identity/expiry,
+71 device rows and 71 HWID locks also matched. Admin/LK, Telegram proxy,
+Stars durable state, authenticated Filin status, missing-HMAC denial, broker,
+systemd/nginx and new-log token scans passed. OpenRouter retained its known
+baseline HTTP 403 without credential output.
+
+Production invariants: UUID changes 0; subscription URL/token changes 0;
+HWID changes 0; expiry changes caused by deployment 0; tariff changes 0;
+forced client reconfiguration 0; unexpected effective config changes 0.
 
 ## Production preflight and cutover
 

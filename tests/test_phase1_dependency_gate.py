@@ -22,15 +22,27 @@ def test_masked_snapshot_canonicalizes_only_vpn_links():
     payload = "\n".join(
         [
             "INFO NODE",
-            "vless://synthetic-id@example.test:443#A",
+            (
+                "vless://00000000-0000-0000-0000-000000000000@"
+                "127.0.0.1:1?type=tcp#dynamic-description"
+            ),
+            "vless://synthetic-id@example.test:443?security=reality&sid=first#A",
             "https://not-a-vpn-link.example/",
         ]
     ).encode()
     encoded = base64.b64encode(payload)
     links = module.canonical_config(encoded)
     assert links == [
-        "vless://synthetic-id@example.test:443#A"
+        (
+            "vless://synthetic-id@example.test:443?security=reality&"
+            "sid=<DYNAMIC-SID>#A"
+        )
     ]
+
+    second = base64.b64encode(
+        b"vless://synthetic-id@example.test:443?security=reality&sid=second#A"
+    )
+    assert module.canonical_config(second) == links
 
 
 def test_local_masked_snapshot_emits_no_device_or_hwid_values(tmp_path):

@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -14,6 +15,10 @@ from src.service_marzban import ServiceMarzbanClient
 
 
 VPN_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "hysteria2://")
+LEGACY_INFO_NODE_PREFIX = (
+    "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:1?"
+)
+LEGACY_DYNAMIC_SID_RE = re.compile(r"([?&]sid=)[^&#]*")
 
 
 def digest(value) -> str:
@@ -38,7 +43,12 @@ def canonical_config(body: bytes) -> list[str]:
             lines = candidate.decode("utf-8").splitlines()
         except UnicodeDecodeError:
             continue
-        links = sorted(line.strip() for line in lines if line.strip().startswith(VPN_SCHEMES))
+        links = sorted(
+            LEGACY_DYNAMIC_SID_RE.sub(r"\1<DYNAMIC-SID>", line.strip())
+            for line in lines
+            if line.strip().startswith(VPN_SCHEMES)
+            and not line.strip().startswith(LEGACY_INFO_NODE_PREFIX)
+        )
         if links:
             return links
     return []
