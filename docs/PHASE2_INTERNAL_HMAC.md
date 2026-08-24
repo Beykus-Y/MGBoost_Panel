@@ -82,6 +82,32 @@ No live create/renew/delete canary is required for the compatibility-only
 store cutover because their HTTP and Marzban payload paths are unchanged; the
 existing real-Marzban all-ten-operation staging contract remains authoritative.
 
+## Production evidence
+
+The compatibility layer was deployed on 2026-08-24 from commit `500375e` with
+`INTERNAL_API_REQUIRE_V2_MUTATIONS=0`. Before restart, the regular encrypted
+backup completed successfully and an online DB copy passed restore,
+`quick_check`, additive-table and independent-connection CAS tests. The full
+suite passed locally (`415 passed, 2 skipped`; `417 passed` with browser
+dependencies). Production's intentionally minimal runtime has no pytest
+package, so no package was installed during the gate.
+
+After the additive active-DB migration, a real signed v1 status request
+succeeded. MGBoost was restarted, the exact same signed nonce returned the
+expected 409, and a fresh nonce succeeded. SQLite contained the expected
+SHA-256 nonce reference and not the raw nonce. A first probe immediately after
+systemd reported active exposed an existing startup-readiness race (the port
+was not listening yet); the gate was repeated with an explicit readiness loop
+and passed. This did not involve a user mutation.
+
+Broker, Marzban, admin/LK, durable Stars tables, Telegram through the configured
+proxy and support runtime passed. OpenRouter retained its pre-existing HTTP 403
+baseline. The masked pre/post snapshot matched exactly for 25 users/configs,
+zero config fetch errors, 71 device rows and 71 HWID locks. UUID, legacy
+subscription URL/token, HWID, expiry, tariff, forced client reconfiguration and
+unexpected effective config changes were all zero. Logs contained no raw
+subscription path or stable replay/database error. No rollback was required.
+
 ## Rollback
 
 The schema is additive and old code ignores both tables. An emergency rollback
