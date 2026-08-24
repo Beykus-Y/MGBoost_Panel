@@ -80,26 +80,12 @@ def source_contract(user: dict) -> dict:
     if not isinstance(user, dict):
         raise ValueError("source user is invalid")
     proxies = user.get("proxies")
-    if not isinstance(proxies, dict) or set(proxies) not in (
-        {"vless"}, {"vless", "shadowsocks"}
-    ):
-        raise ValueError("child canary supports only vless with optional shadowsocks")
+    if not isinstance(proxies, dict) or set(proxies) != {"vless"}:
+        raise ValueError("MGBoost child contract is VLESS-only")
     vless = proxies.get("vless")
     if not isinstance(vless, dict) or not isinstance(vless.get("id"), str):
         raise ValueError("source vless credential is missing")
     proxy_options = {"vless": {"flow": vless.get("flow") or ""}}
-    if "shadowsocks" in proxies:
-        shadowsocks = proxies["shadowsocks"]
-        if (
-            not isinstance(shadowsocks, dict)
-            or not isinstance(shadowsocks.get("password"), str)
-            or not shadowsocks.get("password")
-            or shadowsocks.get("method") not in {
-                "aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305"
-            }
-        ):
-            raise ValueError("source shadowsocks contract is invalid")
-        proxy_options["shadowsocks"] = {"method": shadowsocks["method"]}
     protocols = set(proxies)
     return {
         "schema": 1,
@@ -180,19 +166,6 @@ def validate_created_child(user: dict, request: dict, source_user: dict) -> dict
     child_vless = proxies["vless"]
     if (child_vless.get("flow") or "") != contract["proxy_options"]["vless"]["flow"]:
         raise ValueError("remote child vless flow mismatch")
-    child_shadowsocks_password = None
-    if "shadowsocks" in protocols:
-        child_ss = proxies["shadowsocks"]
-        source_ss = source_user["proxies"]["shadowsocks"]
-        if (
-            not isinstance(child_ss, dict)
-            or child_ss.get("method") != contract["proxy_options"]["shadowsocks"]["method"]
-            or not isinstance(child_ss.get("password"), str)
-            or not child_ss.get("password")
-            or child_ss["password"] == source_ss["password"]
-        ):
-            raise ValueError("remote child shadowsocks credential mismatch")
-        child_shadowsocks_password = child_ss["password"]
     return {
         "username": normalized["child_username"],
         "expire": normalized["expire"],
@@ -200,14 +173,13 @@ def validate_created_child(user: dict, request: dict, source_user: dict) -> dict
         "inbounds": contract["inbounds"],
         "protocols": contract["protocols"],
         "uuid": child_uuid,
-        "shadowsocks_password": child_shadowsocks_password,
     }
 
 
 def validate_child_credentials_request(data: dict) -> dict:
     required = {
         "operation_id", "child_username", "source_contract_hash", "expire",
-        "uuid_verifier", "shadowsocks_verifier",
+        "uuid_verifier",
     }
     if not isinstance(data, dict) or set(data) != required:
         raise ValueError("invalid child credential reread fields")
@@ -221,11 +193,6 @@ def validate_child_credentials_request(data: dict) -> dict:
     uuid_verifier = data["uuid_verifier"]
     if not isinstance(uuid_verifier, str) or not _VERIFIER_RE.fullmatch(uuid_verifier):
         raise ValueError("invalid child UUID verifier")
-    ss_verifier = data["shadowsocks_verifier"]
-    if ss_verifier is not None and (
-        not isinstance(ss_verifier, str) or not _VERIFIER_RE.fullmatch(ss_verifier)
-    ):
-        raise ValueError("invalid child Shadowsocks verifier")
     expire = data["expire"]
     if isinstance(expire, bool) or not isinstance(expire, int) or expire < 0:
         raise ValueError("invalid child credential expiry")
@@ -235,7 +202,6 @@ def validate_child_credentials_request(data: dict) -> dict:
         "source_contract_hash": contract_hash,
         "expire": expire,
         "uuid_verifier": uuid_verifier,
-        "shadowsocks_verifier": ss_verifier,
     }
 
 
@@ -263,20 +229,10 @@ def reread_child_credentials(user: dict, request: dict) -> dict:
         credential_verifier(child_uuid), normalized["uuid_verifier"]
     ):
         raise ValueError("remote child UUID verifier mismatch")
-    ss_password = None
-    if "shadowsocks" in source_contract(user)["protocols"]:
-        ss_password = user["proxies"]["shadowsocks"].get("password")
-        if normalized["shadowsocks_verifier"] is None or not hmac.compare_digest(
-            credential_verifier(ss_password), normalized["shadowsocks_verifier"]
-        ):
-            raise ValueError("remote child Shadowsocks verifier mismatch")
-    elif normalized["shadowsocks_verifier"] is not None:
-        raise ValueError("unexpected Shadowsocks verifier")
     return {
         "username": normalized["child_username"],
         "credentials": {
             "vless_uuid": child_uuid,
-            "shadowsocks_password": ss_password,
         },
         "observed": {
             "contract_hash": normalized["source_contract_hash"],

@@ -22,6 +22,7 @@ from .child_contract import (
     validate_child_ensure_request,
 )
 from .marzban import MarzbanClient
+from .shadowsocks_retirement import validate_retirement_request
 
 
 class BrokerTransport:
@@ -215,3 +216,15 @@ class ServiceMarzbanClient:
                 "child.user.credentials.get", normalized
             )
         return self._broker().call("child.user.credentials.get", normalized)
+
+    def retire_shadowsocks_metadata(self, request):
+        """Remove only retired SS metadata through the typed broker boundary."""
+        normalized = validate_retirement_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch(
+                "maintenance.user.retire_shadowsocks", normalized
+            )
+        return self._broker().call(
+            "maintenance.user.retire_shadowsocks", normalized
+        )

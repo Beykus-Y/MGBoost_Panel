@@ -15,6 +15,14 @@ from .child_contract import (
     reread_child_credentials,
 )
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
+from .shadowsocks_retirement import (
+    build_functional_repair_payload,
+    build_retirement_payload,
+    functional_contract,
+    retirement_snapshot,
+    validate_retirement_request,
+    verify_retirement,
+)
 
 
 def _exact_object(data, *, required=(), optional=()):
@@ -167,6 +175,37 @@ class BrokerOperations:
                     request["child_username"], self._admin_token()
                 )
                 return reread_child_credentials(child, request)
+
+        if operation == "maintenance.user.retire_shadowsocks":
+            request = validate_retirement_request(data)
+            username = request["username"]
+            with self._lock_for(username):
+                token = self._admin_token()
+                topology = self.marzban.get_inbounds(token)
+                if (topology or {}).get("shadowsocks"):
+                    raise ValueError("Shadowsocks topology must be empty before retirement")
+                before = self.marzban.get_user(username, token)
+                snapshot = retirement_snapshot(before)
+                if snapshot["state_digest"] != request["expected_state_digest"]:
+                    raise ValueError("Marzban user changed after retirement inventory")
+                if not snapshot["shadowsocks_metadata"]:
+                    return {"outcome": "UNCHANGED", **snapshot}
+                self.marzban.modify_user(
+                    username, build_retirement_payload(before), token
+                )
+                after = self.marzban.get_user(username, token)
+                try:
+                    return verify_retirement(before, after)
+                except ValueError:
+                    repair = build_functional_repair_payload(before, after)
+                    if repair:
+                        self.marzban.modify_user(username, repair, token)
+                        repaired = self.marzban.get_user(username, token)
+                        if functional_contract(repaired) == functional_contract(before):
+                            raise ValueError(
+                                "unexpected retirement drift was repaired; rollout stopped"
+                            )
+                    raise
 
         raise AssertionError(f"unhandled operation: {operation}")
 

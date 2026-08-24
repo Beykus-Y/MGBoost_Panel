@@ -34,6 +34,7 @@ from src.child_contract import (
     credential_verifier, derive_child_username, derive_operation_id,
     source_contract_hash,
 )
+from src.shadowsocks_retirement import retirement_snapshot
 
 
 AUTH_KEY = "broker-test-key-with-at-least-32-bytes"
@@ -228,6 +229,113 @@ def test_all_ten_operations_are_explicit_and_preserve_legacy_payload_semantics()
     assert seen == LEGACY_BROKER_OPERATIONS
     assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {
         "child.user.ensure", "child.user.credentials.get",
+        "maintenance.user.retire_shadowsocks",
+    }
+
+
+def _legacy_shadowsocks_user():
+    return {
+        "username": "alice",
+        "expire": 2_000,
+        "status": "active",
+        "proxies": {
+            "vless": {"id": UUID, "flow": "xtls-rprx-vision"},
+            "shadowsocks": {"method": "aes-128-gcm", "password": "retired-secret"},
+        },
+        "inbounds": {"vless": ["LEGACY"], "shadowsocks": []},
+        "data_limit": None,
+        "data_limit_reset_strategy": "no_reset",
+        "subscription_url": "/sub/synthetic-test-bearer",
+        "links": [f"vless://{UUID}@vpn.invalid:443?sid=random#LEGACY"],
+    }
+
+
+def test_typed_shadowsocks_retirement_is_narrow_and_idempotent():
+    marzban = FakeMarzban()
+    marzban.users["alice"] = _legacy_shadowsocks_user()
+    operations = BrokerOperations(marzban)
+    before = json.loads(json.dumps(marzban.users["alice"]))
+    request = {
+        "username": "alice",
+        "expected_state_digest": retirement_snapshot(before)["state_digest"],
+    }
+
+    removed = operations.dispatch("maintenance.user.retire_shadowsocks", request)
+    assert removed["outcome"] == "REMOVED"
+    assert removed["proxy_types"] == ["vless"]
+    assert UUID not in json.dumps(removed)
+    modify = [call for call in marzban.calls if call[0] == "modify_user"]
+    assert modify == [(
+        "modify_user", "alice",
+        {"proxies": {"vless": {"id": UUID, "flow": "xtls-rprx-vision"}}},
+        "sudo-token-only-inside-broker",
+    )]
+    after = marzban.users["alice"]
+    for field in ("expire", "status", "inbounds", "data_limit", "subscription_url", "links"):
+        assert after[field] == before[field]
+    assert after["proxies"] == {"vless": before["proxies"]["vless"]}
+
+    retry = {
+        "username": "alice",
+        "expected_state_digest": retirement_snapshot(after)["state_digest"],
+    }
+    assert operations.dispatch(
+        "maintenance.user.retire_shadowsocks", retry
+    )["outcome"] == "UNCHANGED"
+    assert len([call for call in marzban.calls if call[0] == "modify_user"]) == 1
+
+
+def test_shadowsocks_retirement_rejects_topology_stale_inventory_and_payload_injection():
+    marzban = FakeMarzban()
+    marzban.users["alice"] = _legacy_shadowsocks_user()
+    operations = BrokerOperations(marzban)
+    digest = retirement_snapshot(marzban.users["alice"])["state_digest"]
+    with pytest.raises(ValueError, match="request"):
+        operations.dispatch("maintenance.user.retire_shadowsocks", {
+            "username": "alice", "expected_state_digest": digest,
+            "proxies": {"vless": {}},
+        })
+    with pytest.raises(ValueError, match="changed after"):
+        operations.dispatch("maintenance.user.retire_shadowsocks", {
+            "username": "alice", "expected_state_digest": "0" * 64,
+        })
+    marzban.get_inbounds = lambda _token: {
+        "vless": [{"tag": "LEGACY"}], "shadowsocks": [{"tag": "SS"}],
+    }
+    with pytest.raises(ValueError, match="topology"):
+        operations.dispatch("maintenance.user.retire_shadowsocks", {
+            "username": "alice", "expected_state_digest": digest,
+        })
+    assert not [call for call in marzban.calls if call[0] == "modify_user"]
+
+
+def test_shadowsocks_retirement_repairs_unexpected_functional_drift_and_stops():
+    class DriftingMarzban(FakeMarzban):
+        def __init__(self):
+            super().__init__()
+            self.first = True
+
+        def modify_user(self, username, payload, token):
+            result = super().modify_user(username, payload, token)
+            if self.first:
+                self.first = False
+                self.users[username]["expire"] = 9_999
+            return result
+
+    marzban = DriftingMarzban()
+    marzban.users["alice"] = _legacy_shadowsocks_user()
+    before = json.loads(json.dumps(marzban.users["alice"]))
+    request = {
+        "username": "alice",
+        "expected_state_digest": retirement_snapshot(before)["state_digest"],
+    }
+    with pytest.raises(ValueError, match="repaired; rollout stopped"):
+        BrokerOperations(marzban).dispatch(
+            "maintenance.user.retire_shadowsocks", request
+        )
+    assert marzban.users["alice"]["expire"] == before["expire"]
+    assert marzban.users["alice"]["proxies"] == {
+        "vless": before["proxies"]["vless"]
     }
 
 
@@ -264,25 +372,20 @@ def test_child_ensure_creates_fresh_uuid_then_converges_to_existing():
     assert len(creates) == 1
 
 
-def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentials():
+def test_child_ensure_is_vless_only_and_typed_reread_validates_uuid():
     marzban = FakeMarzban()
     operations = BrokerOperations(marzban)
     marzban.users["alice"]["proxies"]["vless"]["flow"] = "xtls-rprx-vision"
-    marzban.users["alice"]["proxies"]["shadowsocks"] = {
-        "method": "aes-128-gcm", "password": "legacy-password"
-    }
-    marzban.users["alice"]["inbounds"]["shadowsocks"] = []
     source = json.loads(json.dumps(marzban.users["alice"]))
     request = _child_request(source)
 
     result = operations.dispatch("child.user.ensure", request)
 
     remote = marzban.users[request["child_username"]]
-    assert result["protocols"] == ["shadowsocks", "vless"]
+    assert result["protocols"] == ["vless"]
     assert remote["proxies"]["vless"]["flow"] == "xtls-rprx-vision"
     assert remote["proxies"]["vless"]["id"] != source["proxies"]["vless"]["id"]
-    assert remote["proxies"]["shadowsocks"]["method"] == "aes-128-gcm"
-    assert remote["proxies"]["shadowsocks"]["password"] != source["proxies"]["shadowsocks"]["password"]
+    assert set(remote["proxies"]) == {"vless"}
 
     reread_request = {
         "operation_id": request["operation_id"],
@@ -290,13 +393,9 @@ def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentia
         "source_contract_hash": request["source_contract_hash"],
         "expire": 0,
         "uuid_verifier": credential_verifier(result["uuid"]),
-        "shadowsocks_verifier": credential_verifier(result["shadowsocks_password"]),
     }
     reread = operations.dispatch("child.user.credentials.get", reread_request)
-    assert reread["credentials"] == {
-        "vless_uuid": result["uuid"],
-        "shadowsocks_password": result["shadowsocks_password"],
-    }
+    assert reread["credentials"] == {"vless_uuid": result["uuid"]}
     with pytest.raises(ValueError, match="verifier mismatch"):
         operations.dispatch(
             "child.user.credentials.get",
@@ -305,6 +404,13 @@ def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentia
     marzban.users[request["child_username"]]["expire"] = 9
     with pytest.raises(ValueError, match="expiry drift"):
         operations.dispatch("child.user.credentials.get", reread_request)
+
+
+def test_child_ensure_rejects_retired_shadowsocks_source_metadata():
+    marzban = FakeMarzban()
+    marzban.users["alice"] = _legacy_shadowsocks_user()
+    with pytest.raises(ValueError, match="VLESS-only"):
+        _child_request(marzban.users["alice"])
 
 
 def test_child_ensure_rejects_contract_drift_arbitrary_fields_and_uuid_reuse():

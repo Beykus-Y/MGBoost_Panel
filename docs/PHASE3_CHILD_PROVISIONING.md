@@ -66,9 +66,9 @@ this boundary and the canary mutation are separately approved.
   either value.
 
 No raw HWID, subscription bearer, legacy UUID or child credential is stored in
-the outbox. After broker success, only separate SHA-256 verifiers and bounded
-masks are persisted for the child VLESS UUID and Shadowsocks password. Raw
-generated credentials exist only in the authenticated localhost broker response
+the outbox. After broker success, only a SHA-256 verifier and bounded mask are
+persisted for the child VLESS UUID. Raw generated credentials exist only in the
+authenticated localhost broker response
 long enough to validate/acknowledge the effect; future subscription delivery
 must use the account resolver rather than exposing them through logs or admin
 lists.
@@ -94,28 +94,26 @@ lock the broker:
 
 1. reads the reviewed legacy source;
 2. verifies an exact normalized contract hash;
-3. accepts only VLESS, optionally with Shadowsocks;
-4. preserves exact inbound membership, VLESS flow and allowed Shadowsocks
-   method while omitting all source credentials from the create payload;
-5. asks Marzban to generate a fresh VLESS UUID and, when present, fresh
-   Shadowsocks password;
+3. accepts only VLESS under DL-046;
+4. preserves exact inbound membership and VLESS flow while omitting the source
+   UUID from the create payload;
+5. asks Marzban to generate a fresh VLESS UUID;
 6. rereads and verifies username, expiry, active status, unlimited data,
    protocols/inbounds/options and that credentials differ from legacy;
 7. returns `CREATED` or the same verified `EXISTING` effect.
 
 The companion typed `child.user.credentials.get` operation accepts only the
 server-derived operation/username, approved source-contract hash, exact expiry
-and both stored credential verifiers. It rereads Marzban, verifies the complete
-remote contract and compares both credentials in constant time before returning
-them ephemerally to the subscription response path. It offers no list/generic
+and the stored UUID verifier. It rereads Marzban, verifies the complete remote
+contract and compares the UUID verifier in constant time before returning it
+ephemerally to the subscription response path. It offers no list/generic
 lookup. MGBoost DB, application logs and broker logs must never receive the raw
 values.
 
-The read-only production source contract for `beykusios` currently has VLESS +
-Shadowsocks, 25 VLESS inbound and zero Shadowsocks inbound, VLESS flow
-`xtls-rprx-vision`, Shadowsocks method `aes-128-gcm`, unlimited expiry/data and
-normalized hash `b4798b928c481570bf1388cb06b73907a1afd8295e047d39cfee715e27ca0f98`.
-No credential or inbound tag is included here.
+After the DL-046 cleanup, the approved source contract for `beykusios` is
+VLESS-only, with the exact 25 VLESS inbound, flow `xtls-rprx-vision`, unlimited
+expiry/data and normalized contract hash
+`52bd127165402fd429e47b4fa485a53566f8870af2514f6c82d4de204287ff47`.
 
 ## Lost-ACK reconciliation
 
@@ -153,7 +151,7 @@ working. The child UUID is new and is not substituted into legacy `/sub` yet.
 There is no revoke, redirect, fail-closed HWID or config change. This produces
 overlap for testing by design; revoke belongs to the later migration stage.
 
-## Isolated Marzban 0.8.4 gate — FAIL (2026-08-25)
+## Historical isolated Marzban 0.8.4 gate — FAIL (2026-08-25)
 
 The approved gate ran against the exact official image
 `gozargah/marzban@sha256:8e422c21997e5d2e3fa231eeff73c0a19193c20fc02fa4958e9368abb9623b8d`
@@ -180,12 +178,10 @@ remote-created/local-ACK-failed have **not** passed real staging. Their unit
 contracts pass, but they are not substitutes for this mandatory gate. PH3-03 is
 not ready for a production child mutation.
 
-An owner-approved resolution is required before rerunning the gate: either
-change the required proxy contract, introduce an intentional versioned
-Shadowsocks topology, or use a supported Marzban version/API that can preserve a
-disabled legacy proxy. Direct writes to Marzban's private SQLite schema are not
-an approved workaround because they bypass Marzban validation/events/Xray
-reconciliation and are version-coupled.
+DL-046 subsequently selected the VLESS-only product contract and typed
+retirement of this non-functional metadata. The failed result remains here as
+historical evidence and is not a current product ambiguity. Direct writes to
+Marzban's private SQLite schema remain prohibited.
 
 The credential-refresh contract remains fail-closed: a temporary Marzban outage
 returns generic 503 through the authenticated broker and no raw credential is
@@ -200,7 +196,7 @@ Focused child/broker/staging-guard tests pass (`37 passed`) and the full suite
 passes (`518 passed, 3 skipped`). They cover schema idempotency,
 one-parent/many-alias immutability,
 forged actor denial, account isolation, atomic intent+outbox insertion,
-idempotent prepare, typed payload rejection, fresh VLESS/Shadowsocks credentials,
+idempotent prepare, typed payload rejection, fresh VLESS UUID,
 broker/direct equivalence, and remote-created/local-ACK-failed reconciliation.
 
 On a disposable current production DB copy, first/second migration apply is
@@ -210,8 +206,8 @@ device/HWID counts remain 71/71, all new tables contain zero rows, quick check i
 
 Before any production mutation, still required:
 
-1. resolve the disabled-Shadowsocks API incompatibility above without changing
-   the approved legacy contract implicitly, then rerun the full real
+1. complete the approved typed production cleanup from
+   `docs/SHADOWSOCKS_RETIREMENT.md`, then rerun the full real VLESS-only
    create/reread/idempotency/lost-ACK gate to PASS;
 2. deploy the dormant code/schema with an empty-table verification gate;
 3. configure dedicated slot HMAC key and the primary-admin mapping only through

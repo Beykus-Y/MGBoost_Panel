@@ -30,6 +30,7 @@ LEGACY_BROKER_OPERATIONS = frozenset({
 BROKER_OPERATIONS = LEGACY_BROKER_OPERATIONS | frozenset({
     "child.user.ensure",
     "child.user.credentials.get",
+    "maintenance.user.retire_shadowsocks",
 })
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _SIGNATURE_RE = re.compile(r"^[0-9a-f]{64}$")

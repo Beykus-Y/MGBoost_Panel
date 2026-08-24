@@ -2,8 +2,8 @@
 """Real Marzban 0.8.4 PH3-03 child create/reread staging gate.
 
 The target must be an explicitly isolated loopback instance on a non-default
-port. The script prints no raw UUID, subscription token, Shadowsocks password,
-admin credential or full subscription line.
+port. The script prints no raw UUID, subscription token, admin credential or
+full subscription line.
 """
 
 from __future__ import annotations
@@ -31,13 +31,12 @@ from src.marzban import MarzbanClient
 from src.security import AdminSessionStore
 from src.service_marzban import ServiceMarzbanClient
 from scripts.build_ph3_03_staging_xray import (
-    DECOY_VLESS_TAGS,
     EFFECTIVE_VLESS_TAGS,
 )
 
 
 EXPECTED_VERSION = "0.8.4"
-EXPECTED_SOURCE_HASH = "b4798b928c481570bf1388cb06b73907a1afd8295e047d39cfee715e27ca0f98"
+EXPECTED_SOURCE_HASH = "52bd127165402fd429e47b4fa485a53566f8870af2514f6c82d4de204287ff47"
 EXPECTED_ACCOUNT_PUBLIC_ID = "acct_435p4hjeoxeq3bzg4ifkdut4veower4r"
 EXPECTED_CHILD_USERNAME = "mgc_sgg6v7t6he43yytsqmkdczzfpa"
 EXPECTED_OPERATION_ID = "op_lw33pjhqhnvorrgh4p754bnc34"
@@ -251,11 +250,9 @@ def main():
             "username": source_name,
             "proxies": {
                 "vless": {"flow": "xtls-rprx-vision"},
-                "shadowsocks": {"method": "aes-128-gcm"},
             },
             "inbounds": {
                 "vless": list(EFFECTIVE_VLESS_TAGS),
-                "shadowsocks": [],
             },
             "expire": 0,
             "data_limit": None,
@@ -263,23 +260,7 @@ def main():
             "status": "active",
             "note": "PH3-03 isolated legacy source template",
         }
-        try:
-            source = marzban.create_user(source_payload, admin_token)
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")
-            if exc.code != 400 or "Shadowsocks is disabled" not in detail:
-                raise
-            print(json.dumps({
-                "staging_contract": "FAIL",
-                "marzban_version": version,
-                "failure_stage": "production_equivalent_source_create",
-                "reason": "disabled_shadowsocks_proxy_rejected_by_marzban_api",
-                "effective_vless_count": len(EFFECTIVE_VLESS_TAGS),
-                "effective_shadowsocks_count": 0,
-                "child_created": False,
-                "production_mutation": False,
-            }, ensure_ascii=False, indent=2, sort_keys=True))
-            raise SystemExit(2)
+        source = marzban.create_user(source_payload, admin_token)
         created.append(source_name)
         source = marzban.get_user(source_name, admin_token)
         source_shape = source_contract(source)
@@ -298,15 +279,13 @@ def main():
         global_ss = {
             item["tag"] for item in global_inbounds.get("shadowsocks", [])
         }
-        if not set(DECOY_VLESS_TAGS).issubset(global_vless):
-            raise AssertionError("staging lacks VLESS decoy topology")
+        if global_vless != set(EFFECTIVE_VLESS_TAGS):
+            raise AssertionError("staging VLESS topology is not the exact approved set")
         if global_ss:
             raise AssertionError("staging Shadowsocks topology differs from production")
-        if set(source_shape["inbounds"]["vless"]) == global_vless:
-            raise AssertionError("source inbound set accidentally selected all globals")
-        if source_shape["inbounds"]["shadowsocks"]:
-            raise AssertionError("source unexpectedly selected a Shadowsocks inbound")
-        results["source_exact_effective_set_not_global"] = True
+        if source_shape["protocols"] != ["vless"]:
+            raise AssertionError("source is not VLESS-only")
+        results["source_exact_effective_set"] = True
 
         account, alias_id, slot = _make_parent_and_slot(db)
         prepared = db.child_provisioning.prepare_child_ensure(
@@ -374,12 +353,10 @@ def main():
             if reconciled["outcome"] != "EXISTING":
                 raise AssertionError("lost-ACK retry did not reread existing child")
             raw_uuid = reconciled.pop("uuid")
-            raw_ss_password = reconciled.pop("shadowsocks_password")
-            raw_credentials.extend((raw_uuid, raw_ss_password))
+            raw_credentials.append(raw_uuid)
             child = db.child_provisioning.acknowledge(
                 prepared["operation_id"], worker_id="stage-worker-2",
                 outcome="EXISTING", child_uuid=raw_uuid,
-                child_shadowsocks_password=raw_ss_password,
                 remote_result=reconciled, now=110,
             )
             if instrumented.child_create_calls != 1:
@@ -394,17 +371,12 @@ def main():
                 "source_contract_hash": prepared["request_hash"] and EXPECTED_SOURCE_HASH,
                 "expire": 0,
                 "uuid_verifier": child["uuid_verifier"],
-                "shadowsocks_verifier": child["shadowsocks_verifier"],
             }
             reread = service.get_child_credentials(credential_request)
             if reread["credentials"]["vless_uuid"] != raw_uuid:
                 raise AssertionError("typed reread UUID mismatch")
-            if reread["credentials"]["shadowsocks_password"] != raw_ss_password:
-                raise AssertionError("typed reread Shadowsocks mismatch")
             if credential_verifier(raw_uuid) != child["uuid_verifier"]:
                 raise AssertionError("persisted UUID verifier mismatch")
-            if credential_verifier(raw_ss_password) != child["shadowsocks_verifier"]:
-                raise AssertionError("persisted Shadowsocks verifier mismatch")
             results["typed_ephemeral_credential_reread"] = True
 
             source_current = marzban.get_user(source_name, admin_token)
@@ -419,8 +391,6 @@ def main():
                 raise AssertionError("child data-limit semantics changed")
             if raw_uuid == source_current["proxies"]["vless"]["id"]:
                 raise AssertionError("child reused legacy VLESS UUID")
-            if raw_ss_password == source_current["proxies"]["shadowsocks"]["password"]:
-                raise AssertionError("child reused legacy Shadowsocks password")
             results["remote_reread_contract_equal"] = True
             results["credential_differences_only"] = True
 
@@ -514,7 +484,6 @@ def main():
             "operation_id": EXPECTED_OPERATION_ID,
             "child_create_calls": instrumented.child_create_calls,
             "uuid_masked": child["uuid_masked"],
-            "shadowsocks_masked": child["shadowsocks_masked"],
             "results": results,
         }
         print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))

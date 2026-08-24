@@ -160,18 +160,14 @@ def test_remote_created_local_ack_failed_retries_as_existing_and_stores_no_raw_u
     existing = BrokerOperations(remote).dispatch("child.user.ensure", reclaimed["payload"])
     assert existing["outcome"] == "EXISTING"
     child_uuid = existing.pop("uuid")
-    child_ss_password = existing.pop("shadowsocks_password")
     child = db.child_provisioning.acknowledge(
         prepared["operation_id"], worker_id="worker-two",
         outcome=existing["outcome"], child_uuid=child_uuid,
-        child_shadowsocks_password=child_ss_password,
         remote_result=existing, now=110,
     )
     assert child["observed_state"] == "ACTIVE"
     assert child["uuid_verifier"].startswith("sha256:")
     assert child["uuid_masked"].startswith("uuid_")
-    assert child["shadowsocks_verifier"] is None
-    assert child["shadowsocks_masked"] is None
     assert created["uuid"] not in json.dumps(dict(child))
     raw_text_values = [
         value for row in db._conn.execute(
@@ -202,7 +198,6 @@ def test_reconciliation_drift_is_error_not_success(db):
     child = db.child_provisioning.acknowledge(
         prepared["operation_id"], worker_id="worker-one", outcome="CREATED",
         child_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        child_shadowsocks_password=None,
         remote_result={"protocols": ["vless"], "outcome": "CREATED"}, now=104,
     )
     assert child["observed_state"] == "ACTIVE"
@@ -234,7 +229,6 @@ def test_ack_rejects_raw_credentials_inside_persisted_remote_result(db):
         db.child_provisioning.acknowledge(
             prepared["operation_id"], worker_id="worker-one", outcome="CREATED",
             child_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            child_shadowsocks_password=None,
             remote_result={"protocols": ["vless"], "uuid": "raw-value"}, now=104,
         )
 

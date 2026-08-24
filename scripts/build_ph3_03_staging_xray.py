@@ -20,12 +20,12 @@ EFFECTIVE_VLESS_TAGS = (
     "wl-tcp-smart", "wl-tcp-smart-5post", "wl-tcp-smart-yandex-maps",
     "xhttp-direct", "xhttp-smart",
 )
-DECOY_VLESS_TAGS = ("mgboost-stage-decoy-vless-a", "mgboost-stage-decoy-vless-b")
+RETIRED_SHADOWSOCKS_BOOTSTRAP_TAG = "mgboost-stage-retired-shadowsocks"
 
 
-def build_config():
+def build_config(*, include_retired_shadowsocks: bool = False):
     inbounds = []
-    for index, tag in enumerate(EFFECTIVE_VLESS_TAGS + DECOY_VLESS_TAGS):
+    for index, tag in enumerate(EFFECTIVE_VLESS_TAGS):
         inbounds.append({
             "tag": tag,
             "listen": "127.0.0.1",
@@ -33,6 +33,14 @@ def build_config():
             "protocol": "vless",
             "settings": {"clients": [], "decryption": "none"},
             "streamSettings": {"network": "tcp", "security": "none"},
+        })
+    if include_retired_shadowsocks:
+        inbounds.append({
+            "tag": RETIRED_SHADOWSOCKS_BOOTSTRAP_TAG,
+            "listen": "127.0.0.1",
+            "port": 31100,
+            "protocol": "shadowsocks",
+            "settings": {"clients": [], "network": "tcp,udp"},
         })
     return {
         "log": {"loglevel": "warning"},
@@ -48,10 +56,13 @@ def main():
     parser.add_argument("--verifier-env-output")
     parser.add_argument("--mgboost-data-dir")
     parser.add_argument("--port", type=int, default=18043)
+    parser.add_argument("--include-retired-shadowsocks", action="store_true")
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(build_config(), indent=2) + "\n", encoding="utf-8")
+    output.write_text(json.dumps(build_config(
+        include_retired_shadowsocks=args.include_retired_shadowsocks
+    ), indent=2) + "\n", encoding="utf-8")
     output.chmod(0o600)
     if bool(args.marzban_env_output) != bool(args.verifier_env_output):
         parser.error("both staging environment outputs must be specified together")
@@ -98,8 +109,8 @@ def main():
     print(json.dumps({
         "output": str(output),
         "effective_vless_count": len(EFFECTIVE_VLESS_TAGS),
-        "global_vless_count": len(EFFECTIVE_VLESS_TAGS) + len(DECOY_VLESS_TAGS),
-        "global_shadowsocks_count": 0,
+        "global_vless_count": len(EFFECTIVE_VLESS_TAGS),
+        "global_shadowsocks_count": int(args.include_retired_shadowsocks),
         "environment_files_created": bool(args.marzban_env_output),
     }, sort_keys=True))
 
