@@ -20,6 +20,8 @@ from .device_slot_schema import apply_device_slot_schema
 from .device_slots import DeviceSlotStore
 from .internal_entitlement_schema import apply_internal_entitlement_schema
 from .internal_entitlements import InternalEntitlementStore
+from .provenance import ProvenanceStore
+from .provenance_schema import apply_provenance_schema
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class Database:
         self.internal_entitlements = InternalEntitlementStore(
             self._conn, self._lock, PRIMARY_MGBOOST_ADMIN_ACTOR_ID
         )
+        self.provenance = ProvenanceStore(self._conn, self._lock)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -340,6 +343,7 @@ class Database:
         apply_parent_account_schema(self._conn)
         apply_device_slot_schema(self._conn)
         apply_internal_entitlement_schema(self._conn)
+        apply_provenance_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()

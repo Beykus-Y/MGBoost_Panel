@@ -484,7 +484,7 @@ and are not eligible for completion.
 **Accept/tests:** 1/3/6/12 children converge; partial failure visible; concurrent Stars/admin updates.
 **Rollback:** reconcile from durable desired state.
 
-## [ ] PH3-09 — Account/payment/mutation provenance model
+## [~] PH3-09 — Account/payment/mutation provenance model
 
 **Depends:** PH3-01, PH0-08.
 **Model:** account ownership/source остаётся `DIRECT` или `INTERNAL`; payment channel отдельно хранит `TELEGRAM_STARS`, `EXTERNAL_PAYMENT`, `ADMIN_GRANT`; mutation source включает `MANUAL_PAYMENT`. VPN account/credentials принадлежат end user, MGBoost остаётся authority children/UUID/devices/enforcement.
@@ -492,6 +492,7 @@ and are not eligible for completion.
 **Accept:** WL/device limits всегда принадлежат end subscription независимо от payment channel; child creation идёт через один slot engine.
 **Tests:** Stars/external/admin provenance, cross-account IDOR, duplicate reference, direct renewal without account replacement.
 **Migration/rollback:** channel backfill только по evidence; иначе `UNKNOWN_LEGACY`, не выдумывать external payment.
+**Implemented/staging verified; production pending 2026-08-24:** additive immutable payment records and account-scoped payment↔mutation links complement the PH3-01 mutation ledger. The typed repository requires explicit account source/channel/mutation source, validates channel/source pairs, stores hash-only idempotency identities plus canonical request hashes, returns the original record for an identical retry, and rejects changed payloads, duplicate external refs and cross-account payment/subscription links. It has no username/note input and performs no inference. No legacy Stars/Filin/admin flow imports it; it cannot change entitlement/expiry or call Marzban. Focused tests: `9 passed`; full regression with PH3-06: `504 passed, 3 skipped`. A fresh production DB copy applied the migration twice (`true/false`), preserved all 36 previous table digests, left both provenance tables empty, kept account/review/slot/generation 0 and legacy device/HWID 71/71, and passed quick/FK checks. Contract and remaining outbox/broker work: `docs/PHASE3_PROVENANCE.md`.
 
 # Phase 4 — Legacy migration
 
