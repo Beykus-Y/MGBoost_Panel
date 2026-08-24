@@ -269,6 +269,17 @@ def cleanup_expired(
             f"PRAGMA busy_timeout={max(0, int(float(timeout_seconds) * 1000))}"
         )
         connection.execute("BEGIN IMMEDIATE")
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('mgboost_hwid_compat_subjects','mgboost_hwid_compat_daily')"
+            )
+        }
+        if tables != {"mgboost_hwid_compat_subjects", "mgboost_hwid_compat_daily"}:
+            # Safe during first-start migration races and application rollback.
+            connection.commit()
+            return {"detail_rows_deleted": 0, "rollup_rows_deleted": 0}
         details = connection.execute(
             "DELETE FROM mgboost_hwid_compat_subjects WHERE day_start<?",
             (detail_cutoff,),

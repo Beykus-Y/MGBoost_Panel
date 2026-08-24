@@ -85,7 +85,9 @@ The fixed operational policy follows DL-042:
 
 Expiry is enforced opportunistically during writes and independently by the
 daily hardened `mgboost-compat-telemetry-cleanup.timer`. The cleanup output is
-only deleted row counts and `raw_identifiers_emitted=false`.
+only deleted row counts and `raw_identifiers_emitted=false`. During a first
+startup race or application-only rollback, an absent telemetry schema is a
+successful no-op rather than an availability/error condition.
 
 ## Tests and staging
 
@@ -95,7 +97,7 @@ rollups; token/HWID/UUID/key absence in DB bytes and logs; 30/60-day cleanup;
 DB and logger outage fail-open; exact legacy response bytes; permissive missing
 HWID; and zero account/slot/generation/device creation.
 
-Focused result: `41 passed`. Full regression: `486 passed, 3 skipped`.
+Focused result: `42 passed`. Full regression: `487 passed, 3 skipped`.
 
 The exact additive migration was applied twice to a fresh online production DB
 copy (`true`, then `false`). It preserved the digest of all 32 pre-existing

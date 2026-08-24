@@ -1,6 +1,6 @@
 [Unit]
 Description=MGBoost privacy-safe compatibility telemetry retention
-After=local-fs.target
+After=local-fs.target mgboost-panel.service
 
 [Service]
 Type=oneshot

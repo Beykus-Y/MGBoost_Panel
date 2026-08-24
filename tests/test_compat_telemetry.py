@@ -187,6 +187,17 @@ def test_retention_removes_detail_at_30_and_rollup_at_60_days(telemetry_db):
     ).fetchone()[0] == 0
 
 
+def test_retention_is_safe_before_schema_or_after_application_rollback(tmp_path):
+    from src.compat_telemetry import cleanup_expired
+
+    path = str(tmp_path / "older-app.sqlite3")
+    sqlite3.connect(path).close()
+    assert cleanup_expired(path, now=100) == {
+        "detail_rows_deleted": 0,
+        "rollup_rows_deleted": 0,
+    }
+
+
 def test_telemetry_creates_no_accounts_slots_generations_or_child_state(telemetry_db):
     db, _ = telemetry_db
     db.observe_hwid_compatibility(TOKEN, metadata(), now=100)
