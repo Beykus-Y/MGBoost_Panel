@@ -84,8 +84,8 @@ then the same DB was restarted under production-equivalent topology of exactly
 - raw UUID occurrence in broker result/log: zero;
 - Shadowsocks metadata after reread: absent.
 
-Focused tests pass (`42 passed` before the full run); full regression passes
-(`523 passed, 3 skipped`).
+Final focused cleanup/child/broker/staging-guard tests pass (`43 passed`); full
+regression passes (`524 passed, 3 skipped`).
 
 ## Production gates and rollback
 
@@ -118,3 +118,32 @@ Required final invariants:
 
 After cleanup, rerun the real PH3-03 VLESS-only child create/reread gate. No
 production parent/slot/outbox/child mutation is authorized by this runbook.
+
+## Production completion evidence
+
+The production cleanup completed on 2026-08-25 after a newly created encrypted
+backup passed isolated restore verification. Seven of 25 live users contained
+the retired metadata. `beykusios` passed the canary gate, then each remaining
+user was processed with a fresh precondition digest and post-operation reread.
+
+The first batch attempt stopped before changing `BeykusLaptop` when the broker
+returned a transient HTTP 400. Inventory confirmed that user and the two later
+users were still untouched; two consecutive fresh snapshots for
+`BeykusLaptop` matched, and its individual retry passed before the rollout
+continued. This was a safe pre-effect stop, not an accepted partial result.
+
+Final production evidence:
+
+- affected users: 7; cleaned: 7; remaining Shadowsocks proxy records: 0;
+- live topology: 25 VLESS / 0 Shadowsocks inbound;
+- all 25 legacy subscriptions fetched successfully: 734 VLESS entries, zero
+  Shadowsocks/other entries;
+- VLESS UUID, legacy subscription token/URL, exact VLESS inbound, flow, expiry,
+  status, data limit, HWID, tariff and normalized config changes: 0;
+- parent accounts, slots/generations and child users created: 0;
+- admin/LK, durable Stars state, signed Filin, broker/nginx/systemd, SQLite
+  quick/FK and token-safe application/journal checks passed.
+
+The post-cleanup exact-image Marzban 0.8.4 PH3-03 child gate is separately
+recorded in `docs/PHASE3_CHILD_PROVISIONING.md`. It passed without any
+production child mutation.

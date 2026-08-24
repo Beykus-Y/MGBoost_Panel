@@ -7,7 +7,7 @@ from scripts.build_ph3_03_staging_xray import (
     RETIRED_SHADOWSOCKS_BOOTSTRAP_TAG,
     build_config,
 )
-from scripts.verify_ph3_03_marzban_staging import require_isolated_url
+from scripts.verify_ph3_03_marzban_staging import _normalize_vless, require_isolated_url
 
 
 def test_staging_topology_is_exact_vless_only_contract():
@@ -54,3 +54,24 @@ def test_staging_gate_source_contains_no_caller_credentials():
     )
     assert all(value not in source for value in forbidden_payload_keys)
     assert json.dumps(list(EFFECTIVE_VLESS_TAGS))[1:-1]
+
+
+def test_subscription_comparison_normalizes_only_credential_and_username():
+    source = (
+        "vless://11111111-1111-1111-1111-111111111111@127.0.0.1:31000"
+        "?security=none&type=tcp#%F0%9F%9A%80%20Marz%20%28beykusios%29%20"
+        "%5BVLESS%20-%20tcp%5D"
+    )
+    child = (
+        "vless://22222222-2222-2222-2222-222222222222@127.0.0.1:31000"
+        "?security=none&type=tcp#%F0%9F%9A%80%20Marz%20"
+        "%28mgc_sgg6v7t6he43yytsqmkdczzfpa%29%20%5BVLESS%20-%20tcp%5D"
+    )
+    assert _normalize_vless(source, "beykusios") == _normalize_vless(
+        child, "mgc_sgg6v7t6he43yytsqmkdczzfpa"
+    )
+
+    changed_endpoint = child.replace("127.0.0.1:31000", "127.0.0.1:31001")
+    assert _normalize_vless(source, "beykusios") != _normalize_vless(
+        changed_endpoint, "mgc_sgg6v7t6he43yytsqmkdczzfpa"
+    )

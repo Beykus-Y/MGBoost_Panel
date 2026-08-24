@@ -190,7 +190,48 @@ work while Xray accepts their credentials, but a future child subscription
 refresh cannot be generated until Marzban is reachable. Existing legacy
 `/sub/{token}` remains on its current direct read path and is unaffected.
 
-## Verification and remaining gate
+## Post-cleanup isolated Marzban 0.8.4 gate — PASS (2026-08-25)
+
+After the typed production retirement completed, the gate was rerun against the
+same immutable official image digest on literal loopback with a fresh disposable
+SQLite database, synthetic admin credentials and exactly 25 VLESS inbound / zero
+Shadowsocks inbound. No production account, slot, outbox row or child was used.
+
+The source and child API contracts each contained the exact approved 25 VLESS
+inbound, `xtls-rprx-vision`, active status, unlimited expiry and unlimited data.
+The child differed only by its deterministic server-derived username and fresh
+Marzban-generated UUID. Marzban 0.8.4 renders subscription display titles from
+the username rather than the inbound tag; after normalizing only this approved
+username difference and the UUID, all 25 subscription lines were functionally
+identical. Exact inbound membership remained independently strict in both API
+contracts.
+
+The gate proved:
+
+- durable intent and stable payload digest existed before the remote mutation;
+- first `child.user.ensure` returned `CREATED` and exactly one create call;
+- repeated ensure returned `EXISTING` without another child;
+- simulated remote-created/local-ACK-failed reclaimed the same operation and
+  converged through `EXISTING`;
+- `child.user.credentials.get` reread the raw UUID ephemerally, matched the
+  stored verifier/mask and returned no generic user lookup capability;
+- unexpected remote expiry drift was rejected and recorded as reconciliation
+  `ERROR`, never acknowledged as success;
+- unreachable Marzban returned 503 during credential refresh because MGBoost
+  intentionally has no stored raw fallback credential;
+- raw child UUID/token occurred zero times in the MGBoost DB and captured
+  broker/application log; `legacy.user.create` was not dispatched.
+
+The final focused cleanup/child/broker/staging-guard regression is `43 passed`;
+the complete project regression is `524 passed, 3 skipped`.
+
+Already installed child configs would keep working during a Marzban API outage
+while Xray still accepts their UUID. A fresh subscription refresh cannot be
+rendered until Marzban becomes reachable, and fails safely with 503 rather than
+using stale persisted credentials. The current legacy `/sub/{token}` path is
+unchanged and remains independent of this dormant resolver.
+
+## Verification and remaining production gate
 
 Focused child/broker/staging-guard tests pass (`37 passed`) and the full suite
 passes (`518 passed, 3 skipped`). They cover schema idempotency,
@@ -204,16 +245,13 @@ On a disposable current production DB copy, first/second migration apply is
 device/HWID counts remain 71/71, all new tables contain zero rows, quick check is
 `ok` and foreign-key violations are zero.
 
-Before any production mutation, still required:
+Before any production child mutation, still required:
 
-1. complete the approved typed production cleanup from
-   `docs/SHADOWSOCKS_RETIREMENT.md`, then rerun the full real VLESS-only
-   create/reread/idempotency/lost-ACK gate to PASS;
-2. deploy the dormant code/schema with an empty-table verification gate;
-3. configure dedicated slot HMAC key and the primary-admin mapping only through
+1. deploy the dormant code/schema with an empty-table verification gate;
+2. configure dedicated slot HMAC key and the primary-admin mapping only through
    protected service configuration;
-4. obtain explicit owner approval for the exact manifest above;
-5. create parent/aliases and only the single selected slot generation, then stop
+3. obtain explicit owner approval for the exact manifest above;
+4. create parent/aliases and only the single selected slot generation, then stop
    again before dispatching its child outbox operation.
 
 After a separate future approval and only after a PASS, the production mutation

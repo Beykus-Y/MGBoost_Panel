@@ -127,9 +127,14 @@ def _credential_from_vless(line: str) -> str:
     return line[len("vless://"):].split("@", 1)[0]
 
 
-def _normalize_vless(line: str) -> str:
+def _normalize_vless(line: str, username: str) -> str:
     credential = _credential_from_vless(line)
-    return line.replace(f"vless://{credential}@", "vless://<credential>@", 1)
+    normalized = line.replace(f"vless://{credential}@", "vless://<credential>@", 1)
+    if "#" not in normalized:
+        return normalized
+    prefix, fragment = normalized.rsplit("#", 1)
+    display = unquote(fragment).replace(username, "<username>")
+    return f"{prefix}#{display}"
 
 
 def _subscription_token(user: dict) -> str:
@@ -396,6 +401,7 @@ def main():
 
             source_token = _subscription_token(source_current)
             child_token = _subscription_token(child_current)
+            raw_credentials.extend((source_token, child_token))
             source_body, source_headers = marzban.get_sub(
                 source_token, {"User-Agent": "MGBoost-PH3-Staging/1"}
             )
@@ -406,11 +412,25 @@ def main():
             child_lines = _decode_lines(child_body)
             if len(source_lines) != 25 or len(child_lines) != 25:
                 raise AssertionError("unexpected effective subscription line count")
-            if {_line_tag(line) for line in source_lines} != set(EFFECTIVE_VLESS_TAGS):
-                raise AssertionError("source subscription tags differ from exact effective set")
-            if {_line_tag(line) for line in child_lines} != set(EFFECTIVE_VLESS_TAGS):
-                raise AssertionError("child subscription tags differ from exact effective set")
-            if sorted(map(_normalize_vless, source_lines)) != sorted(map(_normalize_vless, child_lines)):
+            # Marzban 0.8.4 renders the subscription fragment from its host
+            # template (for example one repeated ``Marz (...)`` title), not
+            # from the inbound tag.  Exact inbound membership is therefore
+            # proved above through both users' API contracts; here we require
+            # the rendered source/child title multiset to remain equivalent.
+            source_tags = sorted(
+                _line_tag(line).replace(source_name, "<username>")
+                for line in source_lines
+            )
+            child_tags = sorted(
+                _line_tag(line).replace(child_name, "<username>")
+                for line in child_lines
+            )
+            if source_tags != child_tags:
+                raise AssertionError("child subscription display tags differ from source")
+            results["subscription_display_tags_equal"] = True
+            if sorted(_normalize_vless(line, source_name) for line in source_lines) != sorted(
+                _normalize_vless(line, child_name) for line in child_lines
+            ):
                 raise AssertionError("subscription config has non-credential differences")
             if {_credential_from_vless(line) for line in source_lines} != {
                 source_current["proxies"]["vless"]["id"]
