@@ -15,7 +15,6 @@ The main HTTP handler fills missing headers on every success and error path:
 - `X-Content-Type-Options: nosniff`;
 - `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'`;
 - a restrictive camera/microphone/geolocation/payment/USB Permissions-Policy;
-- `Strict-Transport-Security: max-age=31536000`;
 - default-deny CSP for non-HTML/API/error/config responses.
 
 Admin and LK keep their existing executable CSPs. The browser subscription
@@ -53,6 +52,8 @@ LK failure paths.
 
 ## Nginx requirements
 
+- apply `Strict-Transport-Security: max-age=31536000` at this TLS-terminating
+  boundary, not the localhost HTTP application;
 - set `server_tokens off` in the `http` scope;
 - add `Strict-Transport-Security: max-age=31536000` with `always` to every
   HTTPS MGBoost/Marzban server block;

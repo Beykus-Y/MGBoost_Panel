@@ -13,7 +13,6 @@ SECURITY_HEADERS = {
     "referrer-policy",
     "x-content-type-options",
     "x-frame-options",
-    "strict-transport-security",
     "permissions-policy",
     "content-security-policy",
 }
