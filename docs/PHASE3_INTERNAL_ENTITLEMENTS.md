@@ -104,3 +104,18 @@ Rollback is application-only. An older binary ignores both additive PH3-06
 tables. Do not drop immutable review evidence once provisioning is used. Since
 deployment creates no plans/accounts/reviews/overrides and no legacy route
 reads these tables, rollback requires no user credential or Marzban change.
+
+## Production evidence
+
+Production deployment completed on exact commit `eb6dd37` after the encrypted
+backup gate. Only `mgboost-panel` restarted. The migration marker is present,
+SQLite quick/FK checks pass, and all account/plan/review/revision/slot/generation
+tables remain empty. `PRIMARY_MGBOOST_ADMIN_ACTOR_ID` is unset, deliberately
+disabling provisioning until an owner-reviewed canary is selected.
+
+Masked pre/post digests match exactly for all 25 Marzban users/configs and all
+71 legacy device/HWID rows. Admin, LK, uniform invalid subscription, Stars
+durable state, signed Filin, localhost broker, Telegram proxy, nginx/systemd
+and token-safe journal/access-log checks passed. No UUID, legacy URL/token,
+HWID binding, expiry, tariff, parent account, child user or effective config
+changed.
