@@ -15,7 +15,9 @@
 
 ## Unreleased
 
-- Added the fixed-scope, root-only PH3-03 dormant production canary gate and runbook. It can provision only the owner-approved `INTERNAL_OWNER_PRIMARY` slot 1/generation 1 mapping after exact schema, independent-key, real primary-session, loopback typed-broker, topology, legacy-contract and encrypted-restore preflights. The durable operation reconciles a lost local ACK without creating a second child and persists/logs no raw child credential. This tooling is not a legacy resolver migration and has not yet changed production state.
+- Added and production-verified the fixed-scope, root-only PH3-03 dormant canary gate. Exactly one reviewed `INTERNAL_OWNER_PRIMARY` parent, its three approved immutable aliases, slot 1/generation 1, durable child intent/outbox and one VLESS-only Marzban child now exist. The outbox is `APPLIED`, repeated ensure is `EXISTING`, exact 25-inbound/source semantics match and raw child UUID/token leakage is zero. The child remains dormant: no legacy resolver, URL/token, UUID, HWID, expiry, tariff or client config was switched or revoked, and PH3-04 remains off.
+
+- Corrected the production compatibility verifier for Marzban 0.8.4 timestamped `subscription_url` aliases and PH1-06 hash-only legacy token storage. Canary invariants now compare `created_at`/`sub_revoked_at`, all 45 stored token verifiers, full legacy identity/config digests and 71 device/HWID rows without treating newly serialized aliases as credential rotation or trying to use a SHA-256 verifier as a bearer.
 
 ### Security
 

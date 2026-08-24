@@ -1,7 +1,7 @@
 # PH3-03 dormant production child canary
 
-Status: **owner-approved; tooling verified locally; production mutation not yet
-executed**.
+Status: **PASS — the single owner-approved dormant production child was created
+and reconciled on 2026-08-25; no legacy runtime switch occurred**.
 
 This runbook is deliberately limited to the single reviewed
 `INTERNAL_OWNER_PRIMARY` canary. The operator cannot supply another account,
@@ -106,3 +106,48 @@ digest covers the verifier rows without exposing them.
 
 PH3-03 remains partial after this one dormant canary. PH3-04, fail-closed HWID,
 legacy migration and client switching remain explicitly out of scope.
+
+## Production evidence
+
+The encrypted backup `mgboost-db-20260824T200256Z.tar.gpg` was root-only and
+passed an independent restore before any canary configuration or data write.
+Production pulled the fixed tooling commits through `8c29fd6`; the main service
+was restarted only to load the independent slot-HMAC key, primary mapping and
+additive empty schema. Main retained zero Marzban SUDO environment keys. The
+broker remained authenticated on `127.0.0.1:8002` with no nginx route.
+
+Created local state is exactly:
+
+- account id 1 / `acct_435p4hjeoxeq3bzg4ifkdut4veower4r`;
+- plan/subscription ids 1/1, one entitlement mutation and one reviewed mapping;
+- Telegram identity `905302972` and exactly three approved aliases;
+- slot id 1 / generation id 1, masked HWID `hwid_46609d7eddbb`;
+- child intent id 1 / `child_6cKbHwxFtfZ1WT6NTOyo7tHt`;
+- child username `mgc_sgg6v7t6he43yytsqmkdczzfpa`, masked UUID
+  `uuid_d4ae1519`;
+- outbox id 1 / `op_lw33pjhqhnvorrgh4p754bnc34`, attempt 1 `APPLIED`, with
+  `CREATED` followed by repeat/reconciliation `EXISTING`.
+
+Marzban has exactly one such child and 26 total users. Reread proves VLESS-only,
+active, unlimited expiry/data, `xtls-rprx-vision`, exact approved 25 inbound,
+the approved source-contract hash and a new UUID different from the source.
+
+The first post-effect verifier stopped rather than accepting a changing
+Marzban-generated timestamped subscription alias. Source inspection established
+that this field is freshly generated for every response and aliases remain
+valid until `sub_revoked_at`. A later diagnostic also stopped before ensure
+when it attempted to treat PH1-06 `sha256:` verifiers as raw bearers. The final
+gate correctly compares creation/revocation state, 45 stored verifier rows and
+functional config. These two stops produced no second child or legacy mutation.
+
+Final pre/post state matches exactly for 25 legacy identities/configs, 45 token
+verifiers, 71 device rows, 71 HWID locks and Stars tariffs. A real MGBoost
+legacy `/sub` response contains the unchanged source UUID in 37 VLESS links and
+returns `Cache-Control: no-store`. Signed Filin status is 200 and unsigned is
+401; public admin/LK are 200; MGBoost/broker/nginx/Marzban and SQLite integrity
+are healthy. The child raw UUID/token occurs zero times in MGBoost DB,
+application/nginx logs and the full two-hour deployment journal window.
+
+Legacy UUID, subscription URL/token, HWID binding, expiry, tariff, forced
+client reconfiguration and unexpected config changes caused by the canary are
+all zero. The legacy source and all existing clients remain authoritative.
