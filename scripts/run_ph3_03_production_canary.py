@@ -185,17 +185,17 @@ def _safe_legacy_snapshot(
             configs.append({"username_ref": _hash(username), "links": digest(links)})
         except Exception:
             fetch_errors += 1
-    devices = list(connection.execute(
+    devices = [tuple(row) for row in connection.execute(
         "SELECT username,token,request_key,is_active,first_seen "
         "FROM user_devices ORDER BY username,request_key"
-    ))
-    locks = list(connection.execute(
+    )]
+    locks = [tuple(row) for row in connection.execute(
         "SELECT request_key,username,locked_at FROM hwid_lock ORDER BY request_key"
-    ))
-    tariffs = list(connection.execute(
+    )]
+    tariffs = [tuple(row) for row in connection.execute(
         "SELECT id,name,duration_days,stars_price,active,sort_order,created_at,updated_at "
         "FROM stars_tariffs ORDER BY id"
-    ))
+    )]
     return {
         "legacy_user_count": len(identities),
         "legacy_identity_digest": digest(identities),

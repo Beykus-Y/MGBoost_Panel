@@ -13,6 +13,7 @@ from scripts.run_ph3_03_production_canary import (
     EXPECTED_OPERATION_ID,
     SOURCE_USERNAME,
     _alias_evidence,
+    _safe_legacy_snapshot,
 )
 from src.child_contract import derive_child_username, derive_operation_id
 from src.internal_entitlements import derive_reviewed_account_public_id
@@ -103,3 +104,48 @@ def test_production_canary_has_no_generic_create_delete_or_runtime_switch():
     assert 'EXPECTED_CHILD_USERNAME = "mgc_' in source
     assert "device_slots.claim(" in source
     assert "child_provisioning.prepare_child_ensure(" in source
+
+
+def test_legacy_snapshot_serializes_sqlite_rows_without_raw_output():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        "CREATE TABLE user_devices(username,token,request_key,is_active,first_seen);"
+        "CREATE TABLE hwid_lock(request_key,username,locked_at);"
+        "CREATE TABLE stars_tariffs("
+        "id,name,duration_days,stars_price,active,sort_order,created_at,updated_at);"
+    )
+    connection.execute(
+        "INSERT INTO user_devices VALUES (?,?,?,?,?)",
+        ("source", "legacy-token", "legacy-hwid", 1, 100),
+    )
+    connection.execute(
+        "INSERT INTO hwid_lock VALUES (?,?,?)", ("legacy-hwid", "source", 100)
+    )
+    connection.execute(
+        "INSERT INTO stars_tariffs VALUES (?,?,?,?,?,?,?,?)",
+        (1, "Base", 30, 99, 1, 1, 100, 100),
+    )
+
+    class Client:
+        def get_user(self, username, _sentinel):
+            return {
+                "username": username,
+                "subscription_url": "https://example.invalid/sub/bearer",
+                "expire": 0,
+                "status": "active",
+                "data_limit": None,
+                "data_limit_reset_strategy": "no_reset",
+                "proxies": {"vless": {"flow": "xtls-rprx-vision"}},
+                "inbounds": {"vless": ["one"]},
+            }
+
+        def get_sub(self, _token, _headers):
+            return b"vless://example", {}
+
+    snapshot = _safe_legacy_snapshot(Client(), object(), connection, ["source"])
+    assert snapshot["device_count"] == 1
+    assert snapshot["hwid_lock_count"] == 1
+    assert snapshot["stars_tariff_count"] == 1
+    assert "legacy-token" not in repr(snapshot)
+    assert "legacy-hwid" not in repr(snapshot)
