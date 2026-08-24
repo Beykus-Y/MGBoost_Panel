@@ -52,6 +52,7 @@
 
 ### Documentation
 
+- PH2-01 design-only contract is fixed without changing runtime behavior: exact 256-bit opaque token format/root route, hash-only account-bound schema, one-time delivery/rotation CAS, public resolver API, legacy alias bridge and Phase 3/4 implementation dependencies are documented. Existing legacy URLs/tokens are unchanged.
 - Добавлен канонический `ROADMAP.md`: current-state baseline, security remediation P0–P3, phases 0–8, утверждённые тарифы/packages, child-device и WL architecture, migrations, тестовые gates, Open Product Decisions и Decision Log.
 - Зафиксировано правило обязательного одновременного обновления roadmap и changelog.
 - Roadmap дополнен reseller architecture: explicit subscription source/ownership, scoped capabilities, reseller-aware migration, отдельные billing/WL/device semantics, audit/reconciliation и нерешённые продуктовые вопросы.

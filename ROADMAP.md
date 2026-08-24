@@ -337,7 +337,15 @@ order and with the residual/dependency constraints recorded in
 
 # Phase 2 — Security foundation
 
-## [ ] PH2-01 — Random 256-bit MGBoost opaque subscription tokens — P2
+**Status 2026-08-24:** first executable dependency block completed without
+starting Phase 3. PH2-02 and PH2-04 are production-complete. PH2-03 durable
+replay is deployed, while mutation idempotency remains partial until the
+external Filin caller adopts signed v2 operation IDs. PH2-01 contract/schema/
+API/migration design is fixed, but implementation remains blocked by PH3 parent
+account identity and Phase 4 migration. Consequently PH2-05/06/07 remain open
+and are not eligible for completion.
+
+## [~] PH2-01 — Random 256-bit MGBoost opaque subscription tokens — P2
 
 **Depends:** PH1-06, PH3 account identity, Phase 4 migration.
 **Never:** TG ID/hex/SHA256(TG_ID)/concatenated SHA. **Scope:** CSPRNG >=256-bit, hash/verifier DB, account binding/version, individual revoke/reissue; old token invalid after rotation; no full token logs.
@@ -345,6 +353,9 @@ order and with the residual/dependency constraints recorded in
 **Target:** `sub.beykus.fun/{opaque_token}` with route collision contract.
 **Accept/tests:** DB leak не даёт URL; entropy/tamper/enumeration/timing; per-token revoke; ordinary ownership rebind preserves token; compromise flow invalidates old opaque token and issues a new one without implicit UUID rotation.
 **Migration/rollback:** versioned legacy alias; revoked token никогда не реактивируется.
+**Design completed 2026-08-24:** canonical external route is `https://sub.beykus.fun/<43-char-base64url-token>` generated from exactly 32 CSPRNG bytes. Reserved application paths are matched first; the root token route accepts only the exact new format. Local persistence uses a unique SHA-256 verifier (random 256-bit input makes offline brute force infeasible), account FK, version/generation, lifecycle timestamps/status and no raw token. Root resolution performs verifier lookup first and never falls through to the legacy `/sub/{legacy_token}` namespace. Rotation/revoke use account-generation CAS, immutable credential history and an explicit one-time delivery state; raw delivery material may exist only as a short-lived AEAD envelope under a dedicated non-DB key until ACK, never plaintext in DB/backup/log. Full contract, API, schema and migration requirements: `docs/PHASE2_OPAQUE_TOKEN_DESIGN.md`.
+**Implementation blocker:** `account_id` and ownership authority do not exist until PH3-01/PH3-04; device-slot resolution needs PH3-02/03; alias bridging/revoke is Phase 4. Do not create an interim token table keyed to Telegram ID or legacy Marzban username, because that would require a second identity migration and could recreate the TG-ID credential flaw.
+**Remaining before `[x]`:** implement only after PH3 identity is stable; add schema/API/resolver, one-time issuance/rotation/revoke, uniform/rate-limited public endpoint, legacy alias bridge and full migration/crash/concurrency tests. No current legacy token rotation/reissue occurs in Phase 2.
 
 ## [x] PH2-02 — LK device-name XSS и inline handlers — P2
 
@@ -1537,7 +1548,7 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 8. Marzban usage агрегируется по UTC-hour; rolling mid-hour period нельзя точно считать суммой whole-hour rows.
 9. Current `audit_log` полезен, но не даёт immutable actor/before/after/reason для всех admin changes.
 10. Current Stars меняет только expiry. New purchase/plan/package/period child sync требует entitlement/outbox, а old invoice snapshot должен сохраниться.
-11. README честно описывает legacy LK bearer query/raw token logging; после PH1-06/PH2-01 это должно быть обновлено в том же change.
+11. PH1-06 прекратил новые raw-token записи и README теперь рекомендует fragment для legacy LK; сам legacy bearer и одноразовая совместимость со старыми `?token=` bookmarks сохраняются до staged PH2-01/Phase 4 migration.
 12. README требует `SECRET_KEY`, но current код его не использует; нельзя считать его защитой session/HMAC.
 13. Production untracked `extra_configs.json` — drift/evidence; не удалять без ownership/retention.
 14. Partial update semantics подтверждены только Marzban 0.8.4; upgrade обязан повторить contract tests.

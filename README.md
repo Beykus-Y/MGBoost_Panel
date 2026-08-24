@@ -16,7 +16,7 @@
 - Индивидуальные конфиги для конкретных пользователей
 - Фильтрация нод по fragment URI — можно скрыть конкретные ноды для пользователя
 - Учёт трафика Hysteria2 и добавление его в `subscription-userinfo`
-- Логирование запросов подписок в SQLite (токен, юзер, User-Agent, IP)
+- Логирование запросов подписок в SQLite (hash-reference токена, юзер, User-Agent, IP)
 - Админ-панель (SPA) — управление пользователями, нодами, конфигами
 
 ## Требования
@@ -158,13 +158,18 @@ mgboost-panel/
 
 ## Client Dashboard (Личный кабинет)
 
-Клиент открывает свой личный кабинет по ссылке:
+Предпочтительная ссылка на legacy-личный кабинет передаёт bearer только во
+fragment, который не отправляется HTTP-серверу:
 
 ```
-https://your-domain/lk/?token=SUBSCRIPTION_TOKEN
+https://your-domain/lk/#token=SUBSCRIPTION_TOKEN
 ```
 
-Токен — это тот же токен подписки из `/sub/{token}`.
+Токен пока остаётся тем же legacy bearer из `/sub/{token}`. Старые bookmarks с
+`?token=` принимаются для обратной совместимости один раз: frontend немедленно
+удаляет query из browser URL state, после чего same-origin API использует
+`X-MGBoost-Subscription`. Новая opaque-token модель описана в PH2-01, но не
+включается до parent-account и staged Phase 4 migration.
 
 **Возможности:**
 - Статус аккаунта (активен / истёк / отключён), дата истечения, счётчик трафика
