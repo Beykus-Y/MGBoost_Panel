@@ -73,6 +73,30 @@ the value of an already-present `sid`.
    from the report argument and all new container/journal/nginx logs without
    printing the canary value.
 
+## Production evidence
+
+Production cutover completed on 2026-08-24 by changing only the Marzban image
+from the verified PH1-07 layer to the verified PH1-08 layer. Candidate AST and
+direct report capture passed before cutover. After recreate, the authenticated
+broker health check and masked semantic state matched exactly.
+
+A valid admin login still returned a token without printing it. With
+`NOTIFY_LOGIN=true`, one synthetic failed login returned the established 401;
+its canary password appeared zero times in the report argument, HTTP response,
+container logs, MGBoost/broker journal and nginx logs. All 25 legacy configs
+resolved with zero fetch errors. Identity/expiry, 71 device rows and 71 HWID
+locks matched the pre-state. Admin/LK, Stars durable state, Filin HMAC, broker,
+backup timer, nginx/systemd and permission checks passed.
+
+Four broker error-signature messages occurred at the exact Marzban recreate
+timestamp while the upstream was unavailable. They did not contain the canary;
+the subsequent stable ten-minute window contained zero error signatures.
+No rollback was required.
+
+Production invariants: UUID changes 0; subscription URL/token changes 0;
+HWID changes 0; expiry changes caused by deployment 0; tariff changes 0;
+forced client reconfiguration 0; unexpected effective config changes 0.
+
 ## Rollback
 
 If any compatibility invariant fails, restore the exact PH1-07 image and

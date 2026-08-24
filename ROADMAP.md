@@ -258,6 +258,11 @@ Stars и RUB — независимые утверждённые retail price ta
 
 # Phase 1 — Emergency security
 
+**Status 2026-08-24:** COMPLETE; PH1-01–PH1-08 deployed and passed the final
+production regression/security gate. Phase 2 may start only in its own task
+order and with the residual/dependency constraints recorded in
+`docs/PHASE1_COMPLETION_REPORT.md`.
+
 ## [x] PH1-01 — Admin stored XSS и безопасная server session — P0
 
 **Completed:** 2026-08-23; production rollout verified 2026-08-24. **Depends:** none; выполнена первой.
@@ -323,12 +328,12 @@ Stars и RUB — независимые утверждённые retail price ta
 **Implemented/staging verified 2026-08-24:** exact Marzban 0.8.4 base digest overlays only hash-pinned `python-multipart 0.0.32`; MGBoost target is a separate hash-locked/root-owned Python 3.10 runtime with `aiohttp 3.14.3`, `aiogram 3.30.0` and `aiohttp-socks 0.12.0`. Local suite `394 passed, 1 skipped`; isolated Python 3.10 suite `393 passed, 2 skipped`; both target locks have 0 known advisories. All-10 broker operations, legacy alias/UUID/config continuity across forced renewal timestamp boundary, MGBoost/broker restart, Filin and 100-login/parser load passed against baseline and target localhost-only VLESS containers. Telegram `getMe` through current SOCKS proxy passed. OpenRouter completion returned the same pre-existing HTTP 403 on old/new runtimes, so no dependency regression exists but external authorization remains residual. Runbook/evidence: `docs/PHASE1_DEPENDENCY_HARDENING.md`.
 **Production completed 2026-08-24:** Marzban runs the immutable PH1-07 image over the unchanged 0.8.4 application/schema and MGBoost runs the root-owned isolated venv. An initial full-body digest mismatch triggered the documented rollback before the MGBoost runtime step; investigation proved that existing Marzban output randomizes only Reality `sid` and MGBoost adds a dynamic fake information node. The gate was corrected to exclude only that known non-connection info node and normalize only the value of present `sid`, while retaining UUID/credential, host, port, transport/TLS, all other query fields, fragments, counts, expiry/identity, device and HWID-lock comparisons. The corrected baseline was stable on the rollback image and matched exactly after both deploy steps. Admin/LK, 25/25 legacy subscriptions, Telegram proxy, Stars durable state, authenticated/unauthenticated Filin, broker reads, nginx/systemd and token-safe logging passed. UUID, subscription URL/token, HWID, tariff, expiry and forced client reconfiguration changes: 0; unexpected effective config changes: 0.
 
-## [~] PH1-08 — Remove password from Marzban login notifications — P2
+## [x] PH1-08 — Remove password from Marzban login notifications — P2
 
 **Scope:** failed-login Telegram/Discord reports. **Accept:** password never enters report/log.
 **Tests:** canary password absent everywhere. **Rollback:** never restore password field.
 **Implemented/staging verified 2026-08-24:** PH1-08 builds as a narrow layer over the exact PH1-07 image and replaces only the failed-login `report.login` password argument with `🔒`; authentication validation and HTTP semantics are unchanged. The build patch is AST-validated, idempotent and fail-closed on unexpected/duplicate upstream call shapes. Built-image AST and direct report capture prove two redacted login-report calls and 0 plaintext report arguments. With `NOTIFY_LOGIN=true`, a real isolated failed login returned the same 401 and the canary appeared 0 times in report capture, HTTP response and container logs. All-10 broker operations, legacy `/sub` with broker up/down, MGBoost restart, Filin HMAC create/renew/delete, UUID/config continuity and full regressions passed (`401 passed, 1 skipped` locally; `400 passed, 2 skipped` on production Python 3.10). Staging verifier flakiness was corrected: timestamped Marzban `subscription_url` is verified as a preserved old alias rather than an immutable admin field, and only the randomly selected Reality `sid` value is normalized while UUID/proxy/inbound/endpoint/transport semantics stay strict. Runbook: `docs/PHASE1_LOGIN_NOTIFICATION_HARDENING.md`.
-**Remaining before `[x]`:** production masked pre-state, immutable PH1-08 image build/inspection, image-only cutover, real failed-login canary/log scan, exact post-state and rollback verification. Phase 1 final gate and Phase 2 remain blocked until completion.
+**Production completed 2026-08-24:** exact candidate image/AST/report-capture gates passed before an image-only Marzban recreate. Valid admin login remained functional; a real failed-login canary returned 401 with `NOTIFY_LOGIN=true` and appeared 0 times in the report argument, response, container, application journal and nginx logs. The masked pre/post/final state matched for all 25 users/configs, 71 device rows and 71 HWID locks. Admin/LK, Stars durable state, Filin HMAC, broker, backup timer, nginx/systemd and permissions passed. Four broker error-signature messages occurred only at the Marzban recreate timestamp; the following stable 10-minute window contained 0. UUID, subscription URL/token, HWID, tariff, expiry and forced client reconfiguration changes: 0; unexpected effective config changes: 0. Final Phase 1 verdict and residual risks: `docs/PHASE1_COMPLETION_REPORT.md`.
 
 # Phase 2 — Security foundation
 
