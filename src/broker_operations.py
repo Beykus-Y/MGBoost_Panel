@@ -11,6 +11,8 @@ from .child_contract import (
     source_contract_hash,
     validate_child_ensure_request,
     validate_created_child,
+    validate_child_credentials_request,
+    reread_child_credentials,
 )
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
 
@@ -157,6 +159,14 @@ class BrokerOperations:
                 created = self.marzban.get_user(child_username, token)
                 verified = validate_created_child(created, request, source)
                 return {"outcome": "CREATED", **verified}
+
+        if operation == "child.user.credentials.get":
+            request = validate_child_credentials_request(data)
+            with self._lock_for(request["child_username"]):
+                child = self.marzban.get_user(
+                    request["child_username"], self._admin_token()
+                )
+                return reread_child_credentials(child, request)
 
         raise AssertionError(f"unhandled operation: {operation}")
 

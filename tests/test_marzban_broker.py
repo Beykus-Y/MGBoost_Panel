@@ -31,7 +31,8 @@ from src.broker_protocol import (
 from src.broker_server import BrokerApplication, build_broker_server
 from src.service_marzban import BrokerTransport, ServiceMarzbanClient
 from src.child_contract import (
-    derive_child_username, derive_operation_id, source_contract_hash,
+    credential_verifier, derive_child_username, derive_operation_id,
+    source_contract_hash,
 )
 
 
@@ -225,7 +226,9 @@ def test_all_ten_operations_are_explicit_and_preserve_legacy_payload_semantics()
     assert operations.dispatch("legacy.user.delete", {"username": "bob"}) == {}
     seen.add("legacy.user.delete")
     assert seen == LEGACY_BROKER_OPERATIONS
-    assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {"child.user.ensure"}
+    assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {
+        "child.user.ensure", "child.user.credentials.get",
+    }
 
 
 def _child_request(source, *, account="acct_example", slot=1, generation=1, expire=0):
@@ -263,6 +266,7 @@ def test_child_ensure_creates_fresh_uuid_then_converges_to_existing():
 
 def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentials():
     marzban = FakeMarzban()
+    operations = BrokerOperations(marzban)
     marzban.users["alice"]["proxies"]["vless"]["flow"] = "xtls-rprx-vision"
     marzban.users["alice"]["proxies"]["shadowsocks"] = {
         "method": "aes-128-gcm", "password": "legacy-password"
@@ -271,7 +275,7 @@ def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentia
     source = json.loads(json.dumps(marzban.users["alice"]))
     request = _child_request(source)
 
-    result = BrokerOperations(marzban).dispatch("child.user.ensure", request)
+    result = operations.dispatch("child.user.ensure", request)
 
     remote = marzban.users[request["child_username"]]
     assert result["protocols"] == ["shadowsocks", "vless"]
@@ -279,6 +283,28 @@ def test_child_ensure_preserves_allowed_protocol_shape_but_rotates_all_credentia
     assert remote["proxies"]["vless"]["id"] != source["proxies"]["vless"]["id"]
     assert remote["proxies"]["shadowsocks"]["method"] == "aes-128-gcm"
     assert remote["proxies"]["shadowsocks"]["password"] != source["proxies"]["shadowsocks"]["password"]
+
+    reread_request = {
+        "operation_id": request["operation_id"],
+        "child_username": request["child_username"],
+        "source_contract_hash": request["source_contract_hash"],
+        "expire": 0,
+        "uuid_verifier": credential_verifier(result["uuid"]),
+        "shadowsocks_verifier": credential_verifier(result["shadowsocks_password"]),
+    }
+    reread = operations.dispatch("child.user.credentials.get", reread_request)
+    assert reread["credentials"] == {
+        "vless_uuid": result["uuid"],
+        "shadowsocks_password": result["shadowsocks_password"],
+    }
+    with pytest.raises(ValueError, match="verifier mismatch"):
+        operations.dispatch(
+            "child.user.credentials.get",
+            {**reread_request, "uuid_verifier": "sha256:" + "0" * 64},
+        )
+    marzban.users[request["child_username"]]["expire"] = 9
+    with pytest.raises(ValueError, match="expiry drift"):
+        operations.dispatch("child.user.credentials.get", reread_request)
 
 
 def test_child_ensure_rejects_contract_drift_arbitrary_fields_and_uuid_reuse():

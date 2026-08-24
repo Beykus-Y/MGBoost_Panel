@@ -92,13 +92,25 @@ _SCHEMA_STATEMENTS = (
                    AND substr(uuid_verifier,8) NOT GLOB '*[^0-9a-f]*')),
         uuid_masked TEXT
             CHECK(uuid_masked IS NULL OR
-                  (length(uuid_masked)=13 AND uuid_masked LIKE 'uuid_%')),
+                  (length(uuid_masked)=13 AND substr(uuid_masked,1,5)='uuid_')),
+        shadowsocks_verifier TEXT
+            CHECK(shadowsocks_verifier IS NULL OR
+                  (length(shadowsocks_verifier)=71
+                   AND substr(shadowsocks_verifier,1,7)='sha256:'
+                   AND substr(shadowsocks_verifier,8) NOT GLOB '*[^0-9a-f]*')),
+        shadowsocks_masked TEXT
+            CHECK(shadowsocks_masked IS NULL OR
+                  (length(shadowsocks_masked)=13
+                   AND substr(shadowsocks_masked,1,3)='ss_')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         row_version INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
         UNIQUE(id, account_id),
         CHECK((uuid_verifier IS NULL AND uuid_masked IS NULL)
               OR (uuid_verifier IS NOT NULL AND uuid_masked IS NOT NULL)),
+        CHECK((shadowsocks_verifier IS NULL AND shadowsocks_masked IS NULL)
+              OR (shadowsocks_verifier IS NOT NULL
+                  AND shadowsocks_masked IS NOT NULL)),
         FOREIGN KEY(account_id) REFERENCES mgboost_accounts(id) ON DELETE RESTRICT,
         FOREIGN KEY(source_alias_id, account_id)
             REFERENCES mgboost_legacy_account_aliases(id, account_id)
@@ -247,6 +259,7 @@ def _verify(connection: sqlite3.Connection) -> None:
             "slot_number", "generation", "source_alias_id", "child_username",
             "source_contract_hash", "desired_state", "observed_state",
             "uuid_verifier", "uuid_masked", "row_version",
+            "shadowsocks_verifier", "shadowsocks_masked",
         },
         "mgboost_outbox": {
             "id", "operation_id", "account_id", "child_intent_id", "operation_kind",

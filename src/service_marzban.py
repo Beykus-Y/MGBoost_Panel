@@ -17,7 +17,10 @@ from .broker_protocol import (
     validate_shared_key,
 )
 from .legacy_contract import validate_renew_payload, validate_username
-from .child_contract import validate_child_ensure_request
+from .child_contract import (
+    validate_child_credentials_request,
+    validate_child_ensure_request,
+)
 from .marzban import MarzbanClient
 
 
@@ -202,3 +205,13 @@ class ServiceMarzbanClient:
             from .broker_operations import BrokerOperations
             return BrokerOperations(self.direct).dispatch("child.user.ensure", normalized)
         return self._broker().call("child.user.ensure", normalized)
+
+    def get_child_credentials(self, request):
+        """Typed ephemeral credential reread; callers must never persist/log result."""
+        normalized = validate_child_credentials_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch(
+                "child.user.credentials.get", normalized
+            )
+        return self._broker().call("child.user.credentials.get", normalized)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import re
 import uuid
@@ -15,6 +16,7 @@ CHILD_OPERATION = "child.user.ensure"
 _CHILD_USERNAME_RE = re.compile(r"^mgc_[a-z2-7]{26}$")
 _OPERATION_ID_RE = re.compile(r"^op_[a-z2-7]{26}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_VERIFIER_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INBOUND_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 
 
@@ -178,6 +180,7 @@ def validate_created_child(user: dict, request: dict, source_user: dict) -> dict
     child_vless = proxies["vless"]
     if (child_vless.get("flow") or "") != contract["proxy_options"]["vless"]["flow"]:
         raise ValueError("remote child vless flow mismatch")
+    child_shadowsocks_password = None
     if "shadowsocks" in protocols:
         child_ss = proxies["shadowsocks"]
         source_ss = source_user["proxies"]["shadowsocks"]
@@ -189,6 +192,7 @@ def validate_created_child(user: dict, request: dict, source_user: dict) -> dict
             or child_ss["password"] == source_ss["password"]
         ):
             raise ValueError("remote child shadowsocks credential mismatch")
+        child_shadowsocks_password = child_ss["password"]
     return {
         "username": normalized["child_username"],
         "expire": normalized["expire"],
@@ -196,4 +200,91 @@ def validate_created_child(user: dict, request: dict, source_user: dict) -> dict
         "inbounds": contract["inbounds"],
         "protocols": contract["protocols"],
         "uuid": child_uuid,
+        "shadowsocks_password": child_shadowsocks_password,
+    }
+
+
+def validate_child_credentials_request(data: dict) -> dict:
+    required = {
+        "operation_id", "child_username", "source_contract_hash", "expire",
+        "uuid_verifier", "shadowsocks_verifier",
+    }
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("invalid child credential reread fields")
+    child_username = validate_child_username(data["child_username"])
+    operation_id = validate_operation_id(data["operation_id"])
+    if operation_id != derive_operation_id(child_username):
+        raise ValueError("operation id does not match child identity")
+    contract_hash = data["source_contract_hash"]
+    if not isinstance(contract_hash, str) or not _HASH_RE.fullmatch(contract_hash):
+        raise ValueError("invalid child contract hash")
+    uuid_verifier = data["uuid_verifier"]
+    if not isinstance(uuid_verifier, str) or not _VERIFIER_RE.fullmatch(uuid_verifier):
+        raise ValueError("invalid child UUID verifier")
+    ss_verifier = data["shadowsocks_verifier"]
+    if ss_verifier is not None and (
+        not isinstance(ss_verifier, str) or not _VERIFIER_RE.fullmatch(ss_verifier)
+    ):
+        raise ValueError("invalid child Shadowsocks verifier")
+    expire = data["expire"]
+    if isinstance(expire, bool) or not isinstance(expire, int) or expire < 0:
+        raise ValueError("invalid child credential expiry")
+    return {
+        "operation_id": operation_id,
+        "child_username": child_username,
+        "source_contract_hash": contract_hash,
+        "expire": expire,
+        "uuid_verifier": uuid_verifier,
+        "shadowsocks_verifier": ss_verifier,
+    }
+
+
+def credential_verifier(raw: str) -> str:
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("raw credential is missing")
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def reread_child_credentials(user: dict, request: dict) -> dict:
+    normalized = validate_child_credentials_request(request)
+    if not isinstance(user, dict) or user.get("username") != normalized["child_username"]:
+        raise ValueError("remote child identity mismatch")
+    if source_contract_hash(user) != normalized["source_contract_hash"]:
+        raise ValueError("remote child contract drift")
+    if int(user.get("expire") or 0) != normalized["expire"]:
+        raise ValueError("remote child expiry drift")
+    if user.get("status") != "active" or user.get("data_limit") is not None:
+        raise ValueError("remote child entitlement drift")
+    try:
+        child_uuid = str(uuid.UUID(user["proxies"]["vless"]["id"])).lower()
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("remote child UUID is invalid") from exc
+    if not hmac.compare_digest(
+        credential_verifier(child_uuid), normalized["uuid_verifier"]
+    ):
+        raise ValueError("remote child UUID verifier mismatch")
+    ss_password = None
+    if "shadowsocks" in source_contract(user)["protocols"]:
+        ss_password = user["proxies"]["shadowsocks"].get("password")
+        if normalized["shadowsocks_verifier"] is None or not hmac.compare_digest(
+            credential_verifier(ss_password), normalized["shadowsocks_verifier"]
+        ):
+            raise ValueError("remote child Shadowsocks verifier mismatch")
+    elif normalized["shadowsocks_verifier"] is not None:
+        raise ValueError("unexpected Shadowsocks verifier")
+    return {
+        "username": normalized["child_username"],
+        "credentials": {
+            "vless_uuid": child_uuid,
+            "shadowsocks_password": ss_password,
+        },
+        "observed": {
+            "contract_hash": normalized["source_contract_hash"],
+            "protocols": source_contract(user)["protocols"],
+            "inbounds": source_contract(user)["inbounds"],
+            "proxy_options": source_contract(user)["proxy_options"],
+            "status": "active",
+            "expire": normalized["expire"],
+            "data_limit": None,
+        },
     }

@@ -7,6 +7,7 @@ import pytest
 
 from src.broker_operations import BrokerOperations
 from src.child_contract import source_contract_hash
+from src.child_provisioning import ChildProvisioningError
 from tests.test_marzban_broker import FakeMarzban
 
 
@@ -158,14 +159,19 @@ def test_remote_created_local_ack_failed_retries_as_existing_and_stores_no_raw_u
     )
     existing = BrokerOperations(remote).dispatch("child.user.ensure", reclaimed["payload"])
     assert existing["outcome"] == "EXISTING"
+    child_uuid = existing.pop("uuid")
+    child_ss_password = existing.pop("shadowsocks_password")
     child = db.child_provisioning.acknowledge(
         prepared["operation_id"], worker_id="worker-two",
-        outcome=existing["outcome"], child_uuid=existing.pop("uuid"),
+        outcome=existing["outcome"], child_uuid=child_uuid,
+        child_shadowsocks_password=child_ss_password,
         remote_result=existing, now=110,
     )
     assert child["observed_state"] == "ACTIVE"
     assert child["uuid_verifier"].startswith("sha256:")
     assert child["uuid_masked"].startswith("uuid_")
+    assert child["shadowsocks_verifier"] is None
+    assert child["shadowsocks_masked"] is None
     assert created["uuid"] not in json.dumps(dict(child))
     raw_text_values = [
         value for row in db._conn.execute(
@@ -181,6 +187,56 @@ def test_remote_created_local_ack_failed_retries_as_existing_and_stores_no_raw_u
         (1, "STARTED", None), (2, "STARTED", None),
         (2, "RECONCILED", "EXISTING"),
     ]
+
+
+def test_reconciliation_drift_is_error_not_success(db):
+    account, alias_id, slot = _account(db)
+    prepared = db.child_provisioning.prepare_child_ensure(
+        account_id=account["account_id"], slot_generation_id=slot["generation_id"],
+        source_alias_id=alias_id, source_contract_hash="c" * 64, expire=0,
+        idempotency_key="reconciliation-error-operation", now=102,
+    )
+    claimed = db.child_provisioning.claim(
+        prepared["operation_id"], worker_id="worker-one", now=103
+    )
+    child = db.child_provisioning.acknowledge(
+        prepared["operation_id"], worker_id="worker-one", outcome="CREATED",
+        child_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        child_shadowsocks_password=None,
+        remote_result={"protocols": ["vless"], "outcome": "CREATED"}, now=104,
+    )
+    assert child["observed_state"] == "ACTIVE"
+    db.child_provisioning.record_reconciliation_error(
+        prepared["operation_id"], error_class="REMOTE_CONTRACT_DRIFT", now=105
+    )
+    assert db._conn.execute(
+        "SELECT observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (child["id"],),
+    ).fetchone()[0] == "ERROR"
+    outbox = db._conn.execute(
+        "SELECT state,last_error_class FROM mgboost_outbox WHERE operation_id=?",
+        (prepared["operation_id"],),
+    ).fetchone()
+    assert tuple(outbox) == ("ERROR", "REMOTE_CONTRACT_DRIFT")
+
+
+def test_ack_rejects_raw_credentials_inside_persisted_remote_result(db):
+    account, alias_id, slot = _account(db)
+    prepared = db.child_provisioning.prepare_child_ensure(
+        account_id=account["account_id"], slot_generation_id=slot["generation_id"],
+        source_alias_id=alias_id, source_contract_hash="d" * 64, expire=0,
+        idempotency_key="raw-credential-result-rejection", now=102,
+    )
+    db.child_provisioning.claim(
+        prepared["operation_id"], worker_id="worker-one", now=103
+    )
+    with pytest.raises(ChildProvisioningError, match="must be stripped"):
+        db.child_provisioning.acknowledge(
+            prepared["operation_id"], worker_id="worker-one", outcome="CREATED",
+            child_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            child_shadowsocks_password=None,
+            remote_result={"protocols": ["vless"], "uuid": "raw-value"}, now=104,
+        )
 
 
 def test_cross_account_alias_or_generation_cannot_prepare_child(db):

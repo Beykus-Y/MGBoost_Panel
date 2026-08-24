@@ -223,7 +223,8 @@ class ChildProvisioningStore:
 
     def acknowledge(
         self, operation_id: str, *, worker_id: str, outcome: str,
-        child_uuid: str, remote_result: dict, now: int,
+        child_uuid: str, child_shadowsocks_password: str | None,
+        remote_result: dict, now: int,
     ) -> dict:
         if outcome not in {"CREATED", "EXISTING"}:
             raise ChildProvisioningError("invalid broker ensure outcome")
@@ -233,6 +234,20 @@ class ChildProvisioningStore:
             raise ChildProvisioningError("invalid child UUID") from exc
         uuid_verifier = "sha256:" + _sha(normalized_uuid)
         uuid_masked = "uuid_" + _sha("mask\0" + normalized_uuid)[:8]
+        protocols = remote_result.get("protocols") if isinstance(remote_result, dict) else None
+        if protocols == ["shadowsocks", "vless"]:
+            if not isinstance(child_shadowsocks_password, str) or not child_shadowsocks_password:
+                raise ChildProvisioningError("child Shadowsocks credential is required")
+            shadowsocks_verifier = "sha256:" + _sha(child_shadowsocks_password)
+            shadowsocks_masked = "ss_" + _sha(
+                "mask\0" + child_shadowsocks_password
+            )[:10]
+        elif protocols == ["vless"] and child_shadowsocks_password is None:
+            shadowsocks_verifier = shadowsocks_masked = None
+        else:
+            raise ChildProvisioningError("unexpected child protocol credentials")
+        if any(key in remote_result for key in ("uuid", "shadowsocks_password")):
+            raise ChildProvisioningError("raw credentials must be stripped before ACK")
         remote_verifier = _sha(_canonical(remote_result))
         with self._lock:
             try:
@@ -251,9 +266,13 @@ class ChildProvisioningStore:
                     raise ChildProvisioningConflict("remote child UUID changed")
                 self._conn.execute(
                     "UPDATE mgboost_child_user_intents SET observed_state='ACTIVE',"
-                    "uuid_verifier=?,uuid_masked=?,updated_at=?,row_version=row_version+1 "
+                    "uuid_verifier=?,uuid_masked=?,shadowsocks_verifier=?,"
+                    "shadowsocks_masked=?,updated_at=?,row_version=row_version+1 "
                     "WHERE id=?",
-                    (uuid_verifier, uuid_masked, now, row["child_intent_id"]),
+                    (
+                        uuid_verifier, uuid_masked, shadowsocks_verifier,
+                        shadowsocks_masked, now, row["child_intent_id"],
+                    ),
                 )
                 self._conn.execute(
                     "UPDATE mgboost_outbox SET state='APPLIED',lease_owner=NULL,"
@@ -277,6 +296,42 @@ class ChildProvisioningStore:
                 ).fetchone()
                 self._conn.commit()
                 return dict(result)
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def record_reconciliation_error(
+        self, operation_id: str, *, error_class: str, now: int
+    ) -> None:
+        safe_error = (error_class or "").strip()
+        if not safe_error or len(safe_error) > 128:
+            raise ChildProvisioningError("safe reconciliation error is required")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mgboost_outbox WHERE operation_id=? AND state='APPLIED'",
+                    (operation_id,),
+                ).fetchone()
+                if not row:
+                    raise ChildProvisioningConflict("applied operation is required")
+                self._conn.execute(
+                    "UPDATE mgboost_child_user_intents SET observed_state='ERROR',"
+                    "updated_at=?,row_version=row_version+1 WHERE id=?",
+                    (now, row["child_intent_id"]),
+                )
+                self._conn.execute(
+                    "UPDATE mgboost_outbox SET state='ERROR',last_error_class=?,"
+                    "updated_at=?,row_version=row_version+1 WHERE id=?",
+                    (safe_error, now, row["id"]),
+                )
+                self._conn.execute(
+                    "INSERT INTO mgboost_outbox_attempt_events "
+                    "(outbox_id,account_id,attempt_no,event_type,safe_error_class,created_at) "
+                    "VALUES (?,?,?,'FAILED',?,?)",
+                    (row["id"], row["account_id"], row["attempts"], safe_error, now),
+                )
+                self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
