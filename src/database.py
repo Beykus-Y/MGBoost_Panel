@@ -7,13 +7,19 @@ import sqlite3
 import time
 import threading
 
-from .config import COMPAT_TELEMETRY_HMAC_KEY, DATA_DIR
+from .config import (
+    COMPAT_TELEMETRY_HMAC_KEY,
+    DATA_DIR,
+    PRIMARY_MGBOOST_ADMIN_ACTOR_ID,
+)
 from .account_schema import apply_parent_account_schema
 from .account_store import AccountStore
 from .compat_telemetry import record_observation, telemetry_key_is_valid
 from .compat_telemetry_schema import apply_compat_telemetry_schema
 from .device_slot_schema import apply_device_slot_schema
 from .device_slots import DeviceSlotStore
+from .internal_entitlement_schema import apply_internal_entitlement_schema
+from .internal_entitlements import InternalEntitlementStore
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -77,6 +83,9 @@ class Database:
         )
         self.accounts = AccountStore(self._conn, self._lock)
         self.device_slots = DeviceSlotStore(self._conn, self._lock)
+        self.internal_entitlements = InternalEntitlementStore(
+            self._conn, self._lock, PRIMARY_MGBOOST_ADMIN_ACTOR_ID
+        )
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -330,6 +339,7 @@ class Database:
         self._conn.commit()
         apply_parent_account_schema(self._conn)
         apply_device_slot_schema(self._conn)
+        apply_internal_entitlement_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()

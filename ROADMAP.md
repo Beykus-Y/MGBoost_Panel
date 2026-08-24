@@ -460,12 +460,13 @@ and are not eligible for completion.
 **Accept/tests:** direct old UUID отклонён на всех nodes; offline-node reconcile; rebind race; delete до 180 дней запрещён; delete после 180 дней не выполняется при live reference/reconcile error.
 **Rollback:** новый generation, никогда восстановление leaked UUID.
 
-## [ ] PH3-06 — Internal/god entitlements без username hardcode
+## [~] PH3-06 — Internal/god entitlements без username hardcode
 
 **Depends:** PH3-01. **Fixed policy:** OPD-15/DL-032 — versioned internal plans плюс explicit per-account overrides с обязательными expiry/reason; `billing_required=false`, WL unlimited, configurable/unlimited devices. Только primary MGBoost admin может выдать unlimited.
 **Never hardcode:** `beykus*`, `megochel*`, `german`, `pensioner`, `client_buy_9`.
 **Accept/tests:** special access только plan/entitlement; ordinary/non-primary admin не получает или не выдаёт unlimited flags; override expiry возвращает вычисление к plan/AUTO; source scan hardcodes.
 **Migration:** internal accounts — canary cohort и тоже child users.
+**Implemented/staging verified; production pending 2026-08-24:** checksum-pinned additive review/revision schema plus dormant primary-admin-only repository creates a versioned internal plan and reviewed parent account atomically, rejects ambiguous Telegram ownership before binding, and evaluates configurable/unlimited devices (technical cap 99), billing-free and unlimited-WL semantics without username rules. Every override requires reason, expiry (maximum 90 days), immutable idempotent mutation evidence and returns to plan/AUTO at expiry. No legacy route imports this service; an unset `PRIMARY_MGBOOST_ADMIN_ACTOR_ID` fails every write closed. Focused tests: `8 passed`; full regression `495 passed, 3 skipped`. A disposable online production DB copy applied the migration twice (`true/false`), preserved all 34 pre-existing table digests, left review/revision/account/slot/generation rows at zero, retained 71/71 legacy device/HWID rows and passed quick/FK checks. Read-only candidate evidence and exclusions are recorded in `docs/PHASE3_INTERNAL_ENTITLEMENTS.md`; zero production accounts are automatically provisioned.
 
 ## [x] PH3-07 — Privacy-safe HWID/client compatibility telemetry
 

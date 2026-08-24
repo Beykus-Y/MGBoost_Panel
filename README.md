@@ -48,6 +48,7 @@ DATA_DIR=./data                      # папка с БД и JSON
 SECRET_KEY=changeme                  # поменяй!
 ADMIN_SESSION_TTL_SECONDS=1800       # абсолютный TTL admin session
 ADMIN_SESSION_COOKIE_SECURE=1        # обязательно 1 в production HTTPS
+PRIMARY_MGBOOST_ADMIN_ACTOR_ID=      # empty = dormant PH3-06 writes fail closed
 ADMIN_LOGIN_RATE_WINDOW_SECONDS=300  # окно failed-login limiter
 ADMIN_LOGIN_RATE_IDENTITY_FAILURES=5 # failures на IP+username за окно
 ADMIN_LOGIN_RATE_IP_FAILURES=20      # общий IP spray budget за окно
