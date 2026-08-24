@@ -29,7 +29,8 @@ function subscriptionHeaders(extra = {}) {
 }
 
 function formatBytes(bytes) {
-  if (!bytes) return '0 B';
+  bytes = Number(bytes);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
@@ -37,7 +38,8 @@ function formatBytes(bytes) {
 }
 
 function formatExpire(ts) {
-  if (!ts) return 'Бессрочно';
+  ts = Number(ts);
+  if (!Number.isFinite(ts) || ts <= 0) return 'Бессрочно';
   const d = new Date(ts * 1000);
   const now = Date.now();
   const diff = d - now;
@@ -48,6 +50,8 @@ function formatExpire(ts) {
 }
 
 function formatRelTime(ts) {
+  ts = Number(ts);
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
   const diff = Math.floor((Date.now() / 1000) - ts);
   if (diff < 60) return 'только что';
   if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
@@ -68,8 +72,54 @@ function statusLabel(status) {
   return map[status] || ['Неизвестно', 'badge-unknown'];
 }
 
-function skeleton(n = 3) {
-  return Array.from({ length: n }, () => '<div class="skeleton"></div>').join('');
+function createNode(tag, options = {}, children = []) {
+  const element = document.createElement(tag);
+  if (options.id) element.id = options.id;
+  if (options.className) element.className = options.className;
+  if (Object.prototype.hasOwnProperty.call(options, 'text')) {
+    element.textContent = String(options.text ?? '');
+  }
+  if (options.type) element.type = options.type;
+  if (options.title) element.title = options.title;
+  for (const child of children) {
+    if (child) element.appendChild(child);
+  }
+  return element;
+}
+
+function replaceContent(parent, ...children) {
+  parent.replaceChildren(...children.filter(Boolean));
+}
+
+function cardTitle(text) {
+  return createNode('div', { className: 'card-title', text });
+}
+
+function skeletons(count = 3) {
+  return Array.from({ length: count }, () => createNode('div', { className: 'skeleton' }));
+}
+
+function safeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function boundedPercent(value) {
+  return Math.max(0, Math.min(100, safeNumber(value)));
+}
+
+function safeErrorMessage(reason) {
+  return typeof reason?.message === 'string' && reason.message
+    ? reason.message
+    : 'Не удалось загрузить данные';
+}
+
+function emptyStateCard(card, title, message) {
+  replaceContent(
+    card,
+    cardTitle(title),
+    createNode('div', { className: 'empty-state', text: message }),
+  );
 }
 
 // Reasons the backend returns for a missing/invalid management session —
@@ -178,15 +228,24 @@ async function exchangeMgmtCode() {
 }
 
 function renderTokenForm() {
-  app.innerHTML = `
-    <div class="card">
-      <div class="card-title">Вход</div>
-      <div class="token-form">
-        <p>Введите ваш токен подписки, чтобы открыть личный кабинет.</p>
-        <input class="token-input" id="tokenInput" type="text" placeholder="Вставьте токен из ссылки подписки" autocomplete="off">
-        <button class="btn btn-primary" onclick="openWithToken()">Открыть кабинет</button>
-      </div>
-    </div>`;
+  const input = createNode('input', { id: 'tokenInput', className: 'token-input', type: 'text' });
+  input.placeholder = 'Вставьте токен из ссылки подписки';
+  input.autocomplete = 'off';
+
+  const button = createNode('button', {
+    className: 'btn btn-primary', type: 'button', text: 'Открыть кабинет',
+  });
+  button.addEventListener('click', openWithToken);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') openWithToken();
+  });
+
+  const form = createNode('div', { className: 'token-form' }, [
+    createNode('p', { text: 'Введите ваш токен подписки, чтобы открыть личный кабинет.' }),
+    input,
+    button,
+  ]);
+  replaceContent(app, createNode('div', { className: 'card' }, [cardTitle('Вход'), form]));
 }
 
 function openWithToken() {
@@ -203,47 +262,76 @@ function openWithToken() {
   location.href = `/lk/#token=${encodeURIComponent(token)}`;
 }
 
-async function renderDashboard(token) {
-  // Render shell with loading states
-  app.innerHTML = `
-    <div class="card" id="statusCard">
-      <div class="card-title">Статус аккаунта</div>
-      ${skeleton(4)}
-    </div>
-    <div class="card" id="usageCard">
-      <div class="card-title">Трафик по нодам</div>
-      ${skeleton(3)}
-    </div>
-    <div class="card" id="subCard">
-      <div class="card-title">Подписка</div>
-      <div class="btn-group">
-        <button class="btn btn-primary" id="copyBtn" onclick="copySubLink()">📋 Скопировать ссылку подписки</button>
-        <div class="collapsible-header" onclick="toggleInstructions()">
-          <h3>❓ Как подключиться?</h3>
-          <span class="chevron" id="chevron">▼</span>
-        </div>
-        <div class="collapsible-body" id="instructions">
-          <div class="app-list">
-            <div class="app-item">
-              <div class="app-name">Hiddify (Android / iOS / Windows / Mac)</div>
-              <div class="app-steps">1. Установите Hiddify<br>2. Нажмите «+» → «Добавить из буфера»<br>3. Вставьте скопированную ссылку подписки</div>
-            </div>
-            <div class="app-item">
-              <div class="app-name">Streisand (iOS)</div>
-              <div class="app-steps">1. Установите Streisand<br>2. Нажмите «+» → «Импорт из URL»<br>3. Вставьте ссылку подписки</div>
-            </div>
-            <div class="app-item">
-              <div class="app-name">v2rayNG (Android)</div>
-              <div class="app-steps">1. Установите v2rayNG<br>2. Меню → «Подписки» → «Группы»<br>3. Добавьте ссылку подписки</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="card" id="devicesCard">
-      <div class="card-title">Мои устройства</div>
-      ${skeleton(3)}
-    </div>`;
+function instructionItem(name, steps) {
+  const stepElement = createNode('div', { className: 'app-steps' });
+  steps.forEach((step, index) => {
+    if (index) stepElement.appendChild(document.createElement('br'));
+    stepElement.appendChild(document.createTextNode(step));
+  });
+  return createNode('div', { className: 'app-item' }, [
+    createNode('div', { className: 'app-name', text: name }),
+    stepElement,
+  ]);
+}
+
+function subscriptionCard() {
+  const copyButton = createNode('button', {
+    id: 'copyBtn', className: 'btn btn-primary', type: 'button',
+    text: '📋 Скопировать ссылку подписки',
+  });
+  copyButton.addEventListener('click', copySubLink);
+
+  const chevron = createNode('span', { id: 'chevron', className: 'chevron', text: '▼' });
+  const header = createNode('div', { className: 'collapsible-header' }, [
+    createNode('h3', { text: '❓ Как подключиться?' }),
+    chevron,
+  ]);
+  header.tabIndex = 0;
+  header.setAttribute('role', 'button');
+  header.setAttribute('aria-expanded', 'false');
+  header.setAttribute('aria-controls', 'instructions');
+  header.addEventListener('click', toggleInstructions);
+  header.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleInstructions();
+    }
+  });
+
+  const instructions = createNode('div', { id: 'instructions', className: 'collapsible-body' }, [
+    createNode('div', { className: 'app-list' }, [
+      instructionItem('Hiddify (Android / iOS / Windows / Mac)', [
+        '1. Установите Hiddify',
+        '2. Нажмите «+» → «Добавить из буфера»',
+        '3. Вставьте скопированную ссылку подписки',
+      ]),
+      instructionItem('Streisand (iOS)', [
+        '1. Установите Streisand',
+        '2. Нажмите «+» → «Импорт из URL»',
+        '3. Вставьте ссылку подписки',
+      ]),
+      instructionItem('v2rayNG (Android)', [
+        '1. Установите v2rayNG',
+        '2. Меню → «Подписки» → «Группы»',
+        '3. Добавьте ссылку подписки',
+      ]),
+    ]),
+  ]);
+
+  return createNode('div', { id: 'subCard', className: 'card' }, [
+    cardTitle('Подписка'),
+    createNode('div', { className: 'btn-group' }, [copyButton, header, instructions]),
+  ]);
+}
+
+async function renderDashboard(_token) {
+  const statusCard = createNode('div', { id: 'statusCard', className: 'card' });
+  const usageCard = createNode('div', { id: 'usageCard', className: 'card' });
+  const devicesCard = createNode('div', { id: 'devicesCard', className: 'card' });
+  replaceContent(statusCard, cardTitle('Статус аккаунта'), ...skeletons(4));
+  replaceContent(usageCard, cardTitle('Трафик по нодам'), ...skeletons(3));
+  replaceContent(devicesCard, cardTitle('Мои устройства'), ...skeletons(3));
+  replaceContent(app, statusCard, usageCard, subscriptionCard(), devicesCard);
 
   // Load in parallel
   const [infoResult, usageResult, devicesResult] = await Promise.allSettled([
@@ -252,46 +340,61 @@ async function renderDashboard(token) {
     apiFetch('devices'),
   ]);
 
-  renderStatusCard(infoResult, token);
+  renderStatusCard(infoResult);
   renderUsageCard(usageResult);
   renderDevicesCard(devicesResult);
 }
 
-function renderStatusCard(result, token) {
+function renderStatusCard(result) {
   const card = document.getElementById('statusCard');
   if (!card) return;
 
   if (result.status === 'rejected') {
-    card.innerHTML = `<div class="card-title">Статус аккаунта</div><div class="empty-state">${result.reason.message}</div>`;
+    emptyStateCard(card, 'Статус аккаунта', safeErrorMessage(result.reason));
     return;
   }
 
-  const d = result.value;
+  const d = result.value || {};
   const [label, cls] = statusLabel(d.status);
   const isExpiredOrDisabled = d.status === 'expired' || d.status === 'disabled' || d.status === 'limited';
-  const usedPct = d.data_limit ? Math.min(100, Math.round(d.used_traffic / d.data_limit * 100)) : 0;
-  const trafficLabel = d.data_limit
+  const dataLimit = Math.max(0, safeNumber(d.data_limit));
+  const usedTraffic = Math.max(0, safeNumber(d.used_traffic));
+  const usedPct = dataLimit ? boundedPercent(Math.round(usedTraffic / dataLimit * 100)) : 0;
+  const trafficLabel = dataLimit
     ? `${formatBytes(d.used_traffic)} / ${formatBytes(d.data_limit)}`
     : `${formatBytes(d.used_traffic)} / ∞`;
 
-  card.innerHTML = `
-    <div class="card-title">Статус аккаунта</div>
-    ${isExpiredOrDisabled ? `<div class="alert" style="margin-bottom:14px">⚠️ Ваша подписка истекла или отключена. Обратитесь к администратору.</div>` : ''}
-    <div class="user-row">
-      <span class="username">👤 ${escHtml(d.username)}</span>
-      <span class="badge ${cls}">${label}</span>
-    </div>
-    <div class="info-row">
-      <span class="info-label">📅 Истекает через</span>
-      <span class="info-value">${formatExpire(d.expire)}</span>
-    </div>
-    <div class="info-row" style="border-bottom:none">
-      <span class="info-label">📦 Трафик</span>
-      <span class="info-value">${trafficLabel}</span>
-    </div>
-    ${d.data_limit ? `<div class="progress-wrap">
-      <div class="progress-bar"><div class="progress-fill" style="width:${usedPct}%"></div></div>
-    </div>` : ''}`;
+  const children = [cardTitle('Статус аккаунта')];
+  if (isExpiredOrDisabled) {
+    const alert = createNode('div', {
+      className: 'alert',
+      text: '⚠️ Ваша подписка истекла или отключена. Обратитесь к администратору.',
+    });
+    alert.style.marginBottom = '14px';
+    children.push(alert);
+  }
+  children.push(createNode('div', { className: 'user-row' }, [
+    createNode('span', { className: 'username', text: `👤 ${String(d.username || '')}` }),
+    createNode('span', { className: `badge ${cls}`, text: label }),
+  ]));
+  children.push(createNode('div', { className: 'info-row' }, [
+    createNode('span', { className: 'info-label', text: '📅 Истекает через' }),
+    createNode('span', { className: 'info-value', text: formatExpire(d.expire) }),
+  ]));
+  const trafficRow = createNode('div', { className: 'info-row' }, [
+    createNode('span', { className: 'info-label', text: '📦 Трафик' }),
+    createNode('span', { className: 'info-value', text: trafficLabel }),
+  ]);
+  trafficRow.style.borderBottom = 'none';
+  children.push(trafficRow);
+  if (dataLimit) {
+    const fill = createNode('div', { className: 'progress-fill' });
+    fill.style.width = `${usedPct}%`;
+    children.push(createNode('div', { className: 'progress-wrap' }, [
+      createNode('div', { className: 'progress-bar' }, [fill]),
+    ]));
+  }
+  replaceContent(card, ...children);
 
   // Store subscription URL for copy button
   window._subUrl = d.subscription_url;
@@ -302,34 +405,62 @@ function renderUsageCard(result) {
   if (!card) return;
 
   if (result.status === 'rejected') {
-    card.innerHTML = `<div class="card-title">Трафик по нодам</div><div class="empty-state">${result.reason.message}</div>`;
+    emptyStateCard(card, 'Трафик по нодам', safeErrorMessage(result.reason));
     return;
   }
 
-  const usages = result.value.usages || [];
+  const usages = Array.isArray(result.value?.usages) ? result.value.usages : [];
   if (!usages.length) {
-    card.innerHTML = `<div class="card-title">Трафик по нодам</div><div class="empty-state">Нет данных</div>`;
+    emptyStateCard(card, 'Трафик по нодам', 'Нет данных');
     return;
   }
 
-  const rows = usages.map(u => `
-    <div class="node-row">
-      <div class="node-top">
-        <span class="node-name">${escHtml(u.node_name)}</span>
-        <span class="node-traffic">${formatBytes(u.used_traffic)} &nbsp;${u.percent}%</span>
-      </div>
-      <div class="node-bar"><div class="node-bar-fill" style="width:${u.percent}%"></div></div>
-    </div>`).join('');
-
-  card.innerHTML = `<div class="card-title">Трафик по нодам</div>${rows}`;
+  const rows = usages.map(u => {
+    const percent = boundedPercent(u?.percent);
+    const fill = createNode('div', { className: 'node-bar-fill' });
+    fill.style.width = `${percent}%`;
+    return createNode('div', { className: 'node-row' }, [
+      createNode('div', { className: 'node-top' }, [
+        createNode('span', { className: 'node-name', text: String(u?.node_name || '') }),
+        createNode('span', {
+          className: 'node-traffic',
+          text: `${formatBytes(u?.used_traffic)}  ${percent}%`,
+        }),
+      ]),
+      createNode('div', { className: 'node-bar' }, [fill]),
+    ]);
+  });
+  replaceContent(card, cardTitle('Трафик по нодам'), ...rows);
 }
 
 function deviceLabel(d) {
-  const name = d.display_name || d.device_name || d.client_name || 'Устройство';
+  d = d || {};
+  const name = String(d.display_name || d.device_name || d.client_name || 'Устройство');
   const parts = [];
-  if (d.platform) parts.push(d.platform);
-  if (d.client_name && d.client_name !== name) parts.push(d.client_name);
+  if (d.platform) parts.push(String(d.platform));
+  if (d.client_name && d.client_name !== name) parts.push(String(d.client_name));
   return { name, meta: parts.join(' · ') };
+}
+
+function normalizeDeviceId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? String(id) : null;
+}
+
+function deviceCounter(activeCount, limit) {
+  const fill = createNode('div', { className: 'device-slots-fill' });
+  const percent = limit > 0 ? boundedPercent(Math.round(activeCount / limit * 100)) : 0;
+  fill.style.width = `${percent}%`;
+  return [
+    createNode('div', { className: 'device-counter' }, [
+      createNode('span', { className: 'device-counter-label', text: 'Активные устройства' }),
+      createNode('span', {
+        className: 'device-counter-val',
+        text: `${activeCount} / ${limit === 0 ? '∞' : limit}`,
+      }),
+    ]),
+    createNode('div', { className: 'device-slots-bar' }, [fill]),
+  ];
 }
 
 function renderDevicesCard(result) {
@@ -337,61 +468,94 @@ function renderDevicesCard(result) {
   if (!card) return;
 
   if (result.status === 'rejected') {
-    card.innerHTML = `<div class="card-title">Мои устройства</div><div class="empty-state">${result.reason.message}</div>`;
+    emptyStateCard(card, 'Мои устройства', safeErrorMessage(result.reason));
     return;
   }
 
-  const devices = result.value.devices || [];
-  const limit = result.value.limit || 3;
-  const activeCount = result.value.active_count || 0;
-  const pct = Math.min(100, Math.round(activeCount / limit * 100));
-
-  const counter = `
-    <div class="device-counter">
-      <span class="device-counter-label">Активные устройства</span>
-      <span class="device-counter-val">${activeCount} / ${limit === 0 ? '∞' : limit}</span>
-    </div>
-    <div class="device-slots-bar"><div class="device-slots-fill" style="width:${pct}%"></div></div>`;
+  const devices = Array.isArray(result.value?.devices) ? result.value.devices : [];
+  const limit = Math.max(0, Math.trunc(safeNumber(result.value?.limit, 3)));
+  const activeCount = Math.max(0, Math.trunc(safeNumber(result.value?.active_count)));
+  const counter = deviceCounter(activeCount, limit);
 
   if (!devices.length) {
-    card.innerHTML = `<div class="card-title">Мои устройства</div>${counter}<div class="empty-state">Нет зарегистрированных устройств</div>`;
+    replaceContent(
+      card,
+      cardTitle('Мои устройства'),
+      ...counter,
+      createNode('div', { className: 'empty-state', text: 'Нет зарегистрированных устройств' }),
+    );
     return;
   }
 
-  const rows = devices.map(d => {
+  const rows = devices.map(rawDevice => {
+    const d = rawDevice || {};
     const { name, meta } = deviceLabel(d);
-    const active = d.is_active;
-    const badge = active
-      ? `<span class="badge-device-active">● Активно</span>`
-      : `<span class="badge-device-inactive">○ Откл.</span>`;
-    const actions = active ? `
-      <div class="device-item-actions">
-        <button class="btn-icon" title="Переименовать" onclick="renameDevice(${d.id}, '${escHtml(name)}')">✏️</button>
-        <button class="btn-icon btn-icon-danger" title="Отключить" onclick="deleteDevice(${d.id})">✕</button>
-      </div>` : '';
-    return `
-      <div class="device-item" id="dev-${d.id}">
-        <div class="device-item-top">
-          <span class="device-item-name${active ? '' : ' inactive'}">${escHtml(name)}</span>
-          ${badge}
-        </div>
-        <div class="device-item-meta">
-          <span>${escHtml(meta || '—')} · ${formatRelTime(d.last_seen)}</span>
-          ${actions}
-        </div>
-      </div>`;
-  }).join('');
+    const active = Boolean(d.is_active);
+    const deviceId = normalizeDeviceId(d.id);
+    const item = createNode('div', { className: 'device-item' });
+    if (deviceId) {
+      item.id = `dev-${deviceId}`;
+      item.dataset.deviceId = deviceId;
+    }
+    const badge = createNode('span', {
+      className: active ? 'badge-device-active' : 'badge-device-inactive',
+      text: active ? '● Активно' : '○ Откл.',
+    });
+    const nameElement = createNode('span', {
+      className: `device-item-name${active ? '' : ' inactive'}`,
+      text: name,
+    });
+    item.appendChild(createNode('div', { className: 'device-item-top' }, [nameElement, badge]));
 
-  card.innerHTML = `<div class="card-title">Мои устройства</div>${counter}${rows}`;
+    const metaChildren = [
+      createNode('span', { text: `${meta || '—'} · ${formatRelTime(d.last_seen)}` }),
+    ];
+    if (active && deviceId) {
+      const renameButton = createNode('button', {
+        className: 'btn-icon', type: 'button', title: 'Переименовать', text: '✏️',
+      });
+      renameButton.dataset.action = 'rename-device';
+      renameButton.dataset.deviceId = deviceId;
+      renameButton.addEventListener('click', event => {
+        const id = normalizeDeviceId(event.currentTarget.dataset.deviceId);
+        if (id) renameDevice(id, name);
+      });
+
+      const deleteButton = createNode('button', {
+        className: 'btn-icon btn-icon-danger', type: 'button', title: 'Отключить', text: '✕',
+      });
+      deleteButton.dataset.action = 'delete-device';
+      deleteButton.dataset.deviceId = deviceId;
+      deleteButton.addEventListener('click', event => {
+        const id = normalizeDeviceId(event.currentTarget.dataset.deviceId);
+        if (id) deleteDevice(id);
+      });
+      metaChildren.push(createNode('div', { className: 'device-item-actions' }, [
+        renameButton,
+        deleteButton,
+      ]));
+    }
+    item.appendChild(createNode('div', { className: 'device-item-meta' }, metaChildren));
+    return item;
+  });
+
+  replaceContent(card, cardTitle('Мои устройства'), ...counter, ...rows);
 }
 
 async function deleteDevice(id) {
+  const deviceId = normalizeDeviceId(id);
+  if (!deviceId) return;
   if (!confirm('Отключить это устройство?')) return;
   try {
-    await apiDelete(`devices/${id}`);
-    const el = document.getElementById(`dev-${id}`);
+    await apiDelete(`devices/${deviceId}`);
+    const el = document.getElementById(`dev-${deviceId}`);
     if (el) {
-      el.querySelector('.badge-device-active').outerHTML = '<span class="badge-device-inactive">○ Откл.</span>';
+      const activeBadge = el.querySelector('.badge-device-active');
+      if (activeBadge) {
+        activeBadge.replaceWith(createNode('span', {
+          className: 'badge-device-inactive', text: '○ Откл.',
+        }));
+      }
       const actions = el.querySelector('.device-item-actions');
       if (actions) actions.remove();
       el.querySelector('.device-item-name')?.classList.add('inactive');
@@ -399,9 +563,16 @@ async function deleteDevice(id) {
     // Refresh counter
     apiFetch('devices').then(data => {
       const counter = document.querySelector('.device-counter-val');
-      if (counter) counter.textContent = `${data.active_count} / ${data.limit}`;
+      const refreshedLimit = Math.max(0, Math.trunc(safeNumber(data.limit, 3)));
+      const refreshedActive = Math.max(0, Math.trunc(safeNumber(data.active_count)));
+      if (counter) counter.textContent = `${refreshedActive} / ${refreshedLimit === 0 ? '∞' : refreshedLimit}`;
       const fill = document.querySelector('.device-slots-fill');
-      if (fill) fill.style.width = `${Math.min(100, Math.round(data.active_count / data.limit * 100))}%`;
+      if (fill) {
+        const percent = refreshedLimit > 0
+          ? boundedPercent(Math.round(refreshedActive / refreshedLimit * 100))
+          : 0;
+        fill.style.width = `${percent}%`;
+      }
     }).catch(() => {});
   } catch(e) {
     alert('Ошибка: ' + e.message);
@@ -409,11 +580,13 @@ async function deleteDevice(id) {
 }
 
 async function renameDevice(id, currentName) {
+  const deviceId = normalizeDeviceId(id);
+  if (!deviceId) return;
   const newName = prompt('Новое название устройства:', currentName);
   if (!newName || newName.trim() === currentName) return;
   try {
-    await apiPatch(`devices/${id}`, { name: newName.trim() });
-    const el = document.getElementById(`dev-${id}`);
+    await apiPatch(`devices/${deviceId}`, { name: newName.trim() });
+    const el = document.getElementById(`dev-${deviceId}`);
     if (el) {
       const nameEl = el.querySelector('.device-item-name');
       if (nameEl) nameEl.textContent = newName.trim();
@@ -421,10 +594,6 @@ async function renameDevice(id, currentName) {
   } catch(e) {
     alert('Ошибка: ' + e.message);
   }
-}
-
-function escHtml(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 async function copySubLink() {
@@ -460,6 +629,8 @@ function toggleInstructions() {
   if (!body) return;
   body.classList.toggle('open');
   chev?.classList.toggle('open');
+  const header = body.previousElementSibling;
+  header?.setAttribute('aria-expanded', body.classList.contains('open') ? 'true' : 'false');
 }
 
 // Init

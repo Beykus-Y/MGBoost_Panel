@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import re
 from urllib.error import URLError
@@ -30,7 +29,6 @@ def _browser_page(sub_url: str) -> bytes:
         template = f.read()
     safe_text = sub_url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     html = template.replace("__SUB_URL__", safe_text)
-    html = html.replace("__SUB_URL_JSON__", json.dumps(sub_url))
     return html.encode("utf-8")
 
 

@@ -22,7 +22,7 @@
     <div class="copy-label">Твоя ссылка подписки</div>
     <div class="copy-row">
       <div class="copy-url" id="url-display">__SUB_URL__</div>
-      <button class="copy-btn" id="copy-btn" onclick="copyUrl()">Копировать</button>
+      <button class="copy-btn" id="copy-btn" type="button">Копировать</button>
     </div>
     <div class="copy-hint">Скопируй и вставь в одно из приложений ниже&nbsp;↓</div>
   </div>
@@ -93,36 +93,6 @@
   </div>
 
 </div>
-<script>
-  function copyUrl() {
-    var url = __SUB_URL_JSON__;
-    var btn = document.getElementById('copy-btn');
-    var done = function() {
-      btn.textContent = '✓ Скопировано';
-      btn.classList.add('ok');
-      setTimeout(function() {
-        btn.textContent = 'Копировать';
-        btn.classList.remove('ok');
-      }, 2000);
-    };
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url).then(done).catch(fallback);
-    } else {
-      fallback();
-    }
-    function fallback() {
-      var t = document.createElement('textarea');
-      t.value = url;
-      t.style.position = 'fixed';
-      t.style.opacity = '0';
-      document.body.appendChild(t);
-      t.focus();
-      t.select();
-      try { document.execCommand('copy'); } catch(e) {}
-      document.body.removeChild(t);
-      done();
-    }
-  }
-</script>
+<script src="/assets/browser_page.js?v=ph2-02" defer></script>
 </body>
 </html>
