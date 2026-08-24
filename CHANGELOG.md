@@ -15,6 +15,8 @@
 
 ## Unreleased
 
+- Added the fixed-scope, root-only PH3-03 dormant production canary gate and runbook. It can provision only the owner-approved `INTERNAL_OWNER_PRIMARY` slot 1/generation 1 mapping after exact schema, independent-key, real primary-session, loopback typed-broker, topology, legacy-contract and encrypted-restore preflights. The durable operation reconciles a lost local ACK without creating a second child and persists/logs no raw child credential. This tooling is not a legacy resolver migration and has not yet changed production state.
+
 ### Security
 
 - DL-046 makes MGBoost explicitly VLESS-only. The authenticated typed broker cleanup removed retired Shadowsocks proxy metadata from all seven affected production users after canary/reread gates. All 25 live users now have only VLESS proxies; topology and all fetched subscriptions also contain zero Shadowsocks. Existing VLESS UUID, legacy URL/token, inbound, flow, expiry, status, data limit, HWID, tariff and functional config remained unchanged.
