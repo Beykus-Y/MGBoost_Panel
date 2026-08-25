@@ -1,18 +1,179 @@
 # AGENT_HANDOFF — PH4-03 (crash-safe, update after every major checkpoint)
 
-Updated: 2026-08-26, later same day: real DIRECT/EXTERNAL_PAYMENT cohort
-enrolled on production for 2 real customers (`cohort-2 account #3`, `cohort-2 account #4`).
-Real migration is now blocked on a precise, well-understood prerequisite gap
-(no `mgboost_subscriptions`/plan for unproven-tariff DIRECT accounts -- see
-below), not on missing candidates. TELEGRAM_STARS cohort is an owner-approved
-`N/A` exception (zero real Stars purchases ever existed).
+Updated: 2026-08-26, PH4-03 CLOSED `[x]`. A migration-only legacy paid
+compatibility entitlement (owner decision) closed the previous session's
+subscription/plan blocker; both real DIRECT/EXTERNAL_PAYMENT cohort
+accounts (`cohort-2 account #3`/`#4`, account ids 3/4) completed a full
+real production migration canary (migrate + revoke + one rebind proof)
+with zero impact on either real customer's own device. TELEGRAM_STARS
+cohort remains an owner-approved `N/A` exception (zero real Stars purchases
+ever existed).
 
 ## HEAD / git status
 
-- HEAD after this session's commits (see `git log -1`, currently `b31e3a1`);
-  pushed to `origin/main`, deployed to production (pull + `mgboost-panel`
-  restart), production HEAD verified to match.
+- HEAD after this session's commits (see `git log -1`); pushed to
+  `origin/main`, deployed to production (pull + `mgboost-panel` restart),
+  production HEAD verified to match.
 - Working tree clean except pre-existing untracked `extra_configs.json`.
+
+## THIS SESSION (part 3): legacy paid compat entitlement + real migration canary PASS -> PH4-03 `[x]`
+
+Owner decisions this session:
+1. Legacy paid compatibility entitlement is migration-only, never a
+   commercial catalog entry: historical default device limit `3`, never
+   inferred from current device/HWID counts; an owner-approved increase is
+   explicit `3 + approved_extra_device_slots` with recorded evidence.
+   Unlimited legacy WL (no quota bytes). Exact legacy expiry preserved.
+2. Cohort-2 accounts #3/#4 (already reviewed-enrolled DIRECT accounts from
+   the prior session) are confirmed real paying customers; proceed with
+   their real migration canary once the compat entitlement exists.
+
+### Code (new)
+
+- `src/legacy_paid_compat.py` -- `ensure_legacy_paid_compat_entitlement()`.
+  No new schema: reuses `mgboost_plan_versions`/`mgboost_subscriptions`
+  (PH3-01) as-is. Creates/reuses a `LEGACY_PAID_COMPAT_V1_D{n}` plan
+  version (immutable, `plan_kind='COMMERCIAL'`, `billing_required=0`,
+  `wl_mode='UNLIMITED'`, `wl_quota_bytes=NULL`) and one live subscription
+  per account with the account's exact already-reviewed legacy
+  expiry/status (a terminal `DISABLED`/`EXPIRED` state is preserved as-is,
+  never promoted to `ACTIVE`). Guards: requires an existing DIRECT review
+  + owner-attested legacy payment; `observed_device_count > derived limit`
+  fails closed (`DeviceOverageConflict`); a differing existing subscription
+  fails closed (`SubscriptionConflict`); idempotent retry via the existing
+  one-live-subscription-per-account partial unique index.
+  **Important discovered constraint:** `DeviceSlotStore._entitlement_capacity`
+  hard-requires `plan_kind='COMMERCIAL'` and `device_limit` in the existing
+  `PAID_BASELINE_LIMITS={3,6,12}` frozenset for any `DIRECT` account -- a
+  future compat `Dn` outside that set (e.g. `D4`/`D5`) would need that
+  frozenset extended in `src/device_slots.py` (a plain code constant, not
+  schema-locked) before it could actually claim a slot; not needed this
+  session since both real accounts got `D3`.
+- `tests/test_legacy_paid_compat.py` -- 18 focused tests (device-limit
+  derivation incl. D4/D6, plan-variant reuse, device-rows-don't-raise-quota,
+  overage fails closed, exact expiry, WL unlimited, no price reconstruction,
+  idempotent retry, no duplicate/conflicting subscription, missing
+  prerequisite guards, expired/disabled legacy never gets a fresh paid
+  period, identity/provenance unchanged, and a full reviewed-enrollment ->
+  attestation -> compat entitlement -> PH4-02 migration -> child
+  integration test). Full regression: `869 passed, 3 skipped` (zero
+  regressions from `851`).
+- Deployed: encrypted backup+restore-verified beforehand
+  (`scripts/secure_db_backup.py`, PASS/PASS; production state had changed
+  since the prior backup). No schema change (pure application code) --
+  fast-forward pull, minimal restart, `quick_check=ok`, 0 FK violations,
+  only the two new rows in `mgboost_subscriptions`/`mgboost_plan_versions`
+  (assigned in the next step) changed cardinality.
+
+### Real production assignment + migration canary -- DONE, both accounts PASS
+
+Fresh re-verification immediately before any mutation (both accounts):
+still `active` in Marzban with unchanged `expire`, still exactly one
+unambiguous Telegram mapping each, zero evidence anywhere (notes, tickets,
+audit log, node filters, per-user configs) of an individually approved
+device-limit increase -> both assigned the historical default
+`LEGACY_PAID_COMPAT_V1_D3` (their own real usage is ~2 devices each, so D3
+does not constrain them). Method: a short-lived root-only script per step
+(dry-run-verified against a downloaded copy of the production DB first,
+then run for real with `cd /opt/MGBoost_Panel` so `DATA_DIR` resolves
+correctly), deleted immediately after each use.
+
+Migration canary sequence, run on account A (cohort-2 account #3) first,
+then account B (cohort-2 account #4) only after A fully passed:
+
+1. **Genesis child** (real broker, before any bridge binding exists):
+   `resolve_account_device()` never invents an account's first child -- it
+   requires an already-established `source_contract_hash` from
+   `mgboost_child_user_intents`, or it returns `PROVISIONING_UNAVAILABLE`
+   (not a fall-through outcome). A real child was bootstrapped directly
+   through the existing PH3-03 `child_provisioning` pipeline (real
+   `get_user`/`ensure_child_user` broker calls) on the account's own slot 1,
+   entirely BEFORE any `mgboost_legacy_bridge_bindings` row existed -- so
+   the real customer's own device was never exposed to this gap even for a
+   moment. **This bootstrap step is a real discovered prerequisite for any
+   brand-new DIRECT account's first migration, not specific to these two
+   accounts** -- worth remembering for any future cohort.
+2. **Bridge binding created + enabled** (`db.legacy_bridge.create_binding`,
+   `enabled=1`, per-account decision_ref).
+3. **Migration proof**: a synthetic canary device (never the customer's own
+   HWID) on the account's own spare slot, through the unmodified
+   `process_migration_bridge_request` -- real `LEGACY -> MIGRATING ->
+   MIGRATED`, real new child, real working subscription body, legacy
+   Marzban user confirmed `active` throughout, no shared legacy UUID.
+4. **PH3-05 revoke** the canary child -- confirmed `REVOKED`. A same-device
+   retry afterward returned `PROVISIONING_PENDING` (NOT `OK`, NOT a
+   fall-through outcome) -- no resurrection, no silent legacy fallback,
+   exactly matching account 1's own earlier internal-canary proof.
+5. **PH3-05 free** the canary slot -- returned to `FREE`.
+6. **(Account A only) supplementary PH3-05 rebind proof**, on the
+   already-freed canary slot (zero real-device impact): a new canary device
+   claimed the slot (generation 2), then `process_rebind()` moved it to
+   generation 3 with a different synthetic HWID. One real snag hit and
+   fixed live: `process_rebind()` only prepares the new child's outbox
+   entry -- it hands off actual provisioning to the worker/next resolver
+   call, it does NOT ensure/acknowledge synchronously. The production
+   `mgboost-child-worker` hadn't picked up the pending row within ~40s of
+   polling by the time this was checked, so the new child was finished
+   manually via the exact same `child_provisioning.claim()` ->
+   `ensure_child_user()` -> `acknowledge()` sequence the worker itself
+   would use -- then verified end-to-end (`process_migration_bridge_request`
+   for the new HWID returned `OK` with the new child). Old (generation 2)
+   child confirmed `REVOKED` throughout. Cleaned up afterward with the same
+   revoke+free sequence, leaving the slot `FREE` again.
+
+Verified before and after every step, both accounts: exact legacy
+expiry/status, account `public_id`, ownership review, and owner-attestation
+rows all unchanged; `mgboost_payment_records` stayed empty throughout (no
+invented payment was ever created); the real legacy Marzban user's
+`status`/`expire` were read-verified unchanged at multiple checkpoints;
+`quick_check=ok`, 0 FK violations; all 4 services stayed active. Final
+state per account: slot 1 = the real permanent genesis child (`ACTIVE`),
+slot 2 = `FREE` (all canary/rebind-proof children on it are permanent
+`REVOKED` tombstones, matching this project's own retention convention),
+slot 3 never claimed -- 2 free slots remain for each customer's real ~2
+devices going forward.
+
+### TELEGRAM_STARS and Telegram ownership rebind -- unchanged from the prior session
+
+Still a documented owner-approved `N/A` exception (zero real purchases ever
+existed) and still relying on existing focused tests + PH2-05's own
+production-proven mechanism (no real customer's Telegram identity was
+mutated this session either). See the prior "THIS SESSION (part 2)" section
+below for the full reasoning, unchanged.
+
+### Metrics/support runbook -- DONE
+
+`docs/PHASE4_MIGRATION_SUPPORT_RUNBOOK.md`: how to read an account's
+migration state/lineage, a compat entitlement's `Dn`/expiry/WL semantics,
+ownership/payment provenance, how to recognize and react to
+`ERROR_RECONCILE`, and what to do (and not do) when a canary/migration
+attempt fails. Deliberately excludes secrets/PII -- every example is by
+account id.
+
+## PH4-03 verdict: `[x]` -- CLOSED
+
+All ROADMAP accept-criteria items are satisfied: internal cohort PASS
+(prior session); several real DIRECT/`EXTERNAL_PAYMENT` subscriptions PASS
+(this session, both accounts, migrate+revoke+one rebind proof); `TELEGRAM_STARS`
+documented `N/A` exception; account identity/payment provenance/manual
+renewal semantics preserved (same account/plan/PH3-08 sync model
+throughout, untouched); Telegram ownership rebind sufficiently proven via
+existing tests/PH2-05 evidence without an unnecessary live mutation;
+metrics/support runbook exists; full regression clean (`869 passed, 3
+skipped`). PH4-08 (full legacy-subscription-preservation/renewal flow) and
+PH5-09 remain explicitly their own future phases, both still `[ ]` --
+PH4-03 only needed and built the minimal migration-compatibility
+prerequisite, not PH4-08's full scope.
+
+## Exact next step
+
+PH4-04 (new opaque URL rollout) is the next ROADMAP phase, but was
+explicitly NOT started this session and requires the owner's separate
+authorization to begin, per instruction.
+
+---
+
+## PRIOR SESSION HISTORY (kept for continuity, all still accurate)
 
 ## THIS SESSION (part 2): real DIRECT/EXTERNAL_PAYMENT cohort + owner decisions
 
