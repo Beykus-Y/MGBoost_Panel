@@ -8,6 +8,14 @@ bridge" section remains design-only and is deliberately deferred to PH4-01
 per explicit owner sequencing. See `ROADMAP.md` PH2-01 for the full
 implementation/staging/deviation record.
 
+## PH2-07 closure note (2026-08-25)
+
+PH2-07 ("no persistent raw upstream token in new resolver") was verified
+closed `[x]` without any new production code: the resolver below already
+never reads, stores, forwards or logs a shared legacy subscription bearer.
+See `ROADMAP.md` PH2-07 and `tests/test_ph2_07_no_persistent_legacy_token.py`
+for the full data-flow proof and permanent regression guard.
+
 ## Implementation notes (2026-08-25)
 
 - **AEAD envelope simplified to synchronous single-response delivery.** The
