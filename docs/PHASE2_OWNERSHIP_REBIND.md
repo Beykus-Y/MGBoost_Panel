@@ -34,6 +34,9 @@ revoked; dual active ownership is forbidden.
 ```
 prepare()  -- capability-gated, idempotent-insert durable request
     -> process_rebind(): claim
+        -> [COMPROMISE only] PH2-01 credential rotation FIRST
+             prepare() + activate() on the SAME account, with abandon+
+             reissue on a lost-response retry (see below)
         -> apply_identity_mutation() [atomic, always]
              re-verify current owner == expected_old_telegram_id (else
              stale-request conflict) -> revoke old (revoke_reason=
@@ -42,12 +45,21 @@ prepare()  -- capability-gated, idempotent-insert durable request
              own partial-unique indexes make "two ACTIVE owners" and "one
              Telegram ID owning two accounts" structurally impossible, not
              just conventionally avoided
-        -> [COMPROMISE only] PH2-01 credential rotation
-             prepare() + activate() on the SAME account, with abandon+
-             reissue on a lost-response retry (see below)
         -> finish() -- terminal APPLIED, immutable from here (schema
            trigger blocks any further state/identity-column change)
 ```
+
+**Ordering is security-load-bearing, not incidental.** Each step above is
+its own separately committed SQLite transaction -- `claim()`,
+`SubscriptionCredentialStore.prepare()`, `.activate()`,
+`record_credential_rotation()`, `apply_identity_mutation()` and `finish()`
+each `BEGIN IMMEDIATE`/`COMMIT` independently, so a real process crash
+between any two of them is possible and durable. For `COMPROMISE`, the
+credential rotation runs *before* the identity swap specifically so that
+crash can never leave "the new Telegram owner is active while the old
+(compromised) opaque credential is still active" -- seeing a fault
+injection and the full crash-boundary evidence for exactly this window
+below.
 
 `ORDINARY` never touches `mgboost_subscription_credentials` at all (the
 `CHECK` constraint in the schema enforces `old_credential_id`/
@@ -122,6 +134,38 @@ old-owner (IDOR-adjacent) rejection, new-Telegram-ID-already-active
 same-account rebind (exactly one winner), idempotency-key-reuse-with-
 different-payload conflict, schema-level terminal immutability, zero raw
 credential leakage in a full DB dump.
+
+## COMPROMISE crash-boundary evidence (2026-08-25)
+
+A point-in-time review found and fixed a real gap: the original ordering
+ran the identity mutation *before* the credential rotation, each in its own
+committed transaction. A real process crash between them left a durable,
+insecure resting state -- the new Telegram owner active while the old
+(compromised) opaque credential was still valid -- until a manual retry
+closed the gap. `process_rebind()` now rotates the credential first for
+`COMPROMISE`, so that specific resting state can never occur.
+
+`tests/test_ownership_rebind_compromise_crash.py`, 5 passed, is the durable
+regression evidence: a transaction-boundary proof (credential rotation
+survives a fresh connection to the same on-disk file with the identity step
+never touched), a real crash simulation at the credential-rotation/identity-
+mutation boundary (connection closed mid-sequence, a *fresh* `Database()`
+opened against the same file inspects durable state, confirms the forbidden
+combination never holds, then a retry from that fresh process completes the
+operation with no second rotation), a crash-before-any-step case, a
+crash-after-both-steps-before-finish case, and a fault injection directly
+inside the real `process_rebind()` (not a hand-replayed sequence) that
+raises exactly at the identity-mutation call and confirms the same
+invariant holds. Reverting the ordering was confirmed to make the fault-
+injection test fail (verified by temporarily reintroducing the old order
+and observing the expected failure, then restoring the fix) -- the test is
+proven to actually catch the regression it guards against.
+
+Full regression after the fix: `792 passed, 3 skipped`. The real isolated
+Marzban 0.8.4 gate was re-run against the new ordering and passed all 12
+checks unchanged (ownership rebind never calls Marzban, so the fix could
+not have affected that evidence, but it was re-confirmed rather than
+assumed).
 
 Full regression: `787 passed, 3 skipped`.
 

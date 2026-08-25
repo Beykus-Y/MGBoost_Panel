@@ -8,10 +8,13 @@ that is an out-of-band admin decision -- it only durably, atomically and
 idempotently executes one already-decided rebind.
 
     prepare()  -- validated, capability-gated, idempotent-insert request
-    process_rebind() -- claim -> atomic identity mutation (old REVOKED,
-        new ACTIVE, in the same transaction PH3-01's own schema already
-        makes exclusive) -> for COMPROMISE only, PH2-01 credential rotation
-        -> finish
+    process_rebind() -- claim -> for COMPROMISE only, PH2-01 credential
+        rotation *first* -> atomic identity mutation (old REVOKED, new
+        ACTIVE, in the same transaction PH3-01's own schema already makes
+        exclusive) -> finish. Credential rotation runs before the identity
+        swap specifically so a crash between the two durable steps can
+        never leave "new owner active while the compromised credential is
+        still active" -- see the ordering note on `process_rebind` itself.
 
 Ownership rebind is emphatically not a device rebind: it never calls
 `src/child_lifecycle.py`'s REVOKE/FREE/REBIND, never touches
@@ -339,10 +342,25 @@ class OwnershipRebindStore:
 # --- orchestration -----------------------------------------------------------
 
 def process_rebind(db, operation_id: str, *, worker_id: str, now: int) -> dict | None:
-    """Claim -> atomic identity mutation -> (COMPROMISE only) PH2-01
-    credential rotation, with abandon+reissue on a lost-response retry ->
-    finish. Every step is independently idempotent, so a crash/retry at any
-    point converges safely without a second rotation or a reactivated old
+    """Claim -> (COMPROMISE only) PH2-01 credential rotation first -> atomic
+    identity mutation -> finish.
+
+    Ordering is deliberate and security-load-bearing, not incidental: for
+    COMPROMISE, the old opaque credential is revoked *before* the new
+    Telegram owner is ever activated. Each step is its own durable SQLite
+    transaction, so a crash between them is possible -- but because
+    credential rotation runs first, the only resting states a crash can
+    leave are (a) old owner still active, old credential already revoked
+    (an availability gap for the legitimate old owner, closed by the next
+    retry) or (b) both steps done. It can never leave "new owner active
+    while the compromised credential is still active" -- the one outcome
+    this module must never produce, since that would mean whoever holds
+    the compromised token keeps working after the account has already been
+    handed to someone else. ORDINARY mode has no credential step, so
+    ordering is moot for it; only the identity mutation runs.
+
+    Every step is independently idempotent, so a crash/retry at any point
+    converges safely without a second rotation or a reactivated old
     credential."""
     from .subscription_credentials import SubscriptionCredentialConflict
 
@@ -350,13 +368,13 @@ def process_rebind(db, operation_id: str, *, worker_id: str, now: int) -> dict |
     if claimed is None:
         return None
     try:
-        row = db.ownership_rebind.apply_identity_mutation(operation_id, worker_id=worker_id, now=now)
-        if row["mode"] == "COMPROMISE" and row["new_credential_id"] is None:
-            account_id = row["account_id"]
+        if claimed["mode"] == "COMPROMISE" and claimed["new_credential_id"] is None:
+            account_id = claimed["account_id"]
+            actor_ref = claimed["actor_ref"]
             prepare_key = f"ownership-rebind-credential-{operation_id}"
             try:
                 prepared = db.subscription_credentials.prepare(
-                    account_id=account_id, actor_ref=row["actor_ref"],
+                    account_id=account_id, actor_ref=actor_ref,
                     reason=f"ownership rebind compromise: {operation_id}",
                     idempotency_key=prepare_key, now=now,
                 )
@@ -374,11 +392,11 @@ def process_rebind(db, operation_id: str, *, worker_id: str, now: int) -> dict |
                 if pending:
                     db.subscription_credentials.revoke(
                         credential_id=pending["id"], account_id=account_id,
-                        reason_code="ABANDONED_PENDING", actor_ref=row["actor_ref"],
+                        reason_code="ABANDONED_PENDING", actor_ref=actor_ref,
                         idempotency_key=f"{prepare_key}-abandon", now=now,
                     )
                 prepared = db.subscription_credentials.prepare(
-                    account_id=account_id, actor_ref=row["actor_ref"],
+                    account_id=account_id, actor_ref=actor_ref,
                     reason=f"ownership rebind compromise reissue: {operation_id}",
                     idempotency_key=f"{prepare_key}-retry", now=now,
                 )
@@ -388,7 +406,7 @@ def process_rebind(db, operation_id: str, *, worker_id: str, now: int) -> dict |
             ).fetchone()
             activated = db.subscription_credentials.activate(
                 credential_id=prepared["id"], account_id=account_id,
-                expected_generation=prepared["generation"], actor_ref=row["actor_ref"],
+                expected_generation=prepared["generation"], actor_ref=actor_ref,
                 idempotency_key=f"ownership-rebind-activate-{operation_id}", now=now,
             )
             db.ownership_rebind.record_credential_rotation(
@@ -396,6 +414,7 @@ def process_rebind(db, operation_id: str, *, worker_id: str, now: int) -> dict |
                 old_credential_id=old_active["id"] if old_active else None,
                 new_credential_id=activated["id"], now=now,
             )
+        db.ownership_rebind.apply_identity_mutation(operation_id, worker_id=worker_id, now=now)
         return db.ownership_rebind.finish(operation_id, worker_id=worker_id, now=now)
     except Exception as exc:
         db.ownership_rebind.record_error(operation_id, error_class=type(exc).__name__, now=now)
