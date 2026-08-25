@@ -1,16 +1,189 @@
 # AGENT_HANDOFF — PH4-03 (crash-safe, update after every major checkpoint)
 
-Updated: 2026-08-26, mid-PH4-03: internal cohort proven, reviewed DIRECT
-enrollment/Stars/external-payment foundation added (additive, dormant, no
-route wiring), still awaiting owner-authorized real DIRECT/Stars and
-DIRECT/external-payment candidate identities.
+Updated: 2026-08-26, later same day: real DIRECT/EXTERNAL_PAYMENT cohort
+enrolled on production for 2 real customers (`cohort-2 account #3`, `cohort-2 account #4`).
+Real migration is now blocked on a precise, well-understood prerequisite gap
+(no `mgboost_subscriptions`/plan for unproven-tariff DIRECT accounts -- see
+below), not on missing candidates. TELEGRAM_STARS cohort is an owner-approved
+`N/A` exception (zero real Stars purchases ever existed).
 
 ## HEAD / git status
 
-- HEAD after this session's commit (see `git log -1`); pushed to
-  `origin/main`, deployed to production (pull + `mgboost-panel` restart),
-  production HEAD verified to match.
+- HEAD after this session's commits (see `git log -1`, currently `b31e3a1`);
+  pushed to `origin/main`, deployed to production (pull + `mgboost-panel`
+  restart), production HEAD verified to match.
 - Working tree clean except pre-existing untracked `extra_configs.json`.
+
+## THIS SESSION (part 2): real DIRECT/EXTERNAL_PAYMENT cohort + owner decisions
+
+Owner supplied 3 authoritative product decisions this session:
+1. All real legacy paying users historically paid the owner directly, never
+   Stars; record this as `OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT` with no
+   invented amount/date/reference.
+2. Zero real Stars purchases ever existed in production; TELEGRAM_STARS
+   cohort = owner-approved `N/A` exception, not a failure, must be
+   documented, not silently skipped.
+3. Reuse the existing bot Telegram-linkage flow (`tg_users`/`bot_support.py`,
+   the `waiting_link` state that resolves a pasted subscription URL to a
+   `marzban_username` via `marzban.get_username_for_token` then calls
+   `db.save_tg_user(message.from_user.id, username)`) instead of building a
+   second mechanism. That flow proves POSSESSION of the subscription link,
+   not ownership by itself (confirmed by reading it: `save_tg_user` will
+   happily rebind a username to a different Telegram ID with no ownership
+   check at all -- this is exactly why the excluded ambiguous-ownership legacy account has two conflicting
+   `tg_users` rows). PH2-05's "HWID/URL is not ownership proof" rule is
+   therefore NOT weakened: `enroll_direct_account()` treats a bot-linked
+   mapping as evidence only when combined with owner review/attestation, and
+   now cross-checks it defensively (new `TelegramMappingConflict`/ambiguity
+   checks, see below).
+
+### Code changes (commit `b31e3a1`)
+
+- `src/legacy_payment_attestation_schema.py` (new) — additive
+  `mgboost_owner_attested_legacy_payments` table + immutability triggers +
+  a validate trigger requiring an already-reviewed DIRECT account. Its own
+  `MIGRATION_ID`/checksum, parented on `direct_enrollment_schema`'s
+  checksum. Deliberately NOT a change to `mgboost_payment_records` --
+  that table's CHECK constraints are already checksum-locked by the
+  deployed PH3-09 migration (`apply_provenance_schema` would raise
+  `RuntimeError` on every future startup if that file's `_SCHEMA_STATEMENTS`
+  were edited in place). This is the general rule for ALL of this project's
+  schema files, not just this one: never edit an already-shipped
+  `_SCHEMA_STATEMENTS` tuple; add a new sibling migration instead.
+- `src/direct_enrollment.py`:
+  - `DirectEnrollmentStore.record_owner_attested_legacy_payment()` — no
+    caller-supplied idempotency key; the natural key is `account_id` itself
+    (at most one attestation per account, `UNIQUE(account_id)` in schema
+    too). Same full payload (decision_ref/note/evidence) twice ->
+    idempotent, same row returned. Different payload for an account that
+    already has one -> `OwnerAttestationConflict`, nothing changed. Also
+    writes a `mgboost_entitlement_mutations` row
+    (`operation='OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT'`,
+    `mutation_source='MANUAL_PAYMENT'`, `payment_channel='EXTERNAL_PAYMENT'`
+    -- already an allowed combination in `ProvenanceStore`, no schema
+    change needed there) so it appears in the same canonical audit trail as
+    every other provenance mutation, even though it lives in a sibling
+    table rather than `mgboost_payment_records`.
+  - `enroll_direct_account()` now cross-checks `tg_users` before accepting
+    `PROVEN`: more than one distinct Telegram ID already linked to this
+    legacy username -> `AmbiguousOwnershipRejected`; caller asserts a
+    Telegram ID that contradicts the single bot-recorded one ->
+    `TelegramMappingConflict` (new exception). Both fail closed, zero
+    writes. If `tg_users` has no row at all for the username, no
+    cross-check is possible and enrollment proceeds on the caller's
+    evidence alone, same as before.
+- `tests/test_direct_enrollment.py`: +9 tests covering all of the above
+  (owner-attested no-fabricated-data, idempotent retry, conflicting details
+  rejected, requires-reviewed-account, bot-mapping-reused-not-duplicated,
+  conflicting-bot-mapping-fails-closed, ambiguous-two-Telegram-IDs-fails-
+  closed, Stars validation unchanged, new schema idempotent). Total in this
+  file: 25 passed. Full regression: `851 passed, 3 skipped` (zero
+  regressions from the 842 baseline).
+- Deployed: encrypted backup+restore-verified BEFORE the schema change
+  (`scripts/secure_db_backup.py`, PASS/PASS), fast-forward pull, minimal
+  restart, post-deploy `quick_check=ok`, 0 FK violations, only the new
+  table appeared (all other cardinalities identical), no journal errors.
+
+### Real production DIRECT/EXTERNAL_PAYMENT enrollment — DONE
+
+Candidates were the 2 identified in this session's earlier read-only
+discovery (only 2 users in all of production have unambiguous, evidenced
+Telegram ownership outside the excluded/internal set): `cohort-2 account #3`
+(account id 3) and `cohort-2 account #4` (account id 4).
+
+Pre-mutation re-verification (fresh, same session, immediately before
+running): both still `active` in Marzban, same `expire` as discovery,
+`tg_users` still exactly one distinct Telegram ID each (unchanged from
+discovery), `tickets` corroborates `cohort-2 account #4`, no pre-existing
+`mgboost_accounts`/alias/review/payment row for either, no Stars invoices
+for either username. Zero drift, zero conflict -- proceeded.
+
+Method: a short-lived root-only script (`/root/ph4_03_direct_cohort_enroll.py`,
+0700, deleted immediately after use -- same discipline as account 1's
+session), first dry-run-verified against a real downloaded COPY of the
+production DB (caught and fixed a real bug: the script's first production
+run used the wrong `DATA_DIR`/cwd and would have created/touched a stray
+`/root/data/db.sqlite3` instead of the real database -- this was caught
+before it mattered, verified the real production DB was untouched, deleted
+the stray file, and re-ran with `cd /opt/MGBoost_Panel` so `DATA_DIR=./data`
+resolved correctly, exactly matching the real service's own
+`WorkingDirectory`). Real run: called `enroll_direct_account()` then
+`record_owner_attested_legacy_payment()` for each username, via
+`db.primary_admin_authority.authorize_session()` using the real
+`PRIMARY_MGBOOST_ADMIN_LOGIN` from production `.env`.
+
+Result: 2 new `ACTIVE` `DIRECT` accounts (ids 3/4), 1 reviewed alias each
+(`EVIDENCE_PROVEN`), 1 Telegram `OWNER` identity each linked via the
+existing `AccountStore.link_telegram_owner` (reusing, not duplicating, the
+bot's own `tg_users` mapping), 1 `mgboost_owner_attested_legacy_payments`
+row each (no invented amount/date/reference). `mgboost_legacy_bridge_bindings`
+unchanged (still 1 row, only account 1) -- these enrollments are additive
+and dormant, zero effect on live legacy traffic. Post-mutation verification:
+real Marzban `cohort-2 account #3`/`cohort-2 account #4` completely unchanged (`active`,
+same `expire`), `quick_check=ok`, 0 FK violations, all 4 services active.
+
+### TELEGRAM_STARS cohort — owner-approved N/A exception
+
+Zero real successful Stars purchases exist in production history. The only
+2 `stars_invoices` rows ever created are both `refunded` test canaries for
+the excluded ambiguous-ownership legacy account. Per owner decision: this is documented as
+`N/A -- no real production population existed at PH4-03`, not silently
+skipped and not faked. No artificial purchase was created, no real user was
+asked to buy Stars to satisfy this phase. The Stars code path
+(`record_stars_payment`/`process_direct_stars_enrollment`) remains fully
+covered by focused tests. **The first real successful Stars purchase after
+launch requires its own real canary gate before any wider Stars rollout --
+this is a standing requirement, not yet satisfied by anything in this
+session.**
+
+### THE one remaining PH4-03 acceptance blocker: real migration on a DIRECT account
+
+Not a missing candidate, not a missing mechanism gap in the enrollment
+code -- a genuine architectural prerequisite gap discovered this session:
+
+`resolve_account_device()` (the shared PH2-01/PH4-01 tail that
+`process_migration_bridge_request` ultimately calls) calls
+`db.parent_sync.refresh_desired_state(account_id)`, which raises
+`ParentSyncError("account has no subscription to derive entitlement from")`
+if the account has no `mgboost_subscriptions` row --
+`mgboost_subscriptions.current_plan_version_id` is `NOT NULL` unless
+`status='UNKNOWN_LEGACY'`. That exception is caught as a generic
+`Exception` -> `OUTCOME_INTERNAL_ERROR`, which is **not** in
+`_FALL_THROUGH_OUTCOMES` -- so `_try_legacy_bridge()` in `routes/sub.py`
+would NOT fall through to the normal legacy response; it would return a
+fail-closed error response instead.
+
+`enroll_direct_account()` deliberately does not create a
+`mgboost_subscriptions`/`mgboost_plan_versions` row, because doing so would
+require declaring a device_limit/WL mode for `cohort-2 account #3`/`cohort-2 account #4`'s
+historical (unproven-tariff, legacy-Marzban-never-enforced-a-device-cap)
+plan -- exactly the invented catalog tariff the owner explicitly forbade
+this session ("Не назначать новый catalog tariff, если исторический tariff
+не доказан").
+
+Critically, this is NOT a risk that a synthetic-canary-only device
+sidesteps: `LegacyBridgeStore.resolve_account_for_legacy_username()` is
+username-level, not per-device -- the moment an `enabled=1`
+`mgboost_legacy_bridge_bindings` row exists for one of these accounts (and
+`LEGACY_BRIDGE_ENABLED` is already `1` globally in production), the
+customer's OWN real device would hit the exact same missing-subscription
+path on its very next ordinary legacy `/sub` request and get the fail-closed
+error too -- a real outage for a real paying customer, not a contained
+canary risk. So no bridge binding was created for either account, and no
+migration/revoke/rebind was attempted.
+
+This is precisely PH4-08's own scope ("Preserve legacy manual/
+external-payment subscriptions... plan/conditions... ambiguous provenance
+получает UNKNOWN_LEGACY", depends on "authoritative payment/admin
+evidence" -- now available via this session's owner attestation) and was
+correctly out of this session's scope, not something to improvise around.
+
+Real PH2-05 ownership rebind on a non-internal account was likewise not
+attempted (per owner instruction: existing focused integration tests +
+account 1's real production mechanism proof are sufficient; do not mutate
+a real customer's Telegram identity solely to check a box).
+
+## PH4-03 verdict this session: remains `[~]`
 
 ## THIS SESSION: reviewed DIRECT enrollment/payment foundation (additive, dormant)
 
@@ -80,7 +253,7 @@ new empty tables.
 ### NOT done by this session
 
 - No real DIRECT account, alias, review, Stars payment or external payment
-  was created anywhere, including production. `client_buy_1` (or any other
+  was created anywhere, including production. the excluded ambiguous-ownership legacy account (or any other
   real paying legacy user) was NOT touched or enrolled.
 - PH5-09 itself (manual-payment-driven renewal/plan changes) is intentionally
   NOT implemented — only its low-level `EXTERNAL_PAYMENT`/`MANUAL_PAYMENT`
@@ -187,41 +360,24 @@ which exercise the real `process_rebind()` orchestration end-to-end.
 - No other account has a binding. `OPAQUE_SUBSCRIPTION_ENABLED=False`,
   `PH3_04_ENFORCEMENT_MODE=OFF` unchanged.
 
-## NOT yet done
+## NOT yet done (superseded by "THIS SESSION (part 2)" above — kept for history)
 
-### Cohorts 2 and 3: "several DIRECT/Stars" + "several DIRECT/external-payment" real subscriptions
+Cohorts 2/3 candidate selection is DONE (`cohort-2 account #3`/`cohort-2 account #4`,
+enrolled as reviewed DIRECT/`EXTERNAL_PAYMENT`, see above). What remains is
+the single architectural blocker documented above (`mgboost_subscriptions`/
+plan prerequisite for real migration), not a candidate-identity gap.
 
-**Blocker per user's own explicit instruction: do not guess a real external
-paying user.** There is currently no reviewed/vetted list of real
-production DIRECT/Stars or DIRECT/external-payment subscribers available to
-this agent session that would let it safely select specific real
-candidates without guessing. Production today has only two real accounts:
-account 1 (INTERNAL, just canaried above) and account 2 (INTERNAL,
-`DISABLED`, PH3-08's own throwaway canary — not a real paying user either).
+### Remaining accept-criteria items — updated
 
-**Exact requirement to unblock this**: the owner must supply (or point to
-an already-existing reviewed source for) at least one real, currently
-active legacy Marzban username to enroll as a reviewed DIRECT account for
-the Stars cohort, and at least one more for the external-payment cohort,
-with explicit owner authorization to enroll it and observe a real
-migration. As of this session, the reviewed-enrollment pipeline itself
-already exists and is tested (`db.direct_enrollment.enroll_direct_account()`
-/ `process_direct_stars_enrollment()` / `record_external_payment()`, see
-above) — what's still missing is the owner-authorized real identity to run
-it against, and then a bridge binding + `LEGACY_BRIDGE_ENABLED` migration
-exactly as done for account 1. Until that identity is supplied, this agent
-will not enroll, create a binding, or attempt a migration for any real
-non-internal account.
-
-### Remaining accept-criteria items once real DIRECT/Stars/external-payment cohorts are authorized
-
-- Real PH3-05 device revoke on a real (not synthetic) representative
-  client's device.
-- Real PH2-05 admin ownership rebind proof, if the owner wants it performed
-  live (currently only test-proven, see item 2 above) — same
-  invasiveness caveat as for account 1.
-- metrics/support runbook (ROADMAP's own accept line mentions this — not
-  yet drafted; low effort, can be done alongside docs finalization).
+- Real device migrate/revoke/rebind on a non-internal account: **blocked**
+  on the subscription/plan prerequisite gap above (PH4-08 territory) —
+  requires an owner product decision on device_limit/WL semantics for
+  unproven-tariff legacy accounts before it can proceed safely.
+- Real PH2-05 admin ownership rebind proof on a non-internal account: not
+  attempted, per owner instruction that existing focused tests + account
+  1's real mechanism proof are sufficient.
+- metrics/support runbook (ROADMAP's own accept line mentions this — still
+  not drafted).
 
 ## Known non-blocking backlog
 
@@ -232,24 +388,34 @@ non-internal account.
 ## Explicitly NOT started
 
 PH4-04 (opaque URL rollout), PH4-05 (grace), PH4-06 (production legacy
-revoke), mass migration, PH5+.
+revoke), PH4-08 (legacy plan/device-capacity preservation — now the actual
+blocker), PH5-09, mass migration, PH5+.
 
 ## Exact next step if resumed
 
-1. Ask the owner (or find, if a reviewed list already exists somewhere
-   this agent hasn't checked) for the specific real DIRECT/Stars and
-   DIRECT/external-payment account identities to use for cohorts 2 and 3.
-2. Once supplied: re-verify each candidate's current production state first
-   (status, existing child, payment channel) before creating any binding —
-   same discipline as was used for account 1 in this session.
-3. Repeat the exact same controlled-canary methodology used for account 1:
-   new synthetic HWID on a free slot (never the customer's real live
-   device) for the first proof, `LEGACY_BRIDGE_ENABLED` is already `1`
-   globally (no further flag change needed), just per-account binding
-   creation.
-4. After both remaining cohorts are proven: update `ROADMAP.md` PH4-03 to
-   `[x]`, `CHANGELOG.md`, write/confirm `docs/PHASE4_INTERNAL_CANARY.md` (or
-   similar), commit, push, verify production HEAD parity, final report.
-5. If quota runs out before an owner response arrives: this file plus
+1. This is now a product decision, not a data-gathering task: ask the owner
+   how device_limit/WL semantics should be set for a reviewed DIRECT
+   account whose historical legacy tariff is unproven (legacy Marzban never
+   enforced a device cap at all) — e.g. an explicit `UNLIMITED` device
+   plan to literally preserve legacy behavior, vs. drafting PH4-08 properly
+   first. Do not invent an answer unilaterally.
+2. Once decided: implement the minimal piece needed (likely a small
+   addition to `DirectEnrollmentStore.enroll_direct_account()` or a
+   dedicated PH4-08 module) that creates a `mgboost_subscriptions` +
+   `mgboost_plan_versions` row consistent with that decision, for the 2
+   already-enrolled accounts (ids 3/4) — do NOT re-enroll them, they
+   already exist and are reviewed.
+3. Only then create `mgboost_legacy_bridge_bindings` for account 3 first
+   (enabled=1), re-verify current production state immediately before, and
+   watch the very next real legacy `/sub` request for that username
+   (should now migrate transparently instead of failing closed) — same
+   "prove on `cohort-2 account #3` first, then `cohort-2 account #4`" order the owner
+   already specified.
+4. After both are proven migrated (and revoke/FREE proven on a synthetic
+   device the same way account 1's canary was), update `ROADMAP.md` PH4-03
+   to `[x]`, `CHANGELOG.md`, commit, push, verify production HEAD parity,
+   final report.
+5. If quota runs out before an owner decision arrives: this file plus
    `git diff`/`git log` is sufficient for a fresh agent to resume exactly
-   from "waiting on real external cohort candidate identities."
+   from "waiting on owner's device/WL semantics decision for unproven-tariff
+   DIRECT accounts."
