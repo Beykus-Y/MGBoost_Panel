@@ -1,0 +1,14 @@
+/var/log/nginx/mgboost-sensitive-access.log
+{
+	daily
+	missingok
+	rotate 30
+	compress
+	delaycompress
+	notifempty
+	create 0600 www-data root
+	sharedscripts
+	postrotate
+		invoke-rc.d nginx rotate >/dev/null 2>&1
+	endscript
+}

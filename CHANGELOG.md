@@ -15,6 +15,10 @@
 
 ## Unreleased
 
+### Security
+
+- PH1-09 (new, closed `[x]`): narrowed `/var/log/nginx/mgboost-sensitive-access.log` from world-readable `0644` to `0600`, at the source rather than just the current inode -- the generic `/etc/logrotate.d/nginx` glob was narrowed to exclude it (avoiding a double-rotation hazard), and a new dedicated `/etc/logrotate.d/mgboost-sensitive-nginx` stanza recreates it at `0600` on every future rotation, 30-day retention unchanged (DL-042). The file's *content* was already fully redacted by the pre-existing `mgboost_sensitive` nginx log format (no raw bearer ever appeared in it); only the file mode was more permissive than necessary. Verified via a real forced rotation, two real production requests, and an unrelated local identity correctly denied read access. Discovered as a residual during the PH4-01 valid-`/sub` gate; does not reopen PH4-01 or PH1-06. See `ROADMAP.md` PH1-09 and `docs/PHASE1_SENSITIVE_LOG_PERMISSIONS.md`.
+
 - PH4-01 closed `[x]`. The last remaining evidence gate -- a genuine valid production legacy `/sub` pre/post proof -- was obtained safely: the raw legacy token was read transiently through the already-existing typed `legacy.user.get` broker capability (no new endpoint, no logs/backups/quarantine extraction), used once for a real `GET /sub/{token}` request, and never written to disk/stdout by this session. Result: `HTTP 200`/`no-store`, legacy status/expiry/UUID verifier unchanged before and after, 0 unexpected Shadowsocks, no child credential mixed into the response, and full masked production cardinality/flags (`LEGACY_BRIDGE_ENABLED=False`, `OPAQUE_SUBSCRIPTION_ENABLED=False`, zero bridge bindings) unchanged. No migration, bridge activation or credential mutation occurred. See `ROADMAP.md` PH4-01 for exact evidence.
 
 ### Security
