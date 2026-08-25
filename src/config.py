@@ -61,3 +61,15 @@ ADMIN_LOGIN_RATE_IP_FAILURES = int(os.getenv("ADMIN_LOGIN_RATE_IP_FAILURES", "20
 SHADOW_RESOLVER_ENABLED = os.getenv("SHADOW_RESOLVER_ENABLED", "0").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# PH3-04 HWID fail-closed compatibility gate (src/hwid_gate.py, src/compat_registry.py).
+# Dormant: no legacy route or resolver imports src/hwid_gate.py, so this flag
+# currently has no runtime effect at all -- it exists only so a future,
+# separately approved caller (the PH4 migration path) has a staged rollout
+# knob instead of a single on/off switch. OFF is the only production value
+# in scope for PH3-04 itself.
+#   OFF      - default; identical to "the gate does not exist".
+#   CANARY   - reserved for a future explicitly-scoped, non-global evaluation.
+#   ENFORCE  - reserved for the future migration window; never set in PH3-04.
+PH3_04_ENFORCEMENT_MODE = os.getenv("PH3_04_ENFORCEMENT_MODE", "OFF").strip().upper()
+if PH3_04_ENFORCEMENT_MODE not in {"OFF", "CANARY", "ENFORCE"}:
+    PH3_04_ENFORCEMENT_MODE = "OFF"

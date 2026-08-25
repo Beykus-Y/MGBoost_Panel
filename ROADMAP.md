@@ -471,12 +471,15 @@ and are not eligible for completion.
 
 The first post-effect comparison intentionally stopped because Marzban 0.8.4 mints a new timestamped `UserResponse.subscription_url` alias on serialization; source inspection proved old aliases remain valid until `sub_revoked_at`, so this volatile admin presentation is not rotation. A second over-strict diagnostic correctly stopped because PH1-06 stores 45 `sha256:` token verifiers, not recoverable bearers. The corrected gate compares those verifier rows plus Marzban `created_at/sub_revoked_at` and functional configs. Final pre/post digests match for 25 legacy identities/configs, 45 token refs, 71 device rows, 71 HWID locks and three Stars tariffs. Actual MGBoost legacy `/sub` returned the same source UUID in 37 functional VLESS links with `no-store`; signed Filin returned 200/unsigned 401, admin/LK returned 200, broker/nginx/systemd/SQLite passed. Legacy UUID/token/URL/HWID/expiry/tariff/forced reconfiguration/unexpected config changes: 0. No resolver switch, revoke, PH3-04 or other account/device/child mutation occurred.
 
-## [ ] PH3-04 — HWID fail-closed compatibility gate
+## [~] PH3-04 — HWID fail-closed compatibility gate
 
 **Depends:** PH3-02/03, PH3-07 telemetry, implementation readiness of fixed admin-only ownership recovery in PH2-05. Product policy OPD-39 закрыта.
 **Policy:** нет supported HWID -> config не выдавать; unknown+free -> assign; full -> clear refusal; known -> same slot/generation. HWID остаётся practical, не cryptographic identity.
 **Accept/tests:** compatibility list опубликован; каждый client/version, missing/spoofed/copied HWID, reinstall/device rebind; HWID не принимается как proof Telegram ownership.
 **Rollback:** staged feature flag только в migration window; не unlimited silent bypass.
+**Implemented/staging verified 2026-08-25 (DL-047 accelerated conservative allowlist):** `src/compat_registry.py` is a git-tracked, schema-validated, exact-match-only `(client, version, platform)` allowlist (no fuzzy/substring matching, no raw identifiers); only tuples with fresh organic-live PH3-07 evidence are `SUPPORTED`, everything else -- including `UNKNOWN` -- is treated as not compatible. `src/hwid_gate.py` is a dormant deterministic policy layer that accepts only an already-resolved `account_id` plus request-derived client/HWID signals (no caller-suppliable slot id, generation, child identity or Telegram proof) and reuses the existing PH3-02 `DeviceSlotStore.claim` verbatim -- no new provisioning path, no new schema. PH2-05 itself has not started and has no ownership-recovery route to misuse; tests prove zero coupling to `mgboost_telegram_identities`/`mgboost_accounts` mutation on every decision path. Neither module is imported by `src/routes/sub.py` or any other legacy route; `PH3_04_ENFORCEMENT_MODE` defaults to `OFF` and currently has no runtime effect. Full compatibility matrix, evidence and design: `docs/PHASE3_HWID_GATE.md`.
+**Tests:** `tests/test_compat_registry.py` (14 passed) and `tests/test_hwid_gate.py` (29 passed) cover exact/unknown/spoofed compatibility, missing/malformed HWID denial, known-HWID idempotency, exact 3/6/12 and INTERNAL-unlimited capacity, full-capacity refusal without eviction, same-HWID and different-HWID concurrency, cross-account HWID deny, copied-HWID same-account practical-identity limitation, no caller-suppliable slot/generation, stale-generation non-reactivation, reinstall with free/full slots and zero ownership/child/outbox mutation on every path. Full regression: `631 passed, 3 skipped`. An isolated gate against a `.backup`-consistent copy of the live production DB (never the live file, securely deleted after) reran all of the above directly against the real schema and the real approved canary account's entitlement row with `ALL_PASS`, including proof that every pre-existing production row stayed byte-identical.
+**Осталось до `[x]`:** production deploy/evidence gate (see below).
 
 ## [ ] PH3-05 — Real child revoke/disable/free/rebind
 
@@ -1596,6 +1599,16 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Кто:** пользователь.
 - **Почему:** production имеет 0 Shadowsocks inbound, а 25/25 реальных legacy subscriptions уже содержат только VLESS; dormant metadata блокировала безопасный Marzban 0.8.4 child create, не давая пользователю работающего доступа.
 - **Связано:** PH3-03/04, `src/shadowsocks_retirement.py`, `scripts/retire_shadowsocks_metadata.py`, `docs/SHADOWSOCKS_RETIREMENT.md`.
+
+## DL-047 — PH3-04 accelerated conservative compatibility allowlist
+
+- **Дата:** 2026-08-25.
+- **Вопрос:** PH3-07 ранее блокировал PH3-04 требованием представительного статистического окна наблюдения (ROADMAP: "the sample is still too small and biased for fail-closed"); владелец теперь ограничен по срокам и явно просит не ждать многодневного окна.
+- **Варианты:** (a) продолжать ждать длительное статистическое окно; (b) включить fail-closed для всех клиентов сразу, объявив `UNKNOWN` эквивалентом `SUPPORTED`; (c) не ждать репрезентативной выборки, но и не расширять доверие — принять **только** exact `(client, version, platform)` tuples с положительным organic-live evidence как `SUPPORTED`, оставить всё остальное (включая `UNKNOWN`) недоверенным, отложить фактическую активацию fail-closed до отдельного staged migration window.
+- **Выбрано:** (c). Это не отменяет прежнюю честную оценку "sample мал и biased" — она остаётся исторически верной для целей статистической репрезентативности. Новая стратегия просто не требует репрезентативности: конкретная supported-запись не является утверждением "весь этот client reprezentative", а лишь утверждением "у нас есть подтверждённое живое свидетельство именно для этой tuple". `docs/PHASE3_HWID_GATE.md` содержит versioned registry и его источники.
+- **Кто:** пользователь (ограничение по срокам), реализация — исполнитель.
+- **Почему:** нужен реальный прогресс к PH3-04 без ожидания multi-day soak, но без ослабления security bar — только exact-evidence allowlist, никакого fuzzy match, никакого "unknown значит поддерживается".
+- **Связано:** PH3-04/07, `src/compat_registry.py`, `src/hwid_gate.py`, `docs/PHASE3_HWID_GATE.md`.
 
 # Contradictions and migration hazards
 
