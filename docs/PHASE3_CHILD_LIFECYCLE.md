@@ -193,6 +193,40 @@ additionally performed in this session; the evidentiary bar used here
 matches every other PH3-0x gate in this project, which likewise treats a
 verified Marzban API reread as the ground truth for credential state.
 
+## Production canary gate (2026-08-25) -- PH3-05 closed `[x]`
+
+Before any production mutation, the `child.user.revoke` broker operation's
+authorization model was reviewed (see `tests/test_child_lifecycle_authorization_binding.py`,
+6 passed): PASS, no code change needed -- the real DB-bound authorization
+lives in `ChildLifecycleStore.claim()`, one layer above the intentionally
+stateless broker.
+
+A throwaway canary was created on a new, server-allocated slot 2 of the
+existing reviewed `INTERNAL_OWNER_PRIMARY` account (`account_id=1`), using
+its existing 10-device entitlement (only 1 of 10 slots was previously used,
+so no entitlement change was needed). The existing PH3-03/04 dormant canary
+(slot 1/generation 1/`mgc_sgg6v7t6he43yytsqmkdczzfpa`, its enabled shadow
+binding) was read-verified unchanged before, during and after every step,
+and no prepare/claim/mutation call ever targeted it.
+
+Full REVOKE -> FREE -> REBIND -> functional-check -> cleanup sequence ran
+against the real production broker/Marzban/worker (not a simulation):
+real `active -> disabled` + UUID rotation on revoke, confirmed by
+authoritative reread; idempotent duplicate revoke with zero re-rotation;
+free refused until revoke was confirmed, then succeeded, leaving a
+`RELEASED` tombstone with an `end_reason`; a second throwaway child on
+generation 2; rebind revoked it, swapped `generation 2 -> 3` in one atomic
+transaction, and handed off to the unmodified PH3-03 pipeline for exactly
+one new remote child (idempotent `EXISTING` on repeat, no generation 4 on a
+duplicate rebind request); the new credential was retrievable only via the
+resolver-only ephemeral capability, while the same typed reread of the
+just-revoked credential was denied. All three throwaway generations were
+then themselves revoked and freed, leaving zero active test credentials and
+a permanent tombstone history (no physical delete). A wrong-account revoke
+attempt and a terminal-operation reclaim attempt were both safely rejected
+using only throwaway data. Full evidence, exact masked cardinality and the
+security checks are recorded in `ROADMAP.md` PH3-05.
+
 ## Not in scope for PH3-05
 
 PH3-08 (parent-wide expiry/status propagation to all children), Phase 4,
