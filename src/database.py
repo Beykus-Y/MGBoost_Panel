@@ -42,6 +42,8 @@ from .provenance import ProvenanceStore
 from .provenance_schema import apply_provenance_schema
 from .migration_lifecycle_schema import apply_migration_lifecycle_schema
 from .migration_lifecycle import MigrationLifecycleStore
+from .direct_enrollment_schema import apply_direct_enrollment_schema
+from .direct_enrollment import DirectEnrollmentStore
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,9 @@ class Database:
         self.ownership_rebind = OwnershipRebindStore(self._conn, self._lock, self.primary_admin_authority)
         self.shadow_resolver_bindings = ShadowResolverBindingStore(self._conn, self._lock)
         self.migration_lifecycle = MigrationLifecycleStore(self._conn, self._lock, self.primary_admin_authority)
+        self.direct_enrollment = DirectEnrollmentStore(
+            self._conn, self._lock, self.accounts, self.primary_admin_authority
+        )
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -385,6 +390,7 @@ class Database:
         apply_ownership_rebind_schema(self._conn)
         apply_shadow_resolver_schema(self._conn)
         apply_migration_lifecycle_schema(self._conn)
+        apply_direct_enrollment_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
