@@ -14,11 +14,14 @@ from .legacy_contract import validate_username
 
 CHILD_OPERATION = "child.user.ensure"
 CHILD_OBSERVE_OPERATION = "child.user.observe"
+CHILD_REVOKE_OPERATION = "child.user.revoke"
 _CHILD_USERNAME_RE = re.compile(r"^mgc_[a-z2-7]{26}$")
 _OPERATION_ID_RE = re.compile(r"^op_[a-z2-7]{26}$")
+_LIFECYCLE_OPERATION_ID_RE = re.compile(r"^lc_[a-z2-7]{26}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERIFIER_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INBOUND_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
+LIFECYCLE_OPERATION_KINDS = frozenset({"REVOKE", "FREE", "REBIND"})
 
 
 def _canonical(value) -> bytes:
@@ -209,6 +212,62 @@ def validate_child_credentials_request(data: dict) -> dict:
         "expire": expire,
         "uuid_verifier": uuid_verifier,
     }
+
+
+def derive_lifecycle_operation_id(child_username: str, operation_kind: str) -> str:
+    validate_child_username(child_username)
+    if operation_kind not in LIFECYCLE_OPERATION_KINDS:
+        raise ValueError("invalid lifecycle operation kind")
+    return "lc_" + _base32_128(
+        hashlib.sha256(
+            f"mgboost-child-lifecycle-v1\0{operation_kind}\0{child_username}".encode()
+        ).digest()
+    )
+
+
+def validate_lifecycle_operation_id(value) -> str:
+    if not isinstance(value, str) or not _LIFECYCLE_OPERATION_ID_RE.fullmatch(value):
+        raise ValueError("invalid child lifecycle operation id")
+    return value
+
+
+def validate_child_revoke_request(data: dict) -> dict:
+    required = {"operation_id", "child_username", "uuid_verifier"}
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("invalid child revoke fields")
+    child_username = validate_child_username(data["child_username"])
+    operation_id = validate_lifecycle_operation_id(data["operation_id"])
+    if operation_id != derive_lifecycle_operation_id(child_username, "REVOKE"):
+        raise ValueError("operation id does not match child identity")
+    uuid_verifier = data["uuid_verifier"]
+    if not isinstance(uuid_verifier, str) or not _VERIFIER_RE.fullmatch(uuid_verifier):
+        raise ValueError("invalid child UUID verifier")
+    return {
+        "operation_id": operation_id,
+        "child_username": child_username,
+        "uuid_verifier": uuid_verifier,
+    }
+
+
+def build_revoke_payload(new_uuid: str, flow: str) -> dict:
+    """Disable the child and rotate its VLESS UUID in the same mutation, so
+    the old credential is unusable even if status handling ever changes."""
+    try:
+        normalized = str(uuid.UUID(new_uuid)).lower()
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("invalid replacement uuid") from exc
+    return {
+        "status": "disabled",
+        "proxies": {"vless": {"id": normalized, "flow": flow or ""}},
+    }
+
+
+def verify_revoked_child(user: dict, child_username: str) -> dict:
+    if not isinstance(user, dict) or user.get("username") != child_username:
+        raise ValueError("remote child identity mismatch")
+    if user.get("status") != "disabled":
+        raise ValueError("remote child is not disabled")
+    return {"username": child_username, "status": "disabled"}
 
 
 def credential_verifier(raw: str) -> str:

@@ -21,6 +21,7 @@ from .child_contract import (
     validate_child_credentials_request,
     validate_child_ensure_request,
     validate_child_observe_request,
+    validate_child_revoke_request,
 )
 from .marzban import MarzbanClient
 from .shadowsocks_retirement import validate_retirement_request
@@ -217,6 +218,14 @@ class ServiceMarzbanClient:
                 "child.user.observe", normalized
             )
         return self._broker().call("child.user.observe", normalized)
+
+    def revoke_child_user(self, request):
+        """Disable the child and rotate its VLESS UUID; server-resolved only."""
+        normalized = validate_child_revoke_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch("child.user.revoke", normalized)
+        return self._broker().call("child.user.revoke", normalized)
 
     def get_child_credentials(self, request):
         """Typed ephemeral credential reread; callers must never persist/log result."""

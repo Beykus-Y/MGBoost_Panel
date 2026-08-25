@@ -22,6 +22,8 @@ from .child_provisioning_schema import apply_child_provisioning_schema
 from .child_provisioning import ChildProvisioningStore
 from .child_workflow import ChildWorkflowStore
 from .child_workflow_schema import apply_child_workflow_schema
+from .child_lifecycle_schema import apply_child_lifecycle_schema
+from .child_lifecycle import ChildLifecycleStore
 from .shadow_resolver_schema import apply_shadow_resolver_schema
 from .shadow_resolver import ShadowResolverBindingStore
 from .device_slot_schema import apply_device_slot_schema
@@ -102,6 +104,7 @@ class Database:
         self.provenance = ProvenanceStore(self._conn, self._lock)
         self.child_provisioning = ChildProvisioningStore(self._conn, self._lock)
         self.child_workflow = ChildWorkflowStore(self._conn, self._lock)
+        self.child_lifecycle = ChildLifecycleStore(self._conn, self._lock)
         self.shadow_resolver_bindings = ShadowResolverBindingStore(self._conn, self._lock)
 
     def _create_tables(self):
@@ -360,6 +363,7 @@ class Database:
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
         apply_child_workflow_schema(self._conn)
+        apply_child_lifecycle_schema(self._conn)
         apply_shadow_resolver_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()

@@ -1,18 +1,24 @@
 """Typed allowlisted Marzban SUDO operations executed inside the broker."""
 
+import hmac
 import json
 import threading
 import time
+import uuid
 from urllib.error import HTTPError
 
 from .broker_protocol import BROKER_OPERATIONS
 from .child_contract import (
     build_child_payload,
+    build_revoke_payload,
+    credential_verifier,
     source_contract_hash,
     validate_child_ensure_request,
     validate_child_observe_request,
     validate_created_child,
     validate_child_credentials_request,
+    validate_child_revoke_request,
+    verify_revoked_child,
     reread_child_credentials,
 )
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
@@ -202,6 +208,40 @@ class BrokerOperations:
                     request["child_username"], self._admin_token()
                 )
                 return reread_child_credentials(child, request)
+
+        if operation == "child.user.revoke":
+            request = validate_child_revoke_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                try:
+                    current = self.marzban.get_user(child_username, token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        return {"outcome": "ALREADY_ABSENT"}
+                    raise
+                if current.get("username") != child_username:
+                    raise ValueError("remote child identity mismatch")
+                if current.get("status") == "disabled":
+                    # Idempotent: a prior attempt already revoked this child
+                    # (e.g. lost local ACK); never re-mutate/re-rotate.
+                    return {"outcome": "ALREADY_REVOKED"}
+                try:
+                    current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    raise ValueError("remote child UUID is invalid") from exc
+                if not hmac.compare_digest(
+                    credential_verifier(current_uuid), request["uuid_verifier"]
+                ):
+                    raise ValueError("remote child UUID verifier mismatch")
+                new_uuid = str(uuid.uuid4())
+                flow = (current.get("proxies", {}).get("vless", {}) or {}).get("flow") or ""
+                self.marzban.modify_user(
+                    child_username, build_revoke_payload(new_uuid, flow), token
+                )
+                after = self.marzban.get_user(child_username, token)
+                verify_revoked_child(after, child_username)
+                return {"outcome": "REVOKED"}
 
         if operation == "maintenance.user.retire_shadowsocks":
             request = validate_retirement_request(data)

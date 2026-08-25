@@ -297,6 +297,146 @@ class DeviceSlotStore:
                 self._conn.rollback()
                 raise
 
+    def rebind(
+        self,
+        account_id: int,
+        slot_id: int,
+        expected_generation: int,
+        new_raw_hwid: str,
+        hmac_key: bytes | str,
+        *,
+        reason: str,
+        verifier_version: int = 1,
+        now: int | None = None,
+    ) -> dict:
+        """Atomically release the current ACTIVE generation of one specific
+        slot and claim the next generation on that exact same slot for a new
+        HWID -- never a different/newly-picked slot. Combining release+claim
+        in a single transaction avoids a TOCTOU race where an unrelated
+        concurrent claim() could grab the slot the instant it is freed.
+
+        The caller (PH3-05 lifecycle repository) must only call this after
+        the old remote child credential is durably confirmed revoked; this
+        method itself does not touch Marzban.
+        """
+        reason = str(reason or "").strip()
+        if not reason or len(reason) > 500:
+            raise DeviceSlotError("rebind reason is required and bounded")
+        verifier, masked = privacy_safe_hwid(new_raw_hwid, hmac_key)
+        if (isinstance(verifier_version, bool) or not isinstance(verifier_version, int)
+                or not 1 <= verifier_version <= 1_000_000):
+            raise InvalidHWID("HWID verifier version is invalid")
+        timestamp = int(time.time()) if now is None else int(now)
+        account_id = int(account_id)
+        slot_id = int(slot_id)
+        expected_generation = int(expected_generation)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                slot = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slots WHERE id=? AND account_id=?",
+                    (slot_id, account_id),
+                ).fetchone()
+                if not slot:
+                    raise StaleSlotGeneration("slot does not belong to account")
+
+                # Idempotent replay: the new generation was already created by
+                # a prior attempt for this exact new HWID -- converge, do not
+                # create a second (X+2) generation.
+                existing_next = self._conn.execute(
+                    "SELECT g.*,s.slot_kind,s.desired_state,s.observed_state "
+                    "FROM mgboost_device_slot_generations AS g "
+                    "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
+                    "WHERE g.slot_id=? AND g.generation=? AND g.status='ACTIVE'",
+                    (slot_id, expected_generation + 1),
+                ).fetchone()
+                if existing_next:
+                    if (
+                        existing_next["hwid_verifier_version"] != verifier_version
+                        or existing_next["hwid_verifier"] != verifier
+                    ):
+                        raise StaleSlotGeneration(
+                            "next generation already exists for a different HWID"
+                        )
+                    self._conn.commit()
+                    return self._slot_result(
+                        {
+                            "id": existing_next["slot_id"], "slot_number": existing_next["slot_number"],
+                            "slot_kind": existing_next["slot_kind"],
+                            "desired_state": existing_next["desired_state"],
+                            "observed_state": existing_next["observed_state"],
+                        },
+                        existing_next, result="EXISTING",
+                    )
+
+                if int(slot["current_generation"]) != expected_generation:
+                    raise StaleSlotGeneration("slot generation changed")
+                old_generation = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slot_generations "
+                    "WHERE slot_id=? AND account_id=? AND generation=? AND status='ACTIVE'",
+                    (slot_id, account_id, expected_generation),
+                ).fetchone()
+                if not old_generation:
+                    raise StaleSlotGeneration("active slot generation changed")
+
+                # Cross-account / cross-slot HWID isolation, same rule claim() enforces.
+                active_verifier_row = self._conn.execute(
+                    "SELECT account_id,slot_id FROM mgboost_device_slot_generations "
+                    "WHERE hwid_verifier_version=? AND hwid_verifier=? AND status='ACTIVE'",
+                    (verifier_version, verifier),
+                ).fetchone()
+                if active_verifier_row:
+                    if active_verifier_row["account_id"] != account_id:
+                        raise CrossAccountHWID(
+                            "active HWID verifier belongs to another account"
+                        )
+                    if active_verifier_row["slot_id"] != slot_id:
+                        raise DeviceSlotError(
+                            "HWID is already active on a different slot of this account"
+                        )
+
+                updated = self._conn.execute(
+                    "UPDATE mgboost_device_slot_generations "
+                    "SET status='RELEASED',ended_at=?,end_reason=? "
+                    "WHERE id=? AND status='ACTIVE'",
+                    (timestamp, reason, old_generation["id"]),
+                )
+                if updated.rowcount != 1:
+                    raise StaleSlotGeneration("active slot generation changed")
+
+                next_generation = expected_generation + 1
+                generation_cursor = self._conn.execute(
+                    "INSERT INTO mgboost_device_slot_generations "
+                    "(account_id,slot_id,slot_number,generation,hwid_verifier_version,"
+                    "hwid_verifier,hwid_masked,status,claimed_at) "
+                    "VALUES (?,?,?,?,?,?,?,'ACTIVE',?)",
+                    (
+                        account_id, slot_id, slot["slot_number"], next_generation,
+                        verifier_version, verifier, masked, timestamp,
+                    ),
+                )
+                updated = self._conn.execute(
+                    "UPDATE mgboost_device_slots SET current_generation=?,"
+                    "desired_state='ACTIVE',observed_state='ACTIVE',updated_at=?,"
+                    "row_version=row_version+1 "
+                    "WHERE id=? AND account_id=? AND current_generation=?",
+                    (next_generation, timestamp, slot_id, account_id, expected_generation),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("slot generation compare-and-set failed")
+                slot = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slots WHERE id=?", (slot_id,)
+                ).fetchone()
+                generation = self._conn.execute(
+                    "SELECT * FROM mgboost_device_slot_generations WHERE id=?",
+                    (generation_cursor.lastrowid,),
+                ).fetchone()
+                self._conn.commit()
+                return self._slot_result(slot, generation, result="REBOUND")
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def release(
         self,
         account_id: int,
