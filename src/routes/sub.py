@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from ..device_headers import extract_device_metadata
 from ..config import DEVICE_SLOT_HMAC_KEY, LEGACY_BRIDGE_ENABLED, SUB_BROWSER_CSP_ENFORCE
+from ..http_utils import client_ip
 from ..legacy_bridge_resolver import is_fall_through_outcome
 from ..marzban import MarzbanClient
 from ..migration_lifecycle import process_migration_bridge_request
@@ -15,6 +16,7 @@ from ..opaque_resolver import OUTCOME_OK
 from ..service_marzban import ServiceMarzbanClient
 from ..shadow_resolver import schedule_shadow_resolution
 from ..subscription import process_subscription
+from ..subscription_rate_limit import SUBSCRIPTION_FETCH_LIMITER
 
 _client = MarzbanClient()
 _bridge_client = ServiceMarzbanClient()
@@ -77,6 +79,34 @@ def _invalid_subscription_response(handler, started_at: float):
     if remaining > 0:
         time.sleep(remaining)
     _plain_response(handler, 404, _INVALID_SUB_BODY)
+
+
+def _rate_limited_response(handler, retry_after: int):
+    """PH2-06: a distinct, expected-visible signal -- never a token-validity
+    oracle (issued identically regardless of whether any token in the
+    request is well-formed, known, active or revoked)."""
+    handler.send_response(429)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("Retry-After", str(retry_after))
+    body = b"Too many requests\n"
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def check_subscription_rate_limit(handler) -> bool:
+    """Returns True (and has already written a 429 response) if this
+    request must be rejected before any further work -- token parsing,
+    credential resolution and upstream/broker calls must never run for a
+    rate-limited request."""
+    retry_after = SUBSCRIPTION_FETCH_LIMITER.check(client_ip(handler))
+    if retry_after:
+        _rate_limited_response(handler, retry_after)
+        return True
+    return False
 
 
 def _observe_compatibility_fail_open(db, token, device_metadata):
@@ -158,6 +188,8 @@ def _try_legacy_bridge(handler, db, username, device_metadata) -> bool:
 
 def handle_sub(handler, token):
     started_at = time.monotonic()
+    if check_subscription_rate_limit(handler):
+        return
     if not token or len(token) > _MAX_LEGACY_TOKEN_LENGTH:
         _invalid_subscription_response(handler, started_at)
         return

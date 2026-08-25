@@ -183,6 +183,16 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "MGBoost"
     sys_version = ""
 
+    # PH2-06 deadline: this server is intentionally single-process/
+    # single-threaded (PH8-01 owns any future concurrency redesign), so an
+    # indefinitely slow client reading/writing on its socket would otherwise
+    # block every other client's request. `socketserver.StreamRequestHandler`
+    # (a `BaseHTTPRequestHandler` base) applies this as a plain socket
+    # timeout before any request line/headers/body are read -- it never
+    # fires mid-mutation (broker/DB calls make no further socket reads),
+    # so it cannot interrupt an already-durable commitment.
+    timeout = 15
+
     def version_string(self):
         return self.server_version
 

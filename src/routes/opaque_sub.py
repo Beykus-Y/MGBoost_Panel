@@ -24,7 +24,7 @@ from ..device_headers import extract_device_metadata
 from ..opaque_resolver import OUTCOME_OK, resolve_opaque_subscription
 from ..service_marzban import ServiceMarzbanClient
 from ..subscription import process_subscription
-from .sub import _invalid_subscription_response
+from .sub import _invalid_subscription_response, check_subscription_rate_limit
 
 _client = ServiceMarzbanClient()
 
@@ -39,6 +39,8 @@ def _subscription_fn(payload):
 
 def handle_opaque_sub(handler, token):
     started_at = time.monotonic()
+    if check_subscription_rate_limit(handler):
+        return
     if not OPAQUE_SUBSCRIPTION_ENABLED:
         _invalid_subscription_response(handler, started_at)
         return
