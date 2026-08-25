@@ -125,6 +125,42 @@ discover/verify a brand-new source template for an account's very first
 device on its own -- a deliberate non-invention of a second "find and
 validate the legacy user's shape" mechanism.
 
+## Valid production legacy `/sub` proof (2026-08-25) -- PH4-01 closed `[x]`
+
+The one remaining evidence gate did not require any code change. A raw
+legacy subscription token cannot safely be obtained from logs/backups/
+quarantine, and no new export endpoint or broker allowlist entry was added
+to get one either. Instead, the already-existing typed `legacy.user.get`
+broker capability -- the same admin-authenticated read every other legacy
+operation in this project already uses -- was used once, transiently, by a
+root-only 0600 script deleted immediately after use, to read the legacy
+user's `subscription_url` and make exactly one real
+`GET https://sub.beykus.fun/sub/{token}` request through the normal
+production path. The raw token and raw UUID were computed and consumed
+in-process; only derived/masked evidence (status, expiry, header presence,
+config counts, UUID *verifiers*) was ever printed.
+
+Result: `200`/`Cache-Control: no-store` and the full expected security
+header set; legacy `status=active`/`expire=null` unchanged from an
+immediately-preceding masked snapshot; 33 VLESS configs, 0 Shadowsocks; the
+shared legacy UUID verifier present in the body matched the pre-snapshot
+exactly; a second, unrelated UUID verifier in the body was cross-checked
+against all 5 child credential verifiers in the DB and matched none (no
+PH4-01 child credential leaked into a legacy response); an immediate
+follow-up admin read confirmed the remote UUID verifier was still identical
+after the request. `LEGACY_BRIDGE_ENABLED`/`OPAQUE_SUBSCRIPTION_ENABLED`
+stayed `False`, zero bridge bindings existed before or after, and full
+masked cardinality (accounts/aliases/slots/generations/child_intents/
+telegram_identities) was unchanged. `quick_check=ok`, 0 FK violations, all
+services stayed active.
+
+One pre-existing, out-of-scope observation surfaced along the way: nginx's
+`mgboost-sensitive-access.log` (which has always captured every `/sub/`
+request's URI, predating PH4-01 entirely) currently has world-readable
+(`644`) file permissions rather than root-only. This is unrelated to and
+not caused by this gate -- flagged here as a residual hardening item for a
+future, separately-scoped task, not fixed as part of closing PH4-01.
+
 ## Not in scope for PH4-01
 
 PH4-02's durable migration state machine, PH4-03's real canary migration,
