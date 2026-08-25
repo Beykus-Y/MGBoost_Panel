@@ -1,13 +1,176 @@
-# AGENT_HANDOFF — PH4-03 (crash-safe, update after every major checkpoint)
+# AGENT_HANDOFF — PH2-06 / PH4-04 (crash-safe, update after every major checkpoint)
 
-Updated: 2026-08-26, PH4-03 CLOSED `[x]`. A migration-only legacy paid
-compatibility entitlement (owner decision) closed the previous session's
-subscription/plan blocker; both real DIRECT/EXTERNAL_PAYMENT cohort
-accounts (`cohort-2 account #3`/`#4`, account ids 3/4) completed a full
-real production migration canary (migrate + revoke + one rebind proof)
-with zero impact on either real customer's own device. TELEGRAM_STARS
-cohort remains an owner-approved `N/A` exception (zero real Stars purchases
-ever existed).
+Updated: 2026-08-26, PH2-06 CLOSED `[x]` and PH4-04 CLOSED `[x]`. PH2-06
+added subscription-fetch rate limiting + a socket deadline ahead of
+exposing the new opaque endpoint; PH4-04 wired PH2-01's dormant opaque
+credential system all the way to production (issuance/rotation
+orchestration, admin/Telegram/LK presentation, nginx exposure) and proved
+it with a real production canary on the owner's own account. PH4-05 and
+the 14-day grace clock were explicitly NOT started, per instruction.
+
+## PRIOR SESSION SUMMARY (PH4-03, still accurate)
+
+PH4-03 CLOSED `[x]`. A migration-only legacy paid compatibility entitlement
+(owner decision) closed that session's subscription/plan blocker; both real
+DIRECT/EXTERNAL_PAYMENT cohort accounts (`cohort-2 account #3`/`#4`,
+account ids 3/4) completed a full real production migration canary
+(migrate + revoke + one rebind proof) with zero impact on either real
+customer's own device. TELEGRAM_STARS cohort remains an owner-approved
+`N/A` exception (zero real Stars purchases ever existed). See the full
+"PRIOR SESSION HISTORY" section further below for details.
+
+## THIS SESSION: PH2-06 + PH4-04
+
+### PH2-06 -- subscription/API abuse controls (`[x]`)
+
+- `src/subscription_rate_limit.py::SubscriptionRateLimiter` -- per-client-IP
+  in-memory sliding window (60s / 30 requests, conservative technical
+  defaults, no product impact), same architecture as the existing
+  `AdminLoginRateLimiter`. Keyed by IP only (via the already-existing
+  trusted-XFF `http_utils.client_ip()`), never by token/token-hash -- a
+  malformed-token flood shares the ordinary per-IP budget. Wired as the
+  very first check in both `handle_sub` and `handle_opaque_sub`, before any
+  token parsing/resolver/upstream work. A limited request gets a uniform
+  `429`/`Retry-After`, never a token-validity oracle.
+- `_Handler.timeout = 15` in `src/server.py` -- a plain socket read
+  deadline on the single-threaded stdlib server, bounding how long one slow
+  client can occupy it. Never fires mid-mutation (no further socket reads
+  once request processing starts).
+- Verified (not reinvented) that body/size/malformed-ID/uniform-failure
+  requirements were already satisfied: legacy token length bound
+  (`_MAX_LEGACY_TOKEN_LENGTH`), opaque route's exact-`{43}`-char regex,
+  bounded HWID regex, shared `_invalid_subscription_response` helper,
+  bounded broker-call timeout (`BrokerTransport.timeout`, ≤30s).
+- `tests/test_subscription_rate_limit.py` (15 passed) + new
+  `tests/conftest.py` (autouse fixture resetting the shared limiter between
+  tests -- many pre-existing tests call these same routes). Full
+  regression at this point: `884 passed, 3 skipped`.
+- Deployed: additive code only (no schema), fast-forward pull, minimal
+  restart, verified `quick_check=ok`/0 FK/services/legacy-`/sub`-still-404
+  -on-bogus-token after deploy.
+
+### PH4-04 -- new opaque URL rollout (`[x]`)
+
+**Code (all committed, `d8fbf84` then nginx-only prod change):**
+
+- `src/subscription_credential_issuance.py::issue_or_reissue_credential` --
+  the ONE crash-safe orchestration: abandon any stale `PENDING_DELIVERY`
+  (unrecoverable) -> `prepare()` a fresh generation (old stays `ACTIVE`) ->
+  `deliver_fn(raw_token)` -> only if delivery did not raise, `activate()`
+  (atomically flips new->`ACTIVE`, old->`REVOKED`). New
+  `SubscriptionCredentialStore.abandon_pending()` in
+  `src/subscription_credentials.py` (no new store invented).
+- **Admin**: `src/routes/subscription_credentials_admin.py`,
+  `GET/POST /admin/accounts/{id}/subscription-credential(/issue)` --
+  `require_admin_auth` (session+CSRF) AND the server-derived primary-admin
+  capability (first LIVE route wiring of that PH3-06/PH4-01 boundary; every
+  prior use was test-only). Raw token returned exactly once in the issue
+  response, never in status, never logged.
+- **Telegram**: hidden `/newsub` command in `bot_support.py`,
+  `F.chat.type == ChatType.PRIVATE` only, requires
+  `db.accounts.get_account_for_telegram()` (canonical PROVEN owner, not
+  mere link possession). Not a visible keyboard button (would confuse the
+  many still-legacy-only users). Async delivery handled manually (not via
+  the sync `issue_or_reissue_credential` helper -- `message.answer()` is a
+  coroutine) but the exact same prepare -> deliver -> activate sequence.
+- **LK**: `GET/POST /lk/api/opaque-subscription(/issue)` in `src/routes/lk.py`,
+  gated by the exact same `_require_mgmt_session` boundary every other
+  destructive LK device action already requires -- never the bare legacy
+  subscription token alone (PH2-05: possession ≠ ownership).
+- **nginx**: new `location ~ "^/[A-Za-z0-9_-]{43}$"` on `sub.beykus.fun`
+  (quoting the regex is required -- unquoted `{43}` breaks nginx's own
+  config lexer, caught by `nginx -t` before reload), reusing the exact
+  `/sub/`'s sensitive-log/security-header/`X-Real-IP` handling. Every
+  reserved prefix location wins over it under nginx's own matching rules
+  regardless of declaration order (verified). Config root-backed-up to
+  `/root/config-backups/ph4-04/sub.beykus.fun.pre-ph4-04.bak` before
+  editing, `nginx -t`-verified, then reloaded; legacy `/sub/`/`/lk/`
+  reachability and the new route's dormant-by-flag behavior both confirmed
+  immediately after.
+- **New-account "first device" limitation -- investigated, resolved by
+  understanding, not by code.** Tried to bootstrap a synthetic
+  `genesis_source_fn` template for a truly-new account with no legacy
+  history at all; discovered the REAL broker's `child.user.ensure`
+  operation cryptographically re-derives and re-verifies the claimed
+  `source_contract_hash` against a real, currently-existing Marzban
+  `source_username`'s LIVE config (`broker_operations.py`) -- there is no
+  way to bootstrap from a purely synthetic template without weakening that
+  anti-tamper check, and this system's schema already requires exactly one
+  real backing legacy Marzban username for every account
+  (`mgboost_legacy_account_aliases.legacy_username`, `NOT NULL UNIQUE`). A
+  zero-Marzban-footprint "brand new signup" is not a flow this system
+  supports today (PH5 catalog/billing territory, not built). **Reverted**
+  the `genesis_source_fn` plumbing entirely (`git checkout --` on
+  `opaque_resolver.py`/`opaque_sub.py`) rather than ship dead/misleading
+  code. PH4-01/02 migration already requires and performs the same
+  one-time real-legacy-user-derived genesis-child seeding per account
+  before its first device resolves (this session's own earlier PH4-03 work
+  did exactly this for accounts #3/#4) -- PH4-04's actual acceptance ("new
+  accounts don't depend on legacy URL") is about the end user never needing
+  the OLD `/sub/{legacy_token}` URL again once their opaque credential
+  exists, which needed zero code change.
+- 33 new focused tests across 4 files (`test_subscription_credential_issuance.py`,
+  `test_subscription_credentials_admin_routes.py`, `test_bot_newsub.py`,
+  `test_lk_opaque_subscription_routes.py`): crash/lost-delivery convergence,
+  admin auth/CSRF/IDOR/one-time-token/non-primary-rejection, bot
+  private-chat-filter/ownership-check/failed-send-safety, LK
+  mgmt-session-vs-bare-token. Full regression: `911 passed, 3 skipped`
+  (zero regressions from `884`).
+
+**Real production canary (owner's own account 1) -- PASS:**
+
+Pre-flight: fresh encrypted backup+restore-verified (state had changed
+since the last one); `.env`/nginx config root-backed-up separately.
+Discovered mid-session that account 1 now has a SECOND real live device on
+slot 2 (generation 5, a new HWID never seen before) -- the AGENT_HANDOFF's
+own prior prediction ("if/when that device's own client next hits /sub, it
+WILL now migrate transparently") came true organically between sessions.
+Both slot 1 and slot 2 were treated as real and never touched by any canary
+action; every canary device used slot 3+ instead.
+
+Flipped `OPAQUE_SUBSCRIPTION_ENABLED=1` (was unset -> default off),
+restarted, then via a short-lived root-only script (raw token held only in
+memory, never printed -- only masked SHA-256 prefixes/derived booleans):
+issued a real credential through the admin route, made real external HTTPS
+requests to `https://sub.beykus.fun/<token>` with a real supported client
+shape (`happ/2.7.0/windows`, already in `compat_registry`'s allowlist --
+first attempt used an unrecognized platform header and got a uniform 404,
+second attempt with the correct `x-platform` header worked). Proved: a new
+canary device gets a real working VLESS config (verified by base64-decoding
+the body -- the raw HTTP body is base64, `has_vless` checks must decode
+first); a second distinct canary device gets its own separate child; the
+account's real legacy shared UUID is absent from both canary configs;
+rotation immediately invalidates the old token (uniform 404, same shape as
+any unknown token) while the new token keeps working and the underlying
+child is untouched by the rotation itself; the PH2-06 rate limiter fired
+for real over the public Internet path (`429` appeared inside a 40-request
+same-IP burst). Full leakage scan after: zero 43-char token-shaped strings
+in nginx access/error logs or the application journal; DB only ever holds
+64-hex `token_hash` values; audit events hold only reason/actor text.
+Cleanup: both canary devices (slot 3, across two script iterations while
+debugging the platform-header bug) were revoked+freed, leaving permanent
+`REVOKED`/`RELEASED` tombstones per this project's own retention
+convention. Final state: slot 1 and slot 2 (both real devices) confirmed
+untouched throughout; the real legacy Marzban user (`beykusios`) confirmed
+`active` and unchanged; `quick_check=ok`, 0 FK violations; all 4 services
+stayed active. `OPAQUE_SUBSCRIPTION_ENABLED` left permanently `1`
+(graduated, matching `LEGACY_BRIDGE_ENABLED`'s own PH4-03 precedent) --
+account 1 now has one real, working, rotated (`generation 4`) opaque
+credential; no other account has one yet.
+
+New `docs/PHASE4_OPAQUE_URL_RUNBOOK.md`: issue/lost-delivery/rotate/revoke/
+pause-issuance/disable-route/verify-leakage/support-a-locked-out-user, no
+secrets/PII.
+
+## PH2-06 verdict: `[x]`. PH4-04 verdict: `[x]`.
+
+## Exact next step
+
+PH4-05 (grace period) and the 14-day grace clock were explicitly NOT
+started this session, per instruction, and require the owner's separate
+authorization to begin. No other PH4-03/04 residual is known.
+
+---
 
 ## HEAD / git status
 
