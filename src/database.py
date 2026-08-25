@@ -30,6 +30,8 @@ from .subscription_credential_schema import apply_subscription_credential_schema
 from .subscription_credentials import SubscriptionCredentialStore
 from .legacy_bridge_schema import apply_legacy_bridge_schema
 from .legacy_bridge import LegacyBridgeStore
+from .ownership_rebind_schema import apply_ownership_rebind_schema
+from .ownership_rebind import OwnershipRebindStore
 from .shadow_resolver_schema import apply_shadow_resolver_schema
 from .shadow_resolver import ShadowResolverBindingStore
 from .device_slot_schema import apply_device_slot_schema
@@ -114,6 +116,7 @@ class Database:
         self.parent_sync = ParentSyncStore(self._conn, self._lock)
         self.subscription_credentials = SubscriptionCredentialStore(self._conn, self._lock)
         self.legacy_bridge = LegacyBridgeStore(self._conn, self._lock, self.primary_admin_authority)
+        self.ownership_rebind = OwnershipRebindStore(self._conn, self._lock, self.primary_admin_authority)
         self.shadow_resolver_bindings = ShadowResolverBindingStore(self._conn, self._lock)
 
     def _create_tables(self):
@@ -376,6 +379,7 @@ class Database:
         apply_parent_sync_schema(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)
+        apply_ownership_rebind_schema(self._conn)
         apply_shadow_resolver_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
