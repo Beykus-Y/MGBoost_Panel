@@ -243,11 +243,46 @@ already stored everywhere else in this codebase.
 
 See `ROADMAP.md` PH3-08 for the exact dormant-deploy cardinality evidence and
 the read-only dry-run desired-state evaluation for the existing production
-account 1. No real production status/expiry transition was performed --
-account 1's existing subscription is not touched by this task, and a genuine
-ACTIVE->EXPIRED->RENEWED production canary would require a new throwaway
-parent (account 1 cannot itself be safely put through that cycle), which is
-an explicit separate owner decision this task does not take on its own.
+account 1: additive schema, minimal restart, `quick_check=ok`, and a dry-run
+that correctly computed account 1's `UNLIMITED` desired state and targeted
+only its one live child, excluding all 3 terminal slot-2 tombstones -- all
+without any dispatch.
+
+## Production reversible-transition canary (2026-08-25)
+
+Full sequence, exact masked evidence and cardinality delta:
+`ROADMAP.md` PH3-08. Summary: with explicit owner authorization, one
+throwaway parent (`account_id=2`) was created through the real
+`InternalEntitlementStore` repository methods (no raw SQL, no fabricated
+payment provenance, no Telegram identity) with a finite `current_expiry`,
+and one child through the unmodified PH3-02/03 pipeline. A real
+`ACTIVE -> EXPIRED -> RENEWED` cycle was then driven against real
+production Marzban through `parent_sync.run_account_sync_cycle`: the UUID
+verifier stayed byte-identical to the original ACTIVE baseline across both
+transitions (suspend, not revoke, proven live, not just in tests), an
+idempotent EXPIRED re-run made zero further remote calls, and the renewal
+reactivated the exact same child/generation/UUID with no new provisioning.
+The child was then re-suspended and a real PH3-05 `REVOKE` was run against
+it, reproducing on real production the exact cross-module fix this work
+found: the remote UUID verifier *did* change this time, proving a real
+revoke against a merely-PH3-08-suspended child still actually invalidates
+the credential. Cleanup (`REVOKE`->`FREE`) and a final `DISABLED` parent
+state leave zero active throwaway credentials. `account_id=1` and all 3
+pre-existing PH3-05 tombstones were read-verified byte-identical throughout,
+and account 1's own PH3-08 sync operation (from the earlier read-only
+dry-run) stayed `PENDING`/never dispatched -- proving cross-account
+isolation on real production, not just in tests.
+
+An operational note this canary surfaced: the running
+`mgboost-marzban-broker` process had not been restarted since the PH3-08
+code deploy, so its first `child.user.state.sync` dispatch attempt correctly
+failed closed with HTTP 404 (the operation was genuinely unknown to that
+process) rather than silently misbehaving. Restarting the broker (the one
+remaining minimal-necessary restart) resolved it. `mgboost-child-worker` was
+not restarted or reconfigured -- its `CHILD_WORKER_ALLOWED_OPERATION_IDS`
+allowlist correctly left the new throwaway outbox row untouched, so this
+canary drove the same claim/dispatch/acknowledge sequence manually, exactly
+like every prior PH3-0x production canary.
 
 ## Not in scope for PH3-08
 
@@ -255,6 +290,6 @@ Wiring `run_account_sync_cycle` into any live worker loop or scheduled job,
 billing/tariffs/Stars/renewal-purchase logic, WL quota/period semantics
 beyond "an expiry change never resets one" (there is currently no WL period
 implementation to reset -- `mgboost_wl_periods` remains unused, matching its
-PH3-01 dormant state), Phase 4, and a real production ACTIVE/EXPIRED/RENEWED
-canary transition are all untouched. PH3-08 only ever operates on the
+PH3-01 dormant state), and Phase 4 are all untouched. PH3-08 only ever
+operates on the
 already-computed parent state; it does not decide what that state should be.
