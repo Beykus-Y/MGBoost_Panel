@@ -308,3 +308,134 @@ def test_orchestration_flow_converges_across_a_simulated_crash(db):
     assert db._conn.execute("SELECT COUNT(*) FROM mgboost_legacy_account_aliases").fetchone()[0] == 1
     assert db._conn.execute("SELECT COUNT(*) FROM mgboost_payment_records").fetchone()[0] == 1
     assert db._conn.execute("SELECT COUNT(*) FROM mgboost_direct_enrollment_intents").fetchone()[0] == 1
+
+
+# --- OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT: historical fact, no invented details ---
+
+def test_owner_attested_legacy_payment_records_no_fabricated_monetary_data(db):
+    capability = _capability(db)
+    account = _enroll(db, capability=capability, username="legacy-attest-a", tg=910000040)
+    result = db.direct_enrollment.record_owner_attested_legacy_payment(
+        db, capability=capability, account_id=account["account_id"],
+        decision_ref="dl-owner-decision-2026-08-26", attestation_note="Owner confirms this "
+        "legacy subscription was historically paid directly, exact amount/date unknown",
+        evidence={"source": "owner-attestation", "channel_known": True}, now=400,
+    )
+    assert result["payment_channel"] == "EXTERNAL_PAYMENT"
+    assert "amount" not in result and "amount_minor" not in result
+    assert "date" not in result and "external_reference" not in result
+    mutation = db._conn.execute(
+        "SELECT * FROM mgboost_entitlement_mutations WHERE account_id=? "
+        "AND operation='OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT'",
+        (account["account_id"],),
+    ).fetchone()
+    assert mutation is not None
+    assert mutation["mutation_source"] == "MANUAL_PAYMENT"
+    assert mutation["payment_channel"] == "EXTERNAL_PAYMENT"
+    # Never lands in the canonical mgboost_payment_records table with invented details.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_payment_records WHERE account_id=?", (account["account_id"],)
+    ).fetchone()[0] == 0
+
+
+def test_owner_attestation_retry_with_same_details_is_idempotent(db):
+    capability = _capability(db)
+    account = _enroll(db, capability=capability, username="legacy-attest-b", tg=910000041)
+    kwargs = dict(
+        capability=capability, account_id=account["account_id"],
+        decision_ref="dl-owner-decision-2026-08-26",
+        attestation_note="Owner confirms historical direct payment, details unknown",
+        evidence={"source": "owner-attestation"},
+    )
+    first = db.direct_enrollment.record_owner_attested_legacy_payment(db, now=400, **kwargs)
+    second = db.direct_enrollment.record_owner_attested_legacy_payment(db, now=401, **kwargs)
+    assert first["id"] == second["id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_owner_attested_legacy_payments"
+    ).fetchone()[0] == 1
+
+
+def test_owner_attestation_conflicting_details_are_rejected(db):
+    from src.direct_enrollment import OwnerAttestationConflict
+    capability = _capability(db)
+    account = _enroll(db, capability=capability, username="legacy-attest-c", tg=910000042)
+    db.direct_enrollment.record_owner_attested_legacy_payment(
+        db, capability=capability, account_id=account["account_id"],
+        decision_ref="dl-owner-decision-2026-08-26", attestation_note="First attestation text",
+        evidence={"source": "owner-attestation"}, now=400,
+    )
+    with pytest.raises(OwnerAttestationConflict):
+        db.direct_enrollment.record_owner_attested_legacy_payment(
+            db, capability=capability, account_id=account["account_id"],
+            decision_ref="dl-owner-decision-2026-08-26", attestation_note="Different attestation text",
+            evidence={"source": "owner-attestation"}, now=401,
+        )
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_owner_attested_legacy_payments"
+    ).fetchone()[0] == 1
+
+
+def test_owner_attestation_requires_reviewed_direct_account(db):
+    from src.direct_enrollment import DirectEnrollmentError
+    capability = _capability(db)
+    with pytest.raises(DirectEnrollmentError):
+        db.direct_enrollment.record_owner_attested_legacy_payment(
+            db, capability=capability, account_id=999999, decision_ref="dl-owner-decision",
+            attestation_note="No such account should ever be attestable",
+            evidence={"source": "owner-attestation"}, now=400,
+        )
+
+
+# --- bot-linked Telegram evidence integration (reuse tg_users, no new mechanism) ---
+
+def test_existing_bot_linked_telegram_mapping_is_reused_not_duplicated(db):
+    db.save_tg_user(910000050, "bot-linked-user-a")
+    account = _enroll(db, username="bot-linked-user-a", tg=910000050, key="enroll-bot-linked-a-op")
+    assert account["ownership_evidence"] == "PROVEN"
+    owner = db.accounts.get_account_for_telegram(910000050)
+    assert owner["id"] == account["account_id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM tg_users WHERE telegram_id=?", (910000050,)
+    ).fetchone()[0] == 1
+
+
+def test_conflicting_bot_mapping_fails_closed(db):
+    from src.direct_enrollment import TelegramMappingConflict
+    db.save_tg_user(910000060, "bot-linked-user-b")
+    with pytest.raises(TelegramMappingConflict):
+        _enroll(db, username="bot-linked-user-b", tg=910000099, key="enroll-bot-linked-b-op")
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts WHERE account_source='DIRECT'").fetchone()[0] == 0
+
+
+def test_ambiguous_bot_mapping_with_two_telegram_ids_fails_closed(db):
+    from src.direct_enrollment import AmbiguousOwnershipRejected
+    db.save_tg_user(910000070, "bot-linked-user-c")
+    db.save_tg_user(910000071, "bot-linked-user-c")
+    capability = _capability(db)
+    with pytest.raises(AmbiguousOwnershipRejected):
+        _enroll(db, capability=capability, username="bot-linked-user-c", tg=910000070,
+                key="enroll-bot-linked-c-op")
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts WHERE account_source='DIRECT'").fetchone()[0] == 0
+
+
+# --- Stars N/A decision does not weaken Stars paid/refunded validation ---
+
+def test_stars_validation_unchanged_after_owner_attestation_addition(db):
+    from src.direct_enrollment import InvoiceNotPayable, PAYABLE_STARS_STATUSES
+    assert PAYABLE_STARS_STATUSES == {"paid", "plan_committed", "applied"}
+    account = _enroll(db, username="stars-user-regression", tg=910000080)
+    invoice = _invoice(db, username="stars-user-regression", payer_tg=910000080, status="refunded")
+    with pytest.raises(InvoiceNotPayable):
+        db.direct_enrollment.record_stars_payment(
+            db, invoice=invoice, account_id=account["account_id"], actor_ref="bot:stars", now=200,
+        )
+
+
+# --- schema -------------------------------------------------------------------
+
+def test_legacy_payment_attestation_schema_is_idempotent_and_starts_empty(db):
+    from src.legacy_payment_attestation_schema import apply_legacy_payment_attestation_schema
+    assert apply_legacy_payment_attestation_schema(db._conn, now=101) is False
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_owner_attested_legacy_payments"
+    ).fetchone()[0] == 0

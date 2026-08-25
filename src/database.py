@@ -44,6 +44,7 @@ from .migration_lifecycle_schema import apply_migration_lifecycle_schema
 from .migration_lifecycle import MigrationLifecycleStore
 from .direct_enrollment_schema import apply_direct_enrollment_schema
 from .direct_enrollment import DirectEnrollmentStore
+from .legacy_payment_attestation_schema import apply_legacy_payment_attestation_schema
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -391,6 +392,7 @@ class Database:
         apply_shadow_resolver_schema(self._conn)
         apply_migration_lifecycle_schema(self._conn)
         apply_direct_enrollment_schema(self._conn)
+        apply_legacy_payment_attestation_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()

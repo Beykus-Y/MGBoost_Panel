@@ -71,6 +71,14 @@ class PayerMismatch(DirectEnrollmentError):
     pass
 
 
+class OwnerAttestationConflict(DirectEnrollmentError):
+    pass
+
+
+class TelegramMappingConflict(DirectEnrollmentError):
+    pass
+
+
 def _canonical(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -210,6 +218,29 @@ class DirectEnrollmentStore:
             raise DirectEnrollmentError("legacy username is invalid")
         if not 3 <= len(decision_ref) <= 128:
             raise DirectEnrollmentError("a bounded decision reference is required")
+
+        # Reuse the existing bot Telegram-linkage table (`tg_users`, populated
+        # by the existing subscription-link bot flow in `bot_support.py`) as a
+        # cross-check, never a second linking mechanism. A username the bot
+        # has bound to more than one distinct Telegram ID is inherently
+        # ambiguous; a caller asserting a Telegram ID that contradicts the
+        # single bot-recorded one is a conflicting mapping. Both fail closed.
+        if ownership_evidence == "PROVEN":
+            bot_rows = self._conn.execute(
+                "SELECT DISTINCT telegram_id FROM tg_users WHERE marzban_username=?",
+                (username,),
+            ).fetchall()
+            bot_telegram_ids = {int(row["telegram_id"]) for row in bot_rows}
+            if len(bot_telegram_ids) > 1:
+                raise AmbiguousOwnershipRejected(
+                    "existing bot Telegram linkage for this legacy username is "
+                    "ambiguous (multiple distinct Telegram IDs) -- cannot enroll as PROVEN"
+                )
+            if bot_telegram_ids and telegram_id not in bot_telegram_ids:
+                raise TelegramMappingConflict(
+                    "asserted Telegram ID does not match the existing bot-linked "
+                    "mapping for this legacy username"
+                )
 
         timestamp = int(time.time()) if now is None else int(now)
         payload = {
@@ -425,3 +456,94 @@ class DirectEnrollmentStore:
             now=timestamp,
         )
         return payment
+
+    # --- OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT: historical fact, no invented details ---
+    #
+    # Owner decision (2026-08-26): every real legacy paying user historically
+    # paid the owner directly (never Stars), and no canonical payment ledger
+    # existed at the time. This never invents amount/date/reference. It is a
+    # distinct fact from a real new EXTERNAL_PAYMENT with known details
+    # (`record_external_payment` above, `mgboost_payment_records`,
+    # `record_status='CONFIRMED'`) -- deliberately a sibling additive table,
+    # not a relaxed/edited `mgboost_payment_records` (whose CHECK constraints
+    # are part of an already-deployed, checksum-locked PH3-09 migration that
+    # must never be edited in place).
+
+    def record_owner_attested_legacy_payment(
+        self, db, *, capability, account_id: int, decision_ref: str,
+        attestation_note: str, evidence: dict, now: int | None = None,
+    ) -> dict:
+        actor = self._require_primary(capability)
+        self._reviewed_direct_account(account_id)
+        decision_ref = (decision_ref or "").strip()
+        attestation_note = (attestation_note or "").strip()
+        if not 3 <= len(decision_ref) <= 128:
+            raise DirectEnrollmentError("a bounded decision reference is required")
+        if not 8 <= len(attestation_note) <= 1000:
+            raise DirectEnrollmentError("a bounded attestation note is required")
+        if not isinstance(evidence, dict):
+            raise DirectEnrollmentError("evidence must be an object")
+        timestamp = int(time.time()) if now is None else int(now)
+        canonical_payload = _canonical({
+            "account_id": int(account_id), "decision_ref": decision_ref,
+            "attestation_note": attestation_note, "evidence": evidence,
+        })
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existing = self._conn.execute(
+                    "SELECT * FROM mgboost_owner_attested_legacy_payments WHERE account_id=?",
+                    (int(account_id),),
+                ).fetchone()
+                if existing is not None:
+                    existing_payload = _canonical({
+                        "account_id": existing["account_id"], "decision_ref": existing["decision_ref"],
+                        "attestation_note": existing["attestation_note"],
+                        "evidence": json.loads(existing["evidence_json"]),
+                    })
+                    if existing_payload != canonical_payload:
+                        raise OwnerAttestationConflict(
+                            "an owner-attested legacy external payment already exists for "
+                            "this account with different details"
+                        )
+                    self._conn.commit()
+                    result = dict(existing)
+                else:
+                    cursor = self._conn.execute(
+                        "INSERT INTO mgboost_owner_attested_legacy_payments "
+                        "(account_id,payment_channel,decision_ref,attestation_note,"
+                        "attested_by_actor,evidence_json,created_at) "
+                        "VALUES (?,'EXTERNAL_PAYMENT',?,?,?,?,?)",
+                        (int(account_id), decision_ref, attestation_note, actor,
+                         _canonical(evidence), timestamp),
+                    )
+                    row = self._conn.execute(
+                        "SELECT * FROM mgboost_owner_attested_legacy_payments WHERE id=?",
+                        (cursor.lastrowid,),
+                    ).fetchone()
+                    self._conn.commit()
+                    result = dict(row)
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                raise OwnerAttestationConflict(
+                    "an owner-attested legacy external payment already exists for this account"
+                ) from exc
+            except Exception:
+                self._conn.rollback()
+                raise
+        db.provenance.record_mutation(
+            int(account_id),
+            subscription_id=None,
+            operation="OWNER_ATTESTED_LEGACY_EXTERNAL_PAYMENT",
+            payment_channel="EXTERNAL_PAYMENT",
+            mutation_source="MANUAL_PAYMENT",
+            actor_type="PRIMARY_ADMIN",
+            actor_ref=actor,
+            reason=attestation_note,
+            external_reference=None,
+            before=None,
+            after={"owner_attested_legacy_payment_id": result["id"], "decision_ref": decision_ref},
+            idempotency_key=f"owner-attested-legacy-external-payment-v1:{int(account_id)}",
+            now=timestamp,
+        )
+        return result
