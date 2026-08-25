@@ -142,7 +142,7 @@ def test_issue_returns_raw_token_exactly_once_and_status_never_does(db):
     assert json.dumps(status_body).find(body["raw_token"]) == -1
 
 
-def test_reissue_rotates_and_old_token_no_longer_resolves(db):
+def test_reissue_without_confirm_requires_confirmation_and_does_not_rotate(db):
     account, _alias_id, _slot = _account(db, mapping="ADMIN_ROUTE_F", tg=930300006)
     first_handler = _authed_handler(
         db, method="POST", body=json.dumps({"reason": "first issuance"}).encode(),
@@ -152,6 +152,23 @@ def test_reissue_rotates_and_old_token_no_longer_resolves(db):
 
     second_handler = _authed_handler(
         db, method="POST", body=json.dumps({"reason": "rotate"}).encode(),
+    )
+    route_module.handle_subscription_credential_issue(second_handler, str(account["account_id"]))
+    assert second_handler.status == 409
+    assert second_handler.json()["requires_confirmation"] is True
+    assert db.subscription_credentials.resolve(old_token) is not None
+
+
+def test_reissue_with_explicit_confirm_rotates_and_old_token_no_longer_resolves(db):
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_ROUTE_F2", tg=930300106)
+    first_handler = _authed_handler(
+        db, method="POST", body=json.dumps({"reason": "first issuance"}).encode(),
+    )
+    route_module.handle_subscription_credential_issue(first_handler, str(account["account_id"]))
+    old_token = first_handler.json()["raw_token"]
+
+    second_handler = _authed_handler(
+        db, method="POST", body=json.dumps({"reason": "rotate", "confirm": True}).encode(),
     )
     route_module.handle_subscription_credential_issue(second_handler, str(account["account_id"]))
     new_token = second_handler.json()["raw_token"]

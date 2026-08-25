@@ -1,12 +1,26 @@
 # AGENT_HANDOFF — PH2-06 / PH4-04 (crash-safe, update after every major checkpoint)
 
-Updated: 2026-08-26, PH2-06 CLOSED `[x]` and PH4-04 CLOSED `[x]`. PH2-06
-added subscription-fetch rate limiting + a socket deadline ahead of
-exposing the new opaque endpoint; PH4-04 wired PH2-01's dormant opaque
-credential system all the way to production (issuance/rotation
-orchestration, admin/Telegram/LK presentation, nginx exposure) and proved
-it with a real production canary on the owner's own account. PH4-05 and
-the 14-day grace clock were explicitly NOT started, per instruction.
+Updated: 2026-08-26, PH2-06 remains CLOSED `[x]` (unaffected). PH4-04 is
+REOPENED `[~]` -- a post-closure correction is in progress. PH2-06 added
+subscription-fetch rate limiting + a socket deadline ahead of exposing the
+new opaque endpoint; PH4-04 wired PH2-01's dormant opaque credential system
+all the way to production and its original canary genuinely passed. Owner
+manual production testing then found two real regressions the canary's
+scope never covered: an ordinary browser opening the opaque URL got the
+uniform invalid response instead of the existing legacy browser landing
+page, and a bare repeat of `/newsub` implied consent to silently rotate an
+already-`ACTIVE` credential (a destructive action). Both are now fixed in
+code and tests (browser landing reused from `src/routes/sub.py`, `/newsub`
+converted to a two-step explicit-confirm flow, and the same silent-rotation
+gap closed in the LK/admin issue routes) -- full regression `931 passed, 3
+skipped`. PH4-04 stays `[~]` until production re-verification (browser
+journey, zero browser mutation, explicit-confirm rotation on all three
+surfaces, the owner's manually-tested/exposed credential rotated via a
+transient/memory-only mechanism with no raw token/UUID/HWID ever printed,
+and a post-fix leakage scan) is complete -- only then does it return to
+`[x]`. PH4-05 and the 14-day grace clock were explicitly NOT started, per
+instruction, and must not be started once PH4-04 closes again without the
+owner's separate explicit permission.
 
 ## PRIOR SESSION SUMMARY (PH4-03, still accurate)
 
@@ -162,13 +176,25 @@ New `docs/PHASE4_OPAQUE_URL_RUNBOOK.md`: issue/lost-delivery/rotate/revoke/
 pause-issuance/disable-route/verify-leakage/support-a-locked-out-user, no
 secrets/PII.
 
-## PH2-06 verdict: `[x]`. PH4-04 verdict: `[x]`.
+## PH2-06 verdict: `[x]` (unaffected). PH4-04 original verdict: `[x]` at the
+time, genuinely earned -- see the correction note at the top of this
+document and in `ROADMAP.md`/`CHANGELOG.md` for the post-closure browser
+landing + `/newsub`/LK/admin silent-rotation regression found by owner
+manual testing and now fixed in code/tests, reopening PH4-04 to `[~]`
+pending production re-verification.
 
 ## Exact next step
 
-PH4-05 (grace period) and the 14-day grace clock were explicitly NOT
-started this session, per instruction, and require the owner's separate
-authorization to begin. No other PH4-03/04 residual is known.
+Finish PH4-04's re-verification: production backup, deploy the fix, repeat
+the owner's exact manual test journey on production (browser landing,
+zero browser mutation, explicit-confirm rotation on Telegram/LK/admin),
+rotate the owner's manually-exposed credential via a transient/memory-only
+mechanism (no raw token/UUID/HWID ever printed), run a post-fix leakage
+scan, then return PH4-04 to `[x]` only if every one of those passes.
+PH4-05 (grace period) and the 14-day grace clock remain explicitly NOT
+started, per instruction, and require the owner's separate authorization
+to begin -- do not start them even after PH4-04 closes again without that
+separate permission. No other PH4-03/04 residual is known.
 
 ---
 

@@ -630,14 +630,73 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             logger.error(f"Ошибка получения подписки: {e}")
             await message.answer("Не удалось получить информацию о подписке.")
 
+    # PH4-04 corrective fix: a bare repeat of /newsub must NEVER silently
+    # rotate an already-ACTIVE credential -- that is a destructive action
+    # (the old URL stops working immediately) and needs an explicit,
+    # separate confirmation step. `_reissue_in_progress` is a tiny
+    # in-memory per-account guard against a fast double-tap on the confirm
+    # button producing two rotations (aiogram doesn't itself deduplicate
+    # distinct callback_query ids for two real taps).
+    _reissue_in_progress: set[int] = set()
+
+    def _issue_new_credential(account_id: int, actor_ref: str, reason: str) -> dict:
+        import secrets
+        timestamp = int(time.time())
+        op_key = f"{account_id}:{timestamp}:{secrets.token_urlsafe(16)}"
+        db.subscription_credentials.abandon_pending(
+            account_id=account_id, actor_ref=actor_ref,
+            idempotency_key=f"bot-newsub-abandon-v1:{op_key}", now=timestamp,
+        )
+        prepared = db.subscription_credentials.prepare(
+            account_id=account_id, actor_ref=actor_ref, reason=reason,
+            idempotency_key=f"bot-newsub-v1:{op_key}", now=timestamp,
+        )
+        return {"prepared": prepared, "op_key": op_key, "timestamp": timestamp}
+
+    def _activate_new_credential(account_id: int, actor_ref: str, prepared: dict, op_key: str, timestamp: int):
+        return db.subscription_credentials.activate(
+            credential_id=prepared["id"], account_id=account_id,
+            expected_generation=prepared["generation"], actor_ref=actor_ref,
+            idempotency_key=f"bot-newsub-v1:{op_key}:activate", now=timestamp,
+        )
+
+    async def _deliver_and_activate(message_or_call, account_id: int, actor_ref: str, prep: dict) -> bool:
+        """Delivers the raw token, then activates only if delivery did not
+        raise -- same crash-safe sequencing as `issue_or_reissue_credential`,
+        just split across async Telegram calls."""
+        prepared = prep["prepared"]
+        try:
+            await message_or_call.answer(
+                "🔗 Ваша новая ссылка подписки:\n"
+                f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
+                "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
+                "Если понадобится новая — используйте перевыпуск."
+            )
+        except Exception as e:
+            logger.error(f"Ошибка доставки opaque credential: {type(e).__name__}")
+            return False
+        try:
+            await _run_sync(_activate_new_credential, account_id, actor_ref, prepared, prep["op_key"], prep["timestamp"])
+        except Exception as e:
+            logger.error(f"Ошибка активации opaque credential: {type(e).__name__}")
+            return False
+        return True
+
+    def _active_credential(account_id: int) -> dict | None:
+        return db._conn.execute(
+            "SELECT id, generation FROM mgboost_subscription_credentials "
+            "WHERE account_id=? AND status='ACTIVE'", (account_id,),
+        ).fetchone()
+
     @dp.message(Command("newsub"), F.chat.type == ChatType.PRIVATE)
     async def msg_new_opaque_subscription(message: Message, state: FSMContext):
-        """PH4-04: reviewed-account-only opaque URL issuance/rotation.
-        Deliberately a hidden command, not a keyboard button shown to every
-        legacy user -- only accounts already linked as the canonical
-        Telegram OWNER (`mgboost_telegram_identities`, PROVEN ownership,
-        never mere possession of a legacy link) can use it. Private chat
-        only -- never a group/channel."""
+        """PH4-04: reviewed-account-only opaque URL issuance. Deliberately a
+        hidden command, not a keyboard button shown to every legacy user --
+        only accounts already linked as the canonical Telegram OWNER
+        (`mgboost_telegram_identities`, PROVEN ownership, never mere
+        possession of a legacy link) can use it. Private chat only -- never
+        a group/channel. A bare repeat while a credential is already ACTIVE
+        never rotates it -- see `cb_newsub_confirm`/`cb_newsub_do` below."""
         from .config import OPAQUE_SUBSCRIPTION_ENABLED
         if not OPAQUE_SUBSCRIPTION_ENABLED:
             await message.answer("Эта функция пока недоступна.")
@@ -649,52 +708,108 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 "Если вы уже наш клиент — обратитесь к администратору."
             )
             return
-
-        import secrets
         account_id = account["id"]
-        timestamp = int(time.time())
-        op_key = f"{account_id}:{timestamp}:{secrets.token_urlsafe(16)}"
 
-        def _abandon_and_prepare():
-            db.subscription_credentials.abandon_pending(
-                account_id=account_id, actor_ref=f"telegram:{message.from_user.id}",
-                idempotency_key=f"bot-newsub-abandon-v1:{op_key}", now=timestamp,
+        existing = await _run_sync(_active_credential, account_id)
+        if existing is not None:
+            await message.answer(
+                "🔗 У вас уже есть активная ссылка подписки.\n\n"
+                "В целях безопасности сервер не хранит её открытый текст и не может "
+                "показать её повторно.\n\n"
+                "Если вы потеряли ссылку, её можно перевыпустить. После перевыпуска "
+                "старая ссылка перестанет работать, но ваши устройства и VPN "
+                "credentials останутся прежними.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="🔄 Перевыпустить ссылку",
+                        callback_data=f"newsub_confirm:{account_id}",
+                    ),
+                ]]),
             )
-            return db.subscription_credentials.prepare(
-                account_id=account_id, actor_ref=f"telegram:{message.from_user.id}",
-                reason="Telegram /newsub issuance", idempotency_key=f"bot-newsub-v1:{op_key}",
-                now=timestamp,
-            )
+            return
 
+        actor_ref = f"telegram:{message.from_user.id}"
         try:
-            prepared = await _run_sync(_abandon_and_prepare)
+            prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram /newsub initial issuance")
         except Exception as e:
             logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
             await message.answer("Не удалось выпустить ссылку. Попробуйте позже.")
             return
+        await _deliver_and_activate(message, account_id, actor_ref, prep)
 
-        try:
-            await message.answer(
-                "🔗 Ваша новая ссылка подписки:\n"
-                f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
-                "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
-                "Если понадобится новая — снова отправьте /newsub."
-            )
-        except Exception as e:
-            logger.error(f"Ошибка доставки opaque credential: {type(e).__name__}")
+    @dp.callback_query(F.data.startswith("newsub_confirm:"))
+    async def cb_newsub_confirm(call: CallbackQuery):
+        await call.answer()
+        if call.message is None or call.message.chat.type != ChatType.PRIVATE:
             return
-
-        def _activate():
-            return db.subscription_credentials.activate(
-                credential_id=prepared["id"], account_id=account_id,
-                expected_generation=prepared["generation"], actor_ref=f"telegram:{message.from_user.id}",
-                idempotency_key=f"bot-newsub-v1:{op_key}:activate", now=timestamp,
-            )
-
         try:
-            await _run_sync(_activate)
-        except Exception as e:
-            logger.error(f"Ошибка активации opaque credential: {type(e).__name__}")
+            account_id = int(call.data.split(":", 1)[1])
+        except (IndexError, ValueError):
+            return
+        account = await _run_sync(db.accounts.get_account_for_telegram, call.from_user.id)
+        if account is None or account["id"] != account_id:
+            return
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await call.message.answer(
+            "⚠️ Старая ссылка подписки перестанет работать сразу.\n"
+            "Устройства и их VPN credentials не изменятся.\n\n"
+            "Перевыпустить?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Перевыпустить", callback_data=f"newsub_do:{account_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"newsub_cancel:{account_id}"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data.startswith("newsub_cancel:"))
+    async def cb_newsub_cancel(call: CallbackQuery):
+        await call.answer()
+        if call.message is None or call.message.chat.type != ChatType.PRIVATE:
+            return
+        try:
+            account_id = int(call.data.split(":", 1)[1])
+        except (IndexError, ValueError):
+            return
+        account = await _run_sync(db.accounts.get_account_for_telegram, call.from_user.id)
+        if account is None or account["id"] != account_id:
+            return
+        try:
+            await call.message.edit_text("Отменено. Действующая ссылка подписки не изменилась.")
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data.startswith("newsub_do:"))
+    async def cb_newsub_do(call: CallbackQuery):
+        await call.answer()
+        if call.message is None or call.message.chat.type != ChatType.PRIVATE:
+            return
+        try:
+            account_id = int(call.data.split(":", 1)[1])
+        except (IndexError, ValueError):
+            return
+        account = await _run_sync(db.accounts.get_account_for_telegram, call.from_user.id)
+        if account is None or account["id"] != account_id:
+            return
+        if account_id in _reissue_in_progress:
+            return  # a fast double-tap on the confirm button -- ignore, idempotent by design
+        _reissue_in_progress.add(account_id)
+        try:
+            try:
+                await call.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            actor_ref = f"telegram:{call.from_user.id}"
+            try:
+                prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram /newsub confirmed reissue")
+            except Exception as e:
+                logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
+                await call.message.answer("Не удалось перевыпустить ссылку. Попробуйте позже.")
+                return
+            await _deliver_and_activate(call.message, account_id, actor_ref, prep)
+        finally:
+            _reissue_in_progress.discard(account_id)
 
     @dp.message(SupportStates.in_dialog, F.text == "🔧 Управление устройствами")
     async def msg_manage_devices(message: Message, state: FSMContext):

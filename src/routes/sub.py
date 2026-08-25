@@ -186,6 +186,39 @@ def _try_legacy_bridge(handler, db, username, device_metadata) -> bool:
     return True
 
 
+def is_browser_request(handler) -> bool:
+    """The single existing browser-vs-subscription-client detection
+    mechanism -- reused unchanged by the opaque route too. Never treated as
+    device/HWID evidence; a browser hit is presentational only."""
+    ua = handler.headers.get("User-Agent", "")
+    return bool(_BROWSER_UA_RE.search(ua))
+
+
+def send_browser_landing(handler, sub_url: str) -> None:
+    """Renders the existing legacy browser landing page for the given
+    subscription URL. Shared verbatim by `/sub/{token}` and the opaque
+    route so there is exactly one browser UX, not two parallel ones."""
+    page = _browser_page(sub_url)
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    if SUB_BROWSER_CSP_ENFORCE:
+        handler.send_header("Content-Security-Policy", _BROWSER_CSP_STRICT)
+    else:
+        handler.send_header("Content-Security-Policy", _BROWSER_CSP_BASELINE)
+        handler.send_header("Content-Security-Policy-Report-Only", _BROWSER_CSP_STRICT)
+    handler.send_header(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    )
+    handler.send_header("Content-Length", str(len(page)))
+    handler.end_headers()
+    handler.wfile.write(page)
+
+
 def handle_sub(handler, token):
     started_at = time.monotonic()
     if check_subscription_rate_limit(handler):
@@ -194,30 +227,11 @@ def handle_sub(handler, token):
         _invalid_subscription_response(handler, started_at)
         return
 
-    ua = handler.headers.get("User-Agent", "")
-    if _BROWSER_UA_RE.search(ua):
+    if is_browser_request(handler):
         proto = handler.headers.get("X-Forwarded-Proto", "https")
         host = handler.headers.get("Host", "")
         sub_url = f"{proto}://{host}/sub/{token}"
-        page = _browser_page(sub_url)
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Cache-Control", "no-store")
-        handler.send_header("Referrer-Policy", "no-referrer")
-        handler.send_header("X-Content-Type-Options", "nosniff")
-        handler.send_header("X-Frame-Options", "DENY")
-        if SUB_BROWSER_CSP_ENFORCE:
-            handler.send_header("Content-Security-Policy", _BROWSER_CSP_STRICT)
-        else:
-            handler.send_header("Content-Security-Policy", _BROWSER_CSP_BASELINE)
-            handler.send_header("Content-Security-Policy-Report-Only", _BROWSER_CSP_STRICT)
-        handler.send_header(
-            "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-        )
-        handler.send_header("Content-Length", str(len(page)))
-        handler.end_headers()
-        handler.wfile.write(page)
+        send_browser_landing(handler, sub_url)
         return
 
     extra_headers = {k: v for k, v in handler.headers.items()}

@@ -98,6 +98,24 @@ def handle_subscription_credential_issue(handler, account_id):
         error_response(handler, 400, "A bounded reason is required")
         return
 
+    # PH4-04 corrective fix: issuing while a credential is already ACTIVE is
+    # a destructive rotation (the old URL stops working immediately) and
+    # must never happen from a single accidental click -- same rule the
+    # Telegram surface enforces via its two-step confirm/cancel flow. A
+    # fresh account with no ACTIVE credential yet is normal initial issuance
+    # and stays a single call.
+    existing = db._conn.execute(
+        "SELECT id FROM mgboost_subscription_credentials WHERE account_id=? AND status='ACTIVE'",
+        (account["id"],),
+    ).fetchone()
+    if existing is not None and data.get("confirm") is not True:
+        json_response(handler, 409, {
+            "requires_confirmation": True,
+            "account_id": account["id"],
+            "message": "An ACTIVE credential already exists. Resubmit with confirm: true to rotate it.",
+        })
+        return
+
     delivered = {}
 
     def _deliver(raw_token: str) -> None:

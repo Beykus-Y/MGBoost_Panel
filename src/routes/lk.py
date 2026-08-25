@@ -519,6 +519,31 @@ def handle_lk_opaque_subscription_issue(handler):
         return
 
     db = handler.server.db
+
+    # PH4-04 corrective fix: issuing while a credential is already ACTIVE is
+    # a destructive rotation (the old URL stops working immediately) and
+    # must never happen from a single accidental click -- the same rule the
+    # Telegram surface enforces via its two-step confirm/cancel flow. A
+    # fresh account with no ACTIVE credential yet is normal initial issuance
+    # and stays a single call.
+    existing = db._conn.execute(
+        "SELECT id FROM mgboost_subscription_credentials WHERE account_id=? AND status='ACTIVE'",
+        (account_id,),
+    ).fetchone()
+    if existing is not None:
+        try:
+            body = _read_body(handler)
+            data = json.loads(body) if body else {}
+        except (ValueError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict) or data.get("confirm") is not True:
+            _error(
+                handler, 409,
+                "An ACTIVE credential already exists. Resubmit with confirm: true to rotate it.",
+                reason="requires_confirmation",
+            )
+            return
+
     delivered = {}
 
     def _deliver(raw_token: str) -> None:

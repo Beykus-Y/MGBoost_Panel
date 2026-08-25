@@ -14,6 +14,16 @@ the legacy resolver, an unknown/malformed/revoked/expired opaque token, a
 denied HWID, an unavailable parent and a transient provisioning failure all
 collapse to the exact same external response -- this route never leaks which
 of those applies to an unauthenticated caller.
+
+PH4-04 corrective fix: a normal human browser opening a valid, ACTIVE
+opaque URL must see the existing legacy browser landing page instead of the
+uniform invalid response -- a browser hit is never treated as a device and
+must never claim a slot, provision a child, or otherwise mutate anything.
+The browser check happens ONLY after the token itself resolves to an
+ACTIVE credential with a non-expired/non-disabled parent -- an
+invalid/unknown/revoked/expired token still gets the exact same uniform
+invalid response regardless of User-Agent (no token-validity oracle is
+introduced for browsers).
 """
 
 import base64
@@ -24,7 +34,12 @@ from ..device_headers import extract_device_metadata
 from ..opaque_resolver import OUTCOME_OK, resolve_opaque_subscription
 from ..service_marzban import ServiceMarzbanClient
 from ..subscription import process_subscription
-from .sub import _invalid_subscription_response, check_subscription_rate_limit
+from .sub import (
+    _invalid_subscription_response,
+    check_subscription_rate_limit,
+    is_browser_request,
+    send_browser_landing,
+)
 
 _client = ServiceMarzbanClient()
 
@@ -37,6 +52,37 @@ def _subscription_fn(payload):
     return _client.get_child_subscription(payload)
 
 
+def _try_browser_landing(handler, db, token) -> bool:
+    """Returns True if this request was fully handled as a browser landing
+    (either the page, or a fall-through to the uniform invalid response for
+    an invalid/expired token/parent) -- caller must return immediately in
+    that case. Returns False only for a non-browser request, which must
+    proceed to the real resolver unchanged. Never claims a slot, creates a
+    child, or mutates any device/migration state -- read-only credential
+    and parent-state lookups only (the same reads the real resolver would
+    do anyway before it ever claims anything)."""
+    if not is_browser_request(handler):
+        return False
+    started_at = time.monotonic()
+    credential = db.subscription_credentials.resolve(token)
+    if credential is None:
+        _invalid_subscription_response(handler, started_at)
+        return True
+    try:
+        desired = db.parent_sync.refresh_desired_state(credential["account_id"])
+    except Exception:
+        _invalid_subscription_response(handler, started_at)
+        return True
+    if desired["desired_status"] in ("EXPIRED", "DISABLED"):
+        _invalid_subscription_response(handler, started_at)
+        return True
+    proto = handler.headers.get("X-Forwarded-Proto", "https")
+    host = handler.headers.get("Host", "")
+    sub_url = f"{proto}://{host}/{token}"
+    send_browser_landing(handler, sub_url)
+    return True
+
+
 def handle_opaque_sub(handler, token):
     started_at = time.monotonic()
     if check_subscription_rate_limit(handler):
@@ -46,6 +92,10 @@ def handle_opaque_sub(handler, token):
         return
 
     db = handler.server.db
+
+    if _try_browser_landing(handler, db, token):
+        return
+
     device_metadata = extract_device_metadata(handler.headers)
 
     result = resolve_opaque_subscription(

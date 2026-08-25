@@ -113,3 +113,55 @@ def test_issue_with_valid_mgmt_session_returns_raw_token_once(db, monkeypatch):
     lk_mod.handle_lk_opaque_subscription_status(status_h)
     status_body = status_h.json_response()
     assert "raw_token" not in json.dumps(status_body)
+
+
+def test_reissue_without_confirm_requires_confirmation_and_does_not_rotate(db, monkeypatch):
+    monkeypatch.setenv("OPAQUE_SUBSCRIPTION_ENABLED", "1")
+    import importlib, src.config as config
+    importlib.reload(config)
+    import src.routes.lk as lk_mod
+    importlib.reload(lk_mod)
+    account = _reviewed_account(db, "LK_OPAQUE_D", "lk_opaque_d")
+    session_cookie = _get_mgmt_session_cookie(db, 1234504, "lk_opaque_d")
+
+    first = FakeHandler(db, headers={"Cookie": f"mgmt_session={session_cookie}"})
+    first.command = "POST"
+    lk_mod.handle_lk_opaque_subscription_issue(first)
+    old_token = first.json_response()["raw_token"]
+
+    lk_mod._mutation_cooldown.clear()
+    second = FakeHandler(db, headers={"Cookie": f"mgmt_session={session_cookie}"})
+    second.command = "POST"
+    lk_mod.handle_lk_opaque_subscription_issue(second)
+    assert second._response_code == 409
+    assert second.json_response()["reason"] == "requires_confirmation"
+    assert db.subscription_credentials.resolve(old_token) is not None
+
+
+def test_reissue_with_explicit_confirm_rotates(db, monkeypatch):
+    monkeypatch.setenv("OPAQUE_SUBSCRIPTION_ENABLED", "1")
+    import importlib, src.config as config
+    importlib.reload(config)
+    import src.routes.lk as lk_mod
+    importlib.reload(lk_mod)
+    account = _reviewed_account(db, "LK_OPAQUE_E", "lk_opaque_e")
+    session_cookie = _get_mgmt_session_cookie(db, 1234505, "lk_opaque_e")
+
+    first = FakeHandler(db, headers={"Cookie": f"mgmt_session={session_cookie}"})
+    first.command = "POST"
+    lk_mod.handle_lk_opaque_subscription_issue(first)
+    old_token = first.json_response()["raw_token"]
+
+    lk_mod._mutation_cooldown.clear()
+    second = FakeHandler(
+        db, headers={"Cookie": f"mgmt_session={session_cookie}"},
+        body=json.dumps({"confirm": True}).encode(),
+    )
+    second.command = "POST"
+    lk_mod.handle_lk_opaque_subscription_issue(second)
+    assert second._response_code == 200
+    new_token = second.json_response()["raw_token"]
+
+    assert old_token != new_token
+    assert db.subscription_credentials.resolve(old_token) is None
+    assert db.subscription_credentials.resolve(new_token) is not None
