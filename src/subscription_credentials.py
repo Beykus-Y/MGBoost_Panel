@@ -274,6 +274,27 @@ class SubscriptionCredentialStore:
 
     # --- read-only resolution (the only method the public resolver calls) ----
 
+    def abandon_pending(
+        self, *, account_id: int, actor_ref: str, idempotency_key: str, now: int | None = None,
+    ) -> dict | None:
+        """PH4-04: explicitly abandon a `PENDING_DELIVERY` credential whose
+        raw token is definitively unrecoverable (delivery failed, or a prior
+        process crashed between `prepare()` and confirmed delivery). Returns
+        None if there was nothing pending to abandon (idempotent no-op --
+        never an error). Never reactivates or guesses; the old `ACTIVE`
+        credential, if any, is completely untouched."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM mgboost_subscription_credentials "
+                "WHERE account_id=? AND status='PENDING_DELIVERY'", (int(account_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.revoke(
+            credential_id=row["id"], account_id=account_id, reason_code="ABANDONED_PENDING",
+            actor_ref=actor_ref, idempotency_key=idempotency_key, now=now,
+        )
+
     def resolve(self, raw_token: str, *, now: int | None = None) -> dict | None:
         """Verifier lookup only. Returns None for anything that is not an
         exactly-matching, currently ACTIVE credential -- unknown, malformed,

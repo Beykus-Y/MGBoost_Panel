@@ -2,6 +2,10 @@ import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .http_utils import DEFAULT_SECURITY_HEADERS, error_response
+from .routes.subscription_credentials_admin import (
+    handle_subscription_credential_issue,
+    handle_subscription_credential_status,
+)
 from .routes.admin import (
     handle_admin_remove_device,
     handle_admin_set_device_limit,
@@ -80,6 +84,8 @@ from .routes.lk import (
     handle_lk_devices,
     handle_lk_info,
     handle_lk_mgmt_exchange,
+    handle_lk_opaque_subscription_issue,
+    handle_lk_opaque_subscription_status,
     handle_lk_page,
     handle_lk_usage,
 )
@@ -99,6 +105,8 @@ _ROUTES = [
     ("POST",   re.compile(r"^/lk/api/mgmt/exchange$"),           lambda h: handle_lk_mgmt_exchange(h)),
     ("DELETE", re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_delete(h, device_id)),
     ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
+    ("GET",    re.compile(r"^/lk/api/opaque-subscription$"),    lambda h: handle_lk_opaque_subscription_status(h)),
+    ("POST",   re.compile(r"^/lk/api/opaque-subscription/issue$"), lambda h: handle_lk_opaque_subscription_issue(h)),
     ("GET",    re.compile(r"^/(?:.*?/)?assets/(?P<path>.+)$"),  lambda h, path: handle_static_asset(h, path)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
     ("POST",   re.compile(r"^/admin/session/login$"),          lambda h: handle_admin_session_login(h)),
@@ -130,6 +138,11 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/tickets/(?P<tid>\d+)/close$"), lambda h, tid: handle_ticket_close(h, tid) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/settings$"),                lambda h: handle_settings_get(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/settings$"),                lambda h: handle_settings_save(h) if require_admin_auth(h) else None),
+    # PH4-04: minimal admin surface for PH2-01 opaque subscription credentials.
+    ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/subscription-credential$"),
+     lambda h, account_id: handle_subscription_credential_status(h, account_id)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/subscription-credential/issue$"),
+     lambda h, account_id: handle_subscription_credential_issue(h, account_id)),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices-counts$"),      lambda h: handle_admin_user_device_counts(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices/(?P<username>[^/]+)/limit$"), lambda h, username: handle_admin_set_device_limit(h, username) if require_admin_auth(h) else None),

@@ -318,7 +318,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                             stars_trigger=None):
     try:
         from aiogram import F
-        from aiogram.filters import CommandStart, StateFilter
+        from aiogram.enums import ChatType
+        from aiogram.filters import Command, CommandStart, StateFilter
         from aiogram.fsm.context import FSMContext
         from aiogram.fsm.state import State, StatesGroup
         from aiogram.types import (
@@ -628,6 +629,72 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         except Exception as e:
             logger.error(f"Ошибка получения подписки: {e}")
             await message.answer("Не удалось получить информацию о подписке.")
+
+    @dp.message(Command("newsub"), F.chat.type == ChatType.PRIVATE)
+    async def msg_new_opaque_subscription(message: Message, state: FSMContext):
+        """PH4-04: reviewed-account-only opaque URL issuance/rotation.
+        Deliberately a hidden command, not a keyboard button shown to every
+        legacy user -- only accounts already linked as the canonical
+        Telegram OWNER (`mgboost_telegram_identities`, PROVEN ownership,
+        never mere possession of a legacy link) can use it. Private chat
+        only -- never a group/channel."""
+        from .config import OPAQUE_SUBSCRIPTION_ENABLED
+        if not OPAQUE_SUBSCRIPTION_ENABLED:
+            await message.answer("Эта функция пока недоступна.")
+            return
+        account = await _run_sync(db.accounts.get_account_for_telegram, message.from_user.id)
+        if account is None:
+            await message.answer(
+                "Новая ссылка подписки доступна только для проверенных аккаунтов. "
+                "Если вы уже наш клиент — обратитесь к администратору."
+            )
+            return
+
+        import secrets
+        account_id = account["id"]
+        timestamp = int(time.time())
+        op_key = f"{account_id}:{timestamp}:{secrets.token_urlsafe(16)}"
+
+        def _abandon_and_prepare():
+            db.subscription_credentials.abandon_pending(
+                account_id=account_id, actor_ref=f"telegram:{message.from_user.id}",
+                idempotency_key=f"bot-newsub-abandon-v1:{op_key}", now=timestamp,
+            )
+            return db.subscription_credentials.prepare(
+                account_id=account_id, actor_ref=f"telegram:{message.from_user.id}",
+                reason="Telegram /newsub issuance", idempotency_key=f"bot-newsub-v1:{op_key}",
+                now=timestamp,
+            )
+
+        try:
+            prepared = await _run_sync(_abandon_and_prepare)
+        except Exception as e:
+            logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
+            await message.answer("Не удалось выпустить ссылку. Попробуйте позже.")
+            return
+
+        try:
+            await message.answer(
+                "🔗 Ваша новая ссылка подписки:\n"
+                f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
+                "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
+                "Если понадобится новая — снова отправьте /newsub."
+            )
+        except Exception as e:
+            logger.error(f"Ошибка доставки opaque credential: {type(e).__name__}")
+            return
+
+        def _activate():
+            return db.subscription_credentials.activate(
+                credential_id=prepared["id"], account_id=account_id,
+                expected_generation=prepared["generation"], actor_ref=f"telegram:{message.from_user.id}",
+                idempotency_key=f"bot-newsub-v1:{op_key}:activate", now=timestamp,
+            )
+
+        try:
+            await _run_sync(_activate)
+        except Exception as e:
+            logger.error(f"Ошибка активации opaque credential: {type(e).__name__}")
 
     @dp.message(SupportStates.in_dialog, F.text == "🔧 Управление устройствами")
     async def msg_manage_devices(message: Message, state: FSMContext):

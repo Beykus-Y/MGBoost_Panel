@@ -4,8 +4,10 @@ import re
 import time
 from collections import defaultdict
 
+from ..config import OPAQUE_SUBSCRIPTION_ENABLED
 from ..http_utils import read_body as _read_body
 from ..service_marzban import ServiceMarzbanClient
+from ..subscription_credential_issuance import issue_or_reissue_credential
 
 _client = ServiceMarzbanClient()
 
@@ -456,6 +458,88 @@ def handle_lk_device_delete(handler, device_id):
         return
 
     _json_ok(handler, {"ok": True})
+
+
+def _account_id_for_legacy_username(handler, username: str) -> int | None:
+    row = handler.server.db._conn.execute(
+        "SELECT account_id FROM mgboost_legacy_account_aliases WHERE legacy_username=?",
+        (username,),
+    ).fetchone()
+    return row["account_id"] if row else None
+
+
+def handle_lk_opaque_subscription_status(handler):
+    ip = handler.client_address[0]
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+    username = _resolve_username_from_session(handler)
+    if not username:
+        _error(handler, 400, "Missing token", reason="management_session_required")
+        return
+    if not _require_mgmt_session(handler, username):
+        return
+    account_id = _account_id_for_legacy_username(handler, username)
+    if account_id is None:
+        _json_ok(handler, {"available": False})
+        return
+    row = handler.server.db._conn.execute(
+        "SELECT generation,status FROM mgboost_subscription_credentials "
+        "WHERE account_id=? ORDER BY generation DESC LIMIT 1", (account_id,),
+    ).fetchone()
+    _json_ok(handler, {
+        "available": True,
+        "credential": {"generation": row["generation"], "status": row["status"]} if row else None,
+    })
+
+
+def handle_lk_opaque_subscription_issue(handler):
+    """PH4-04: reviewed-account-only opaque URL issuance/rotation, gated by
+    the SAME `_require_mgmt_session` boundary every other destructive LK
+    device action already requires -- never the bare legacy subscription
+    token alone (possession of a legacy link is not ownership proof)."""
+    ip = handler.client_address[0]
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+    if not OPAQUE_SUBSCRIPTION_ENABLED:
+        _error(handler, 404, "Not found")
+        return
+    username = _resolve_username_from_session(handler)
+    if not username:
+        _error(handler, 400, "Missing token", reason="management_session_required")
+        return
+    if not _require_mgmt_session(handler, username):
+        return
+    if not _check_mutation_cooldown(handler, username):
+        return
+    account_id = _account_id_for_legacy_username(handler, username)
+    if account_id is None:
+        _error(handler, 404, "Account not found")
+        return
+
+    db = handler.server.db
+    delivered = {}
+
+    def _deliver(raw_token: str) -> None:
+        delivered["raw_token"] = raw_token
+
+    import secrets
+    idempotency_key = f"lk-issue-v1:{account_id}:{secrets.token_urlsafe(24)}"
+    try:
+        credential = issue_or_reissue_credential(
+            db, account_id=account_id, actor_ref=f"lk-session:{username}", reason="LK issuance",
+            idempotency_key=idempotency_key, deliver_fn=_deliver, now=int(time.time()),
+        )
+    except Exception:
+        _error(handler, 500, "Issuance failed")
+        return
+
+    _json_ok(handler, {
+        "credential": {"generation": credential["generation"], "status": credential["status"]},
+        "raw_token": delivered["raw_token"],
+        "canonical_url": f"https://sub.beykus.fun/{delivered['raw_token']}",
+    })
 
 
 def handle_lk_device_rename(handler, device_id):
