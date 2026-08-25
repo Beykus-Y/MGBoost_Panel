@@ -9,6 +9,7 @@ from urllib.parse import quote
 from ..device_headers import extract_device_metadata
 from ..config import SUB_BROWSER_CSP_ENFORCE
 from ..marzban import MarzbanClient
+from ..shadow_resolver import schedule_shadow_resolution
 from ..subscription import process_subscription
 
 _client = MarzbanClient()
@@ -165,6 +166,18 @@ def handle_sub(handler, token):
     )
 
     new_body, out_headers = process_subscription(body, marzban_headers, token, username, db)
+
+    # PH3-03 SHADOW mode only: this legacy response is already fully built
+    # and is what gets sent below, unconditionally. The shadow resolver runs
+    # in a background thread purely for comparison/metrics and can never
+    # change, delay or replace this response.
+    try:
+        schedule_shadow_resolution(token, username, device_metadata, body)
+    except Exception as exc:
+        try:
+            logger.warning("shadow resolver schedule skipped error_type=%s", type(exc).__name__)
+        except Exception:
+            pass
 
     handler.send_response(200)
     handler.send_header("Content-Type", "text/plain; charset=utf-8")

@@ -51,7 +51,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 class BrokerApplication:
     def __init__(
         self, operations, *, shared_key: str, client_id: str = "mgboost-main",
-        allowed_skew_seconds: int = 30, replay_guard=None,
+        allowed_skew_seconds: int = 30, replay_guard=None, client_policies=None,
     ):
         self.operations = operations
         self.shared_key = validate_shared_key(shared_key)
@@ -60,8 +60,35 @@ class BrokerApplication:
         self.client_id = client_id
         self.allowed_skew_seconds = max(5, min(int(allowed_skew_seconds), 300))
         self.replay_guard = replay_guard or ReplayGuard()
+        self.client_policies = None
+        if client_policies is not None:
+            policies = {}
+            for policy_client, policy in client_policies.items():
+                if not policy_client or len(policy_client) > 64:
+                    raise ValueError("invalid broker policy client id")
+                key = validate_shared_key(policy["shared_key"])
+                allowed = frozenset(policy["allowed_operations"])
+                if not allowed.issubset(BROKER_OPERATIONS):
+                    raise ValueError("broker policy contains unknown operation")
+                policies[policy_client] = (key, allowed)
+            if not policies:
+                raise ValueError("broker client policies cannot be empty")
+            self.client_policies = policies
 
     def authenticate(self, handler, body: bytes):
+        client_id = (handler.headers.get("X-MGBoost-Client") or "").strip()
+        if self.client_policies is not None:
+            policy = self.client_policies.get(client_id)
+            if policy is None:
+                return False, 401, "Missing or invalid broker authentication"
+            shared_key, _allowed = policy
+            return authenticate_broker_request(
+                headers=handler.headers, method=handler.command,
+                path=handler.path, body=body, expected_client_id=client_id,
+                shared_key=shared_key,
+                allowed_skew_seconds=self.allowed_skew_seconds,
+                replay_guard=self.replay_guard,
+            )
         return authenticate_broker_request(
             headers=handler.headers,
             method=handler.command,
@@ -72,6 +99,17 @@ class BrokerApplication:
             allowed_skew_seconds=self.allowed_skew_seconds,
             replay_guard=self.replay_guard,
         )
+
+    def authorize_operation(self, client_id: str, operation: str) -> bool:
+        if self.client_policies is None:
+            return True
+        policy = self.client_policies.get(client_id)
+        return bool(policy and operation in policy[1])
+
+    def client_key(self, client_id: str) -> bytes:
+        if self.client_policies is None:
+            return self.shared_key
+        return self.client_policies[client_id][0]
 
     def target_ref(self, data) -> str | None:
         if not isinstance(data, dict):
@@ -138,6 +176,10 @@ class BrokerHandler(BaseHTTPRequestHandler):
         if operation not in BROKER_OPERATIONS or "/" in operation:
             self._json(404, {"error": "Unknown broker operation"})
             return
+        actor = (self.headers.get("X-MGBoost-Client") or "").strip()
+        if not self.server.app.authorize_operation(actor, operation):
+            self._json(403, {"error": "Broker operation is not permitted"})
+            return
         try:
             data = json.loads(body or b"{}")
             result = self.server.app.operations.dispatch(operation, data)
@@ -165,7 +207,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
         logger.info(
             "broker operation=%s actor=%s target_ref=%s outcome=%s duration_ms=%d",
             operation,
-            self.server.app.client_id,
+            actor,
             target or "-",
             outcome,
             int((time.monotonic() - started) * 1000),

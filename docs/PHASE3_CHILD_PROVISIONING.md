@@ -262,3 +262,91 @@ privacy reference; atomically write one child intent/outbox operation; dispatch
 typed `child.user.ensure`; persist only verifier/mask plus observed state after
 reread; then verify the dormant child. The old legacy UUID, URL/token, config,
 HWID rows and all other observations remain unchanged and unreclaimed.
+
+## Dual-run SHADOW resolver (local implementation only, 2026-08-25)
+
+A prior session began the broker capability split needed for a future
+account-aware resolver (`broker_main.py`, `src/broker_server.py`) and an empty
+additive `mgboost_shadow_resolver_bindings`/`mgboost_shadow_resolver_metrics`
+schema (`src/shadow_resolver_schema.py`), with no resolver logic, route
+wiring or tests. This session finished that split and implemented the
+resolver in `src/shadow_resolver.py`.
+
+**Hard invariant.** `src/routes/sub.py` builds and sends the real legacy
+response first, exactly as before. Only after that response is fully
+constructed does it call `shadow_resolver.schedule_shadow_resolution(...)`,
+which starts a daemon background thread and returns immediately. Every stage
+inside that thread is wrapped so any exception — broker outage, Marzban
+outage, a bug in this module — degrades to "no metric recorded" and can never
+reach, delay or alter the legacy response.
+
+**Capability boundary.** `child.user.observe` never returns a raw credential,
+so it keeps using the existing `mgboost-main` broker identity
+(`MARZBAN_BROKER_AUTH_KEY`). Only `child.user.credentials.get` moves to a
+separate `mgboost-sub-resolver` identity, authenticated with its own
+`MARZBAN_BROKER_RESOLVER_AUTH_KEY`. `BrokerApplication` now accepts an
+optional `client_policies` map of `client_id -> (shared_key,
+allowed_operations)`; omitting it (the production default until this is
+explicitly configured) reproduces the exact prior single-client broker.
+
+**Scope.** A binding in `mgboost_shadow_resolver_bindings` is the only thing
+that puts a request into shadow scope, and only an explicit, root-only
+administrative tool (`Database.shadow_resolver_bindings`, mirroring the
+existing canary-tool pattern) may create one — never a route, never
+automatically. A binding requires its outbox operation to already be
+`APPLIED`. Only `hwid:`-locked legacy devices can ever match, mirroring the
+legacy resolver's own HWID-only enforcement boundary.
+
+**Functional comparison.** The resolver takes the raw, pre-filter legacy
+VLESS lines (before per-user node filters/extra configs), rereads the
+verified child contract via `child.user.observe` and the ephemeral raw UUID
+via `child.user.credentials.get`, then renders a candidate child line by
+substituting only the UUID into each legacy line. It asserts every other
+field — host/port, transport, TLS/Reality/SNI, flow, every other query
+parameter — is byte-identical, and that the rendered line still parses under
+the same VLESS grammar (an INCY-equivalent parser/format check). The display
+remark/label and the UUID are the only tolerated differences, matching the
+documented expected-difference contract.
+
+**Metrics.** `mgboost_shadow_resolver_metrics` is a daily
+PASS/FAIL/category/credential-result aggregate with request counts and
+latency only. It never receives a raw UUID, token, username, IP or header.
+
+**Failure matrix.** Broker unavailable, Marzban unavailable,
+resolver-capability-denied, remote child missing, remote contract mismatch,
+credential verifier mismatch, stale slot generation, invalid account/slot
+mapping, resolver timeout, shadow comparison failure, malformed request and a
+metrics-write failure are each a distinct bounded category and are covered by
+`tests/test_shadow_resolver.py` (19 passed); the capability split itself is
+covered by `tests/test_broker_client_policies.py` (6 passed). Full project
+regression: `575 passed, 3 skipped`.
+
+**Real isolated Marzban 0.8.4 gate — PASS.** `scripts/verify_ph3_03_shadow_resolver_staging.py`
+reran the same immutable digest as every other PH3-03 gate, reproduced the
+production-live server-derived identity, and drove the real split broker and
+real `src/shadow_resolver.py`. The `mgboost-main`/`mgboost-sub-resolver`
+capability split and all 8 reachable failure-matrix categories were proven
+with real broker/Marzban actions (shutdown, delete, expire/UUID drift,
+`docker pause`); `STALE_SLOT_GENERATION`/`INVALID_ACCOUNT_SLOT_MAPPING`/
+`METRICS_DB_FAILURE` are pure local-DB logic already proven by
+`tests/test_shadow_resolver.py` and do not depend on Marzban being real.
+
+**Root-only binding tool.** `scripts/configure_ph3_03_shadow_binding.py` is
+the only way a device can ever enter SHADOW scope. It is never imported by
+startup or any route, targets only the single fixed approved manifest, and
+verifies account identity, alias ownership, the HWID-backed device contract,
+active slot generation, child-intent ownership, an exact `APPLIED` outbox
+operation and `IN_SYNC` reconciliation before creating anything. `create` is
+idempotent; a conflicting identity, wrong/missing account, wrong device,
+stale generation, non-`APPLIED` outbox, non-`IN_SYNC` reconciliation or
+unexpected pre-existing binding cardinality all fail closed. New bindings are
+created `enabled=0`; enabling is a separate idempotent action.
+`tests/test_shadow_binding_tool.py`: `13 passed`. Full project regression:
+`588 passed, 3 skipped`.
+
+**Not done as of this commit.** No shadow binding row exists anywhere outside
+test/staging fixtures; the approved `beykusios` canary device has not been
+opted into shadow scope in production; `SHADOW_RESOLVER_ENABLED`/
+`MARZBAN_BROKER_RESOLVER_AUTH_KEY` remain unset in every deployed
+environment. The legacy resolver, the existing dormant canary and the
+reconcile-only worker are all unaffected by this change.

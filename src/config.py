@@ -51,3 +51,13 @@ ADMIN_SESSION_COOKIE_SECURE = os.getenv("ADMIN_SESSION_COOKIE_SECURE", "1").stri
 ADMIN_LOGIN_RATE_WINDOW_SECONDS = int(os.getenv("ADMIN_LOGIN_RATE_WINDOW_SECONDS", "300"))
 ADMIN_LOGIN_RATE_IDENTITY_FAILURES = int(os.getenv("ADMIN_LOGIN_RATE_IDENTITY_FAILURES", "5"))
 ADMIN_LOGIN_RATE_IP_FAILURES = int(os.getenv("ADMIN_LOGIN_RATE_IP_FAILURES", "20"))
+# PH3-03 dual-run shadow resolver. Disabled by default; even when enabled it
+# only ever runs in parallel with the legacy response and can never replace
+# or delay it (see docs/PHASE3_CHILD_PROVISIONING.md). It requires its own
+# narrow broker credential — MARZBAN_BROKER_RESOLVER_AUTH_KEY,
+# MARZBAN_BROKER_RESOLVER_CLIENT_ID (default mgboost-sub-resolver) and
+# MARZBAN_BROKER_RESOLVER_TIMEOUT_SECONDS are read directly by
+# src/shadow_resolver.py, mirroring the existing MARZBAN_BROKER_* variables.
+SHADOW_RESOLVER_ENABLED = os.getenv("SHADOW_RESOLVER_ENABLED", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
