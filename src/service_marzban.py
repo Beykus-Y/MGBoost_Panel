@@ -237,6 +237,18 @@ class ServiceMarzbanClient:
             return BrokerOperations(self.direct).dispatch("child.user.state.sync", normalized)
         return self._broker().call("child.user.state.sync", normalized)
 
+    def get_child_subscription(self, request):
+        """Fetch the child's own rendered subscription body/headers through
+        the typed broker boundary; the child's subscription bearer path
+        never crosses back to this process."""
+        normalized = validate_child_credentials_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch(
+                "child.user.subscription.get", normalized
+            )
+        return self._broker().call("child.user.subscription.get", normalized)
+
     def get_child_credentials(self, request):
         """Typed ephemeral credential reread; callers must never persist/log result."""
         normalized = validate_child_credentials_request(request)

@@ -1,6 +1,53 @@
 # PH2-01 opaque subscription token contract
 
-Date: 2026-08-24. Status: design-only. This document fixes the token, schema,
+Date: 2026-08-24 (design), 2026-08-25 (implementation). Status: dormant,
+implemented. The schema/API/resolver below are fully built and tested
+(`src/subscription_credential_schema.py`, `src/subscription_credentials.py`,
+`src/opaque_resolver.py`, `src/routes/opaque_sub.py`); the "Phase 4 legacy
+bridge" section remains design-only and is deliberately deferred to PH4-01
+per explicit owner sequencing. See `ROADMAP.md` PH2-01 for the full
+implementation/staging/deviation record.
+
+## Implementation notes (2026-08-25)
+
+- **AEAD envelope simplified to synchronous single-response delivery.** The
+  "Issuance, delivery, rotation and revoke" section below recommends an
+  encrypted-at-rest pending envelope for crash-safe multi-step delivery. The
+  actual implementation never persists the raw token anywhere, encrypted or
+  not: `SubscriptionCredentialStore.prepare()` returns it once, synchronously,
+  inside the same authenticated HTTP response the design doc's own API
+  section describes ("returns/delivers the raw token"). This meets the
+  identical hard requirement -- raw tokens absent from DB/audit/backups/logs
+  -- without adding a new symmetric-encryption dependency (this project has
+  none today). The tradeoff, made explicit in code and tests: a `prepare()`
+  response lost before reaching its caller cannot be recovered and must be
+  explicitly revoked (`revoke_reason='ABANDONED_PENDING'`) before a fresh
+  generation may be issued -- exactly the fallback this document already
+  allows ("if delivery ultimately fails, admin issues another generation").
+- **Resolver reuses PH3-02/03/04/08 verbatim.** No parallel slot-claim or
+  child-creation code exists; `src/opaque_resolver.py` calls
+  `DeviceSlotStore.claim()`, `ChildProvisioningStore`, `hwid_gate.evaluate()`
+  and `parent_sync.compute/refresh_desired_state` exactly as PH3-0x already
+  implemented them.
+- **New typed broker operation, not a generic proxy.** `child.user.subscription.get`
+  fetches a child's own rendered Marzban subscription body server-side (same
+  mechanism the legacy resolver already uses) and never returns the child's
+  subscription bearer path to the caller -- only the rendered body/headers.
+- **Known, deliberate scope limit.** The resolver adds *additional*
+  devices/slots for an account that already has at least one child, but does
+  not itself discover or verify a brand-new source template for an account's
+  very first device -- that trust decision (verifying a live legacy Marzban
+  user on every request) belongs to PH4-01's legacy bridge, not here.
+- **Dormant by two independent gates.** `OPAQUE_SUBSCRIPTION_ENABLED`
+  defaults to off (uniform invalid response regardless of DB state), and
+  separately neither `sub.beykus.fun` nor `panel.beykus.fun`'s production
+  nginx vhost proxies a root path to the application today -- verified
+  against the live config, not assumed.
+
+---
+
+Design-only text below this line, kept for the original contract record.
+Status: design-only. This document fixes the token, schema,
 API and migration contract but deliberately creates no table, endpoint or
 credential. Implementation depends on the Phase 3 parent-account identity and
 the Phase 4 staged legacy bridge.

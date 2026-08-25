@@ -83,6 +83,7 @@ from .routes.lk import (
     handle_lk_page,
     handle_lk_usage,
 )
+from .routes.opaque_sub import handle_opaque_sub
 from .routes.panel import handle_panel, handle_static_asset
 from .routes.sub import handle_sub
 from .security import require_admin_auth, require_internal_auth
@@ -169,6 +170,9 @@ _ROUTES = [
     ("POST",   re.compile(r"^/internal/v1/node-settings$"),     lambda h: handle_internal_node_settings_save(h) if require_internal_auth(h) else None),
     ("GET",    re.compile(r"^/internal/v1/settings$"),          lambda h: handle_internal_settings_get(h) if require_internal_auth(h) else None),
     ("POST",   re.compile(r"^/internal/v1/settings$"),          lambda h: handle_internal_settings_save(h) if require_internal_auth(h) else None),
+    # PH2-01: exact opaque-token root route, matched only after every
+    # reserved application path above and before the SPA catch-all below.
+    ("GET",    re.compile(r"^/(?P<token>[A-Za-z0-9_-]{43})$"),  lambda h, token: handle_opaque_sub(h, token)),
     # SPA catch-all: serve frontend for any path not matched above
     ("GET",    re.compile(r"^/.*$"),                            lambda h: handle_panel(h)),
 ]

@@ -73,3 +73,15 @@ SHADOW_RESOLVER_ENABLED = os.getenv("SHADOW_RESOLVER_ENABLED", "0").strip().lowe
 PH3_04_ENFORCEMENT_MODE = os.getenv("PH3_04_ENFORCEMENT_MODE", "OFF").strip().upper()
 if PH3_04_ENFORCEMENT_MODE not in {"OFF", "CANARY", "ENFORCE"}:
     PH3_04_ENFORCEMENT_MODE = "OFF"
+
+# PH2-01 opaque subscription resolver (src/opaque_resolver.py, routes/opaque_sub.py).
+# Dormant by default. Even when this is left at its default OFF, the route is
+# already unreachable in production because sub.beykus.fun's nginx vhost has
+# no root `location /` proxying to the panel (only /sub/, /lk/, /assets/,
+# /internal/, /sub-admin*) -- this flag is defense-in-depth, not the only gate.
+#   OFF     - default; the root token route always returns the uniform
+#             invalid-subscription response, regardless of DB state.
+#   ENABLED - reserved for a future explicitly-scoped rollout gate.
+OPAQUE_SUBSCRIPTION_ENABLED = os.getenv("OPAQUE_SUBSCRIPTION_ENABLED", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}

@@ -1,5 +1,6 @@
 """Typed allowlisted Marzban SUDO operations executed inside the broker."""
 
+import base64
 import hmac
 import json
 import threading
@@ -252,6 +253,32 @@ class BrokerOperations:
                 after = self.marzban.get_user(child_username, token)
                 verify_revoked_child(after, child_username)
                 return {"outcome": "REVOKED"}
+
+        if operation == "child.user.subscription.get":
+            # PH2-01: fetch the child's own rendered Marzban subscription
+            # body so the caller can run it through the existing
+            # process_subscription() filter pipeline -- exactly the same
+            # public-endpoint mechanism the legacy resolver already uses,
+            # just pointed at a per-device child instead of the shared
+            # legacy user. The subscription path segment (bearer-equivalent
+            # for this one child, analogous to the existing legacy token) is
+            # resolved and used here, inside the broker, and never returned
+            # to the caller.
+            request = validate_child_credentials_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                user = self.marzban.get_user(child_username, token)
+                reread_child_credentials(user, request)  # identity/contract/verifier check
+                sub_url = user.get("subscription_url") or ""
+                sub_token = sub_url.rstrip("/").rsplit("/", 1)[-1]
+                if not sub_token:
+                    raise ValueError("remote child has no subscription path")
+                body, headers = self.marzban.get_sub(sub_token)
+                return {
+                    "body_b64": base64.b64encode(body).decode("ascii"),
+                    "headers": {str(k): str(v) for k, v in headers.items()},
+                }
 
         if operation == "child.user.state.sync":
             request = validate_child_state_sync_request(data)
