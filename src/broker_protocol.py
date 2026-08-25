@@ -32,6 +32,7 @@ BROKER_OPERATIONS = LEGACY_BROKER_OPERATIONS | frozenset({
     "child.user.observe",
     "child.user.credentials.get",
     "child.user.revoke",
+    "child.user.state.sync",
     "maintenance.user.retire_shadowsocks",
 })
 _NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")

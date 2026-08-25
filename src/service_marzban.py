@@ -22,6 +22,7 @@ from .child_contract import (
     validate_child_ensure_request,
     validate_child_observe_request,
     validate_child_revoke_request,
+    validate_child_state_sync_request,
 )
 from .marzban import MarzbanClient
 from .shadowsocks_retirement import validate_retirement_request
@@ -226,6 +227,15 @@ class ServiceMarzbanClient:
             from .broker_operations import BrokerOperations
             return BrokerOperations(self.direct).dispatch("child.user.revoke", normalized)
         return self._broker().call("child.user.revoke", normalized)
+
+    def sync_child_user_state(self, request):
+        """Reversible parent-driven status/expiry mutation; never touches
+        proxies/UUID -- server-resolved only, distinct from PH3-05's revoke."""
+        normalized = validate_child_state_sync_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch("child.user.state.sync", normalized)
+        return self._broker().call("child.user.state.sync", normalized)
 
     def get_child_credentials(self, request):
         """Typed ephemeral credential reread; callers must never persist/log result."""

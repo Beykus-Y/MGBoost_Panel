@@ -11,6 +11,7 @@ from .broker_protocol import BROKER_OPERATIONS
 from .child_contract import (
     build_child_payload,
     build_revoke_payload,
+    build_state_sync_payload,
     credential_verifier,
     source_contract_hash,
     validate_child_ensure_request,
@@ -18,7 +19,9 @@ from .child_contract import (
     validate_created_child,
     validate_child_credentials_request,
     validate_child_revoke_request,
+    validate_child_state_sync_request,
     verify_revoked_child,
+    verify_synced_child,
     reread_child_credentials,
 )
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
@@ -222,17 +225,24 @@ class BrokerOperations:
                     raise
                 if current.get("username") != child_username:
                     raise ValueError("remote child identity mismatch")
-                if current.get("status") == "disabled":
-                    # Idempotent: a prior attempt already revoked this child
-                    # (e.g. lost local ACK); never re-mutate/re-rotate.
-                    return {"outcome": "ALREADY_REVOKED"}
                 try:
                     current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
                 except (KeyError, TypeError, ValueError, AttributeError) as exc:
                     raise ValueError("remote child UUID is invalid") from exc
-                if not hmac.compare_digest(
+                verifier_matches = hmac.compare_digest(
                     credential_verifier(current_uuid), request["uuid_verifier"]
-                ):
+                )
+                if current.get("status") == "disabled" and not verifier_matches:
+                    # Idempotent: a prior REVOKE already rotated this child's
+                    # credential away from what the caller has on file (e.g.
+                    # lost local ACK); never re-mutate/re-rotate. A child that
+                    # is merely `disabled` via PH3-08's reversible suspend
+                    # still has its original UUID, so it falls through to a
+                    # real revoke below instead of short-circuiting here --
+                    # PH3-05 REVOKE must always be able to actually kill a
+                    # credential, even one PH3-08 has only suspended.
+                    return {"outcome": "ALREADY_REVOKED"}
+                if not verifier_matches:
                     raise ValueError("remote child UUID verifier mismatch")
                 new_uuid = str(uuid.uuid4())
                 flow = (current.get("proxies", {}).get("vless", {}) or {}).get("flow") or ""
@@ -242,6 +252,58 @@ class BrokerOperations:
                 after = self.marzban.get_user(child_username, token)
                 verify_revoked_child(after, child_username)
                 return {"outcome": "REVOKED"}
+
+        if operation == "child.user.state.sync":
+            request = validate_child_state_sync_request(data)
+            child_username = request["child_username"]
+            desired_status = request["desired_status"]
+            desired_expire = request["desired_expire"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                try:
+                    current = self.marzban.get_user(child_username, token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        # PH3-08 never (re)creates a remote child -- that is
+                        # PH3-03's job. A missing remote user here is handed
+                        # back for reconciliation, not silently ignored.
+                        return {"outcome": "REMOTE_MISSING"}
+                    raise
+                if current.get("username") != child_username:
+                    raise ValueError("remote child identity mismatch")
+                try:
+                    current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    raise ValueError("remote child UUID is invalid") from exc
+                if not hmac.compare_digest(
+                    credential_verifier(current_uuid), request["uuid_verifier"]
+                ):
+                    # Contract drift / ambiguous remote state -- fail closed,
+                    # never blindly patch a possibly-wrong remote user.
+                    raise ValueError("remote child UUID verifier mismatch")
+                already_active_expiry = (
+                    desired_status == "active"
+                    and (desired_expire is None or int(current.get("expire") or 0) == int(desired_expire))
+                )
+                if current.get("status") == desired_status and (
+                    desired_status == "disabled" or already_active_expiry
+                ):
+                    return {"outcome": "ALREADY_IN_SYNC"}
+                self.marzban.modify_user(
+                    child_username,
+                    build_state_sync_payload(desired_status, desired_expire),
+                    token,
+                )
+                after = self.marzban.get_user(child_username, token)
+                verify_synced_child(after, child_username, desired_status, desired_expire)
+                after_uuid = str(uuid.UUID(after["proxies"]["vless"]["id"])).lower()
+                if after_uuid != current_uuid:
+                    # STOP condition per the PH3-08 contract: a plain
+                    # status/expire mutation must never rotate the credential.
+                    raise RuntimeError(
+                        "unexpected credential rotation on a reversible state sync"
+                    )
+                return {"outcome": "SYNCED"}
 
         if operation == "maintenance.user.retire_shadowsocks":
             request = validate_retirement_request(data)

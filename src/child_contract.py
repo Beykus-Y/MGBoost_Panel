@@ -22,6 +22,8 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERIFIER_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INBOUND_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 LIFECYCLE_OPERATION_KINDS = frozenset({"REVOKE", "FREE", "REBIND"})
+_SYNC_OPERATION_ID_RE = re.compile(r"^sy_[a-z2-7]{26}$")
+_SYNC_STATUS_RE = re.compile(r"^(active|disabled)$")
 
 
 def _canonical(value) -> bytes:
@@ -268,6 +270,74 @@ def verify_revoked_child(user: dict, child_username: str) -> dict:
     if user.get("status") != "disabled":
         raise ValueError("remote child is not disabled")
     return {"username": child_username, "status": "disabled"}
+
+
+def derive_sync_operation_id(child_username: str, parent_revision: int) -> str:
+    """PH3-08: one deterministic operation id per (child, parent desired-state
+    revision). A new parent revision always derives a different id, so a stale
+    operation from a superseded revision can never collide with -- or be
+    mistaken for -- the current one."""
+    validate_child_username(child_username)
+    if isinstance(parent_revision, bool) or not isinstance(parent_revision, int) or parent_revision < 1:
+        raise ValueError("invalid parent revision")
+    return "sy_" + _base32_128(
+        hashlib.sha256(
+            f"mgboost-child-sync-v1\0{parent_revision}\0{child_username}".encode()
+        ).digest()
+    )
+
+
+def validate_sync_operation_id(value) -> str:
+    if not isinstance(value, str) or not _SYNC_OPERATION_ID_RE.fullmatch(value):
+        raise ValueError("invalid child state-sync operation id")
+    return value
+
+
+def validate_child_state_sync_request(data: dict) -> dict:
+    required = {"operation_id", "child_username", "desired_status", "desired_expire", "uuid_verifier"}
+    if not isinstance(data, dict) or set(data) != required:
+        raise ValueError("invalid child state-sync fields")
+    child_username = validate_child_username(data["child_username"])
+    operation_id = validate_sync_operation_id(data["operation_id"])
+    desired_status = data["desired_status"]
+    if not isinstance(desired_status, str) or not _SYNC_STATUS_RE.fullmatch(desired_status):
+        raise ValueError("invalid desired status")
+    desired_expire = data["desired_expire"]
+    if desired_expire is not None:
+        if isinstance(desired_expire, bool) or not isinstance(desired_expire, int) or desired_expire < 0:
+            raise ValueError("invalid desired expire")
+        if desired_status != "active":
+            raise ValueError("desired expire is only meaningful for an active child")
+    uuid_verifier = data["uuid_verifier"]
+    if not isinstance(uuid_verifier, str) or not _VERIFIER_RE.fullmatch(uuid_verifier):
+        raise ValueError("invalid child UUID verifier")
+    return {
+        "operation_id": operation_id,
+        "child_username": child_username,
+        "desired_status": desired_status,
+        "desired_expire": desired_expire,
+        "uuid_verifier": uuid_verifier,
+    }
+
+
+def build_state_sync_payload(desired_status: str, desired_expire) -> dict:
+    """Minimal remote mutation for a reversible parent-driven status/expiry
+    change -- never touches `proxies`/UUID, unlike PH3-05's revoke payload."""
+    payload = {"status": desired_status}
+    if desired_status == "active" and desired_expire is not None:
+        payload["expire"] = int(desired_expire)
+    return payload
+
+
+def verify_synced_child(user: dict, child_username: str, desired_status: str, desired_expire) -> dict:
+    if not isinstance(user, dict) or user.get("username") != child_username:
+        raise ValueError("remote child identity mismatch")
+    if user.get("status") != desired_status:
+        raise ValueError("remote child status did not converge")
+    if desired_status == "active" and desired_expire is not None:
+        if int(user.get("expire") or 0) != int(desired_expire):
+            raise ValueError("remote child expiry did not converge")
+    return {"username": child_username, "status": desired_status}
 
 
 def credential_verifier(raw: str) -> str:
