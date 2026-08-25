@@ -85,3 +85,15 @@ if PH3_04_ENFORCEMENT_MODE not in {"OFF", "CANARY", "ENFORCE"}:
 OPAQUE_SUBSCRIPTION_ENABLED = os.getenv("OPAQUE_SUBSCRIPTION_ENABLED", "0").strip().lower() in {
     "1", "true", "yes", "on",
 }
+
+# PH4-01 legacy subscription alias bridge (src/legacy_bridge_resolver.py).
+# Dormant by two independent gates: this flag defaults OFF, and even when
+# on, `LegacyBridgeStore.resolve_account_for_legacy_username` only ever
+# returns an account for one with an explicit, root-only-created
+# `enabled=1` mgboost_legacy_bridge_bindings row -- in production today
+# there are zero such rows, so turning this flag on alone changes nothing.
+#   OFF     - default; legacy /sub is byte-identical to pre-PH4-01 behavior.
+#   ENABLED - reserved for a future explicit, owner-approved canary gate.
+LEGACY_BRIDGE_ENABLED = os.getenv("LEGACY_BRIDGE_ENABLED", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}

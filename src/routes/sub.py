@@ -7,12 +7,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 
 from ..device_headers import extract_device_metadata
-from ..config import SUB_BROWSER_CSP_ENFORCE
+from ..config import DEVICE_SLOT_HMAC_KEY, LEGACY_BRIDGE_ENABLED, SUB_BROWSER_CSP_ENFORCE
+from ..legacy_bridge_resolver import is_fall_through_outcome, resolve_legacy_bridge
 from ..marzban import MarzbanClient
+from ..opaque_resolver import OUTCOME_OK
+from ..service_marzban import ServiceMarzbanClient
 from ..shadow_resolver import schedule_shadow_resolution
 from ..subscription import process_subscription
 
 _client = MarzbanClient()
+_bridge_client = ServiceMarzbanClient()
 logger = logging.getLogger(__name__)
 
 _BLOCK_TITLES = {
@@ -93,6 +97,57 @@ def _observe_compatibility_fail_open(db, token, device_metadata):
             pass
 
 
+def _bridge_ensure_fn(payload):
+    return _bridge_client.ensure_child_user(payload)
+
+
+def _bridge_subscription_fn(payload):
+    return _bridge_client.get_child_subscription(payload)
+
+
+def _try_legacy_bridge(handler, db, username, device_metadata) -> bool:
+    """Returns True if this request was fully handled by the bridge (either
+    a real child config, or a fail-closed response after a durable slot
+    claim already happened) -- the caller must return immediately. Returns
+    False only when nothing durable happened (no mapping/binding, or any
+    deny decision -- every one of those happens strictly before
+    DeviceSlotStore.claim() could commit a row), meaning the caller must
+    proceed with the exact unmodified legacy response."""
+    result = resolve_legacy_bridge(
+        db, username, device_metadata, hmac_key=DEVICE_SLOT_HMAC_KEY,
+        ensure_fn=_bridge_ensure_fn, subscription_fn=_bridge_subscription_fn,
+        worker_id="legacy-bridge-inline-worker",
+    )
+    if is_fall_through_outcome(result.outcome):
+        return False
+    if result.outcome == OUTCOME_OK:
+        child_body = base64.b64decode(result.body_b64)
+        new_body, out_headers = process_subscription(
+            child_body, result.headers, result.child_username, result.child_username, db,
+        )
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/plain; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Referrer-Policy", "no-referrer")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header("X-Frame-Options", "DENY")
+        handler.send_header("Content-Length", str(len(new_body)))
+        for key, val in out_headers.items():
+            safe_value = str(val)
+            if "\r" in safe_value or "\n" in safe_value or len(safe_value) > 8192:
+                continue
+            handler.send_header(key, safe_value)
+        handler.end_headers()
+        handler.wfile.write(new_body)
+        return True
+    # A durable slot claim already happened for this device (every deny
+    # decision above is side-effect-free and already handled by the
+    # fall-through branch) -- a downstream failure here must never silently
+    # hand this device the shared legacy credential instead.
+    _plain_response(handler, 502, b"Subscription service unavailable\n")
+    return True
+
+
 def handle_sub(handler, token):
     started_at = time.monotonic()
     if not token or len(token) > _MAX_LEGACY_TOKEN_LENGTH:
@@ -164,6 +219,10 @@ def handle_sub(handler, token):
         handler.client_address[0],
         device_metadata,
     )
+
+    if LEGACY_BRIDGE_ENABLED and username:
+        if _try_legacy_bridge(handler, db, username, device_metadata):
+            return
 
     new_body, out_headers = process_subscription(body, marzban_headers, token, username, db)
 

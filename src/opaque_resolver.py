@@ -13,6 +13,13 @@ primitives, exactly the reuse the PH2-01/PH4-01 contracts require.
         -> HWID compatibility + slot resolution (PH3-04 gate -> PH3-02 claim)
         -> lazy child ensure (PH3-03, expire from the *current* parent state)
         -> child subscription body (new typed child.user.subscription.get)
+
+`resolve_account_device()` below is the shared tail of this pipeline --
+everything from "we already know the account_id" onward. PH4-01's legacy
+bridge (`src/legacy_bridge_resolver.py`) calls it too, after its own
+independent, evidence-based legacy-alias-to-account resolution, so the two
+entry points can never drift into two different security postures for the
+exact same downstream decision.
 """
 
 from __future__ import annotations
@@ -51,19 +58,17 @@ OUTCOME_INTERNAL_ERROR = "INTERNAL_ERROR"
 OUTCOME_OK = "OK"
 
 
-def resolve_opaque_subscription(
-    db, raw_token: str, device_metadata: dict, *, hmac_key, ensure_fn, subscription_fn,
-    worker_id: str, now: int | None = None,
+def resolve_account_device(
+    db, account_id: int, device_metadata: dict, *, hmac_key, ensure_fn, subscription_fn,
+    worker_id: str, now: int,
 ) -> OpaqueResolveResult:
-    timestamp = int(time.time()) if now is None else int(now)
-
-    credential = db.subscription_credentials.resolve(raw_token, now=timestamp)
-    if credential is None:
-        return OpaqueResolveResult(OUTCOME_INVALID_TOKEN)
-    account_id = credential["account_id"]
-
+    """Shared tail: an account_id is already known and trusted (resolved by
+    the caller through its own independent authority -- an opaque credential
+    for PH2-01, a reviewed legacy alias for PH4-01). Never accepts a
+    caller-supplied slot/generation/child -- only `account_id` and raw
+    device metadata."""
     try:
-        desired = db.parent_sync.refresh_desired_state(account_id, now=timestamp)
+        desired = db.parent_sync.refresh_desired_state(account_id, now=now)
     except Exception:
         return OpaqueResolveResult(OUTCOME_INTERNAL_ERROR)
     if desired["desired_status"] in ("EXPIRED", "DISABLED"):
@@ -77,7 +82,7 @@ def resolve_opaque_subscription(
         hwid_candidate_present=bool(device_metadata.get("hwid_candidate_present")),
         hwid_candidate_supported=bool(device_metadata.get("hwid_candidate_supported")),
         raw_hwid=device_metadata.get("device_id"),
-        hmac_key=hmac_key, now=timestamp,
+        hmac_key=hmac_key, now=now,
     )
     if not decision.allowed:
         return OpaqueResolveResult({
@@ -134,19 +139,19 @@ def resolve_opaque_subscription(
         # discovery mechanism.
         if source is None:
             return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
-        idem_key = f"opaque-resolver-child-v1:{slot_generation_id}"
+        idem_key = f"account-device-resolver-child-v1:{slot_generation_id}"
         try:
             prepared = db.child_provisioning.prepare_child_ensure(
                 account_id=account_id, slot_generation_id=slot_generation_id,
                 source_alias_id=alias["id"], source_contract_hash=source["source_contract_hash"],
-                expire=target_expire, idempotency_key=idem_key, now=timestamp,
+                expire=target_expire, idempotency_key=idem_key, now=now,
             )
         except Exception:
             return OpaqueResolveResult(OUTCOME_INTERNAL_ERROR)
 
         if prepared["state"] != "APPLIED":
             claimed = db.child_provisioning.claim(
-                prepared["operation_id"], worker_id=worker_id, now=timestamp, lease_seconds=20,
+                prepared["operation_id"], worker_id=worker_id, now=now, lease_seconds=20,
             )
             if claimed is None:
                 refreshed = db._conn.execute(
@@ -161,14 +166,14 @@ def resolve_opaque_subscription(
                 except Exception:
                     db.child_provisioning.retry(
                         prepared["operation_id"], worker_id=worker_id,
-                        error_class="PROVISIONING_UNAVAILABLE", now=timestamp,
+                        error_class="PROVISIONING_UNAVAILABLE", now=now,
                     )
                     return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
                 child_uuid = created.pop("uuid")
                 db.child_provisioning.acknowledge(
                     prepared["operation_id"], worker_id=worker_id,
                     outcome=created["outcome"], child_uuid=child_uuid, remote_result=created,
-                    now=timestamp,
+                    now=now,
                 )
 
         final_intent = db._conn.execute(
@@ -197,4 +202,20 @@ def resolve_opaque_subscription(
         OUTCOME_OK, child_username=child_username, slot_number=decision.slot_number,
         generation=decision.generation, body_b64=sub_result["body_b64"],
         headers=sub_result["headers"],
+    )
+
+
+def resolve_opaque_subscription(
+    db, raw_token: str, device_metadata: dict, *, hmac_key, ensure_fn, subscription_fn,
+    worker_id: str, now: int | None = None,
+) -> OpaqueResolveResult:
+    timestamp = int(time.time()) if now is None else int(now)
+
+    credential = db.subscription_credentials.resolve(raw_token, now=timestamp)
+    if credential is None:
+        return OpaqueResolveResult(OUTCOME_INVALID_TOKEN)
+
+    return resolve_account_device(
+        db, credential["account_id"], device_metadata, hmac_key=hmac_key,
+        ensure_fn=ensure_fn, subscription_fn=subscription_fn, worker_id=worker_id, now=timestamp,
     )
