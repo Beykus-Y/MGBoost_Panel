@@ -8,8 +8,9 @@ from urllib.parse import quote
 
 from ..device_headers import extract_device_metadata
 from ..config import DEVICE_SLOT_HMAC_KEY, LEGACY_BRIDGE_ENABLED, SUB_BROWSER_CSP_ENFORCE
-from ..legacy_bridge_resolver import is_fall_through_outcome, resolve_legacy_bridge
+from ..legacy_bridge_resolver import is_fall_through_outcome
 from ..marzban import MarzbanClient
+from ..migration_lifecycle import process_migration_bridge_request
 from ..opaque_resolver import OUTCOME_OK
 from ..service_marzban import ServiceMarzbanClient
 from ..shadow_resolver import schedule_shadow_resolution
@@ -112,8 +113,15 @@ def _try_legacy_bridge(handler, db, username, device_metadata) -> bool:
     False only when nothing durable happened (no mapping/binding, or any
     deny decision -- every one of those happens strictly before
     DeviceSlotStore.claim() could commit a row), meaning the caller must
-    proceed with the exact unmodified legacy response."""
-    result = resolve_legacy_bridge(
+    proceed with the exact unmodified legacy response.
+
+    PH4-03: uses `process_migration_bridge_request` (PH4-02) instead of the
+    bare `resolve_legacy_bridge` (PH4-01) -- adds the durable per-device
+    MIGRATING/MIGRATED lifecycle record on top of the exact same resolution
+    engine, no second resolver. Behavior for any not-yet-bridged account is
+    byte-identical to before (still gated by `LEGACY_BRIDGE_ENABLED` and an
+    explicit per-account binding)."""
+    result = process_migration_bridge_request(
         db, username, device_metadata, hmac_key=DEVICE_SLOT_HMAC_KEY,
         ensure_fn=_bridge_ensure_fn, subscription_fn=_bridge_subscription_fn,
         worker_id="legacy-bridge-inline-worker",

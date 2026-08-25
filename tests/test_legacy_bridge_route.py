@@ -190,3 +190,11 @@ def test_flag_on_bridged_account_response_has_no_shared_legacy_uuid(db, monkeypa
     decoded = base64.b64decode(sent_body).decode("utf-8", errors="replace")
     assert legacy_uuid not in decoded
     assert decoded != base64.b64decode(body).decode()  # genuinely not the legacy body
+
+    # PH4-03: the live route now durably records the migration via PH4-02's
+    # state machine (process_migration_bridge_request), not just resolving.
+    from src.device_slots import privacy_safe_hwid
+    hwid_verifier, _masked = privacy_safe_hwid("route-bridge-device", HWID_KEY)
+    binding = db.migration_lifecycle.find_by_device(account["account_id"], hwid_verifier)
+    assert binding is not None
+    assert binding["state"] == "MIGRATED"
