@@ -108,3 +108,24 @@ done here. The logrotate config files added above are correct and ready
 for whenever a rotation mechanism is provisioned; the one rotation
 performed for this verification was executed manually, replicating the
 configured stanza's exact `create`/`postrotate` semantics.
+
+**Closed by PH1-10 (2026-08-25):** see `ROADMAP.md` PH1-10 for full
+evidence. Summary: `logrotate` (Ubuntu package, standard distro mechanism,
+no custom daemon) was installed; its systemd `logrotate.timer` was enabled
+automatically by the package install (confirmed `enabled`/`active`, next
+trigger scheduled, standard reboot-persistent systemd timer semantics). A
+real `logrotate -f /etc/logrotate.conf` forced run (not a dry-run, not a
+manual simulation) rotated the sensitive log for real, producing a new
+`www-data:root 0600` generation while nginx kept writing after reopening;
+the config's own dry-run (`logrotate -d`) had already confirmed no
+glob-overlap/double-rotation between the generic and sensitive stanzas
+before the destructive run. `tests/test_ph1_10_sensitive_log_retention_config.py`
+durably guards the repository's own `ops/nginx/` reference configs against
+drift (exact 30-day retention, `0600 www-data root` create mode, no
+overlapping glob, postrotate reopen hook present).
+
+One related, separately-scoped observation surfaced while investigating
+this: `journald`'s own `MaxRetentionSec` is also unset on production
+(default size-based rotation, not a 30-day cap). This is unrelated to nginx
+and out of PH1-10's scope -- noted here, and on `ROADMAP.md` PH1-06, for a
+future task, not fixed as part of PH1-10.
