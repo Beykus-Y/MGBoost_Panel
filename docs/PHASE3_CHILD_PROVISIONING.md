@@ -344,9 +344,17 @@ created `enabled=0`; enabling is a separate idempotent action.
 `tests/test_shadow_binding_tool.py`: `13 passed`. Full project regression:
 `588 passed, 3 skipped`.
 
-**Not done as of this commit.** No shadow binding row exists anywhere outside
-test/staging fixtures; the approved `beykusios` canary device has not been
-opted into shadow scope in production; `SHADOW_RESOLVER_ENABLED`/
-`MARZBAN_BROKER_RESOLVER_AUTH_KEY` remain unset in every deployed
-environment. The legacy resolver, the existing dormant canary and the
-reconcile-only worker are all unaffected by this change.
+**Production SHADOW-only deployment, accelerated observation and manual child
+config check all passed 2026-08-25; PH3-03 is closed `[x]`.** The approved
+`beykusios`/device-56 canary now has exactly one enabled shadow binding in
+production. An accelerated ~19-minute SHADOW observation window (11
+evaluations: 4 organic, 7 controlled) recorded 100% `PASS`/`MATCH` with zero
+leakage and zero cardinality drift. A real child subscription config was
+QR-exported entirely locally and manually scanned by the owner into a
+separate temporary INCY profile on a Samsung M21 (the primary iPhone
+17/production INCY profile untouched); import, parsing, connection, real
+traffic and egress verification all passed. Full evidence, exact numbers and
+the disclosed audit-timestamp gap for the `enabled` transition are recorded
+in `ROADMAP.md` PH3-03. The legacy resolver, the existing dormant canary and
+the reconcile-only worker remain otherwise unaffected; PH3-04/PH3-05/Phase 4
+and any real client switch have not started.
