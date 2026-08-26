@@ -186,6 +186,61 @@ class WLUsageLedgerStore:
         ).fetchone()
         return int(row["id"]) if row is not None else None
 
+    def sync_wl_period_statuses(self, *, account_id: int, now: int) -> None:
+        """Pure, idempotent, time-only advance of this account's own WL
+        periods through the exact `PLANNED -> ACTIVE -> CLOSED` state
+        machine `wl_period_lifecycle_schema.py`'s own docstring already
+        named but deliberately left unbuilt ("Phase 6's own future runtime
+        concern"). Never a policy decision -- a period becomes ACTIVE the
+        instant its own `starts_at` arrives and CLOSED the instant its own
+        `ends_at` passes, nothing else. `mgboost_wl_periods.status` is the
+        one column PH5-02's immutability trigger deliberately left mutable
+        for exactly this. Without this, `resolve_active_wl_period` (used
+        both by PH6-03's own collector and PH6-04's shared-pool read model)
+        can never find an ACTIVE period for a real purchase, since
+        `apply_same_plan_purchase`/`WLPeriodAdminResetStore.reset_period`
+        only ever create/leave rows `PLANNED`.
+
+        Close-before-activate ordering handles two edge cases in one pass:
+        a period whose entire window already fully elapsed (e.g. after a
+        long collector gap) closes directly from PLANNED without ever
+        needing to pass through ACTIVE, so it can never block a later
+        sequential period in the same subscription from resolving; and the
+        contiguous-boundary instant where one period's `ends_at` exactly
+        equals the next period's `starts_at` closes the first and activates
+        the second in the same, single, atomic transaction. A `CLOSED`
+        period (including one closed early by ADMIN_RESET) is never touched
+        again -- this never revives one.
+
+        Ordering matters to callers: `mgboost_wl_usage_samples.wl_period_id`
+        is fixed at the first write into a given (child, node, UTC-hour)
+        bucket and is then immutable (the identity trigger guards it too) --
+        if that first write ever happens before this sync has run for the
+        period covering that hour, every later delta added to that same
+        bucket stays permanently unattributed. Every real WL period boundary
+        is exactly UTC-hour aligned (DL-020), so as long as this always runs
+        immediately before `resolve_active_wl_period` on every collection
+        (as `run_collection_cycle` already does), a period is always ACTIVE
+        by the time its very first hour's very first sample is recorded --
+        this is never actually reachable in the real collector path."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "UPDATE mgboost_wl_periods SET status='CLOSED' "
+                    "WHERE account_id=? AND status IN ('PLANNED','ACTIVE') AND ends_at<=?",
+                    (int(account_id), int(now)),
+                )
+                self._conn.execute(
+                    "UPDATE mgboost_wl_periods SET status='ACTIVE' "
+                    "WHERE account_id=? AND status='PLANNED' AND starts_at<=? AND ends_at>?",
+                    (int(account_id), int(now), int(now)),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def get_cursor(self, *, account_id: int, child_intent_id: int, node_id: int) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM mgboost_wl_usage_cursors WHERE child_intent_id=? AND node_id=?",
@@ -360,6 +415,7 @@ def run_collection_cycle(
         children = ledger.list_live_children()
         summary["children_seen"] = len(children)
         for child in children:
+            ledger.sync_wl_period_statuses(account_id=child["account_id"], now=timestamp)
             wl_period_id = ledger.resolve_active_wl_period(child["account_id"], timestamp)
             for node_id in sorted(node_ids):
                 try:

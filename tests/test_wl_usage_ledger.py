@@ -44,7 +44,7 @@ def _clean_topology_ok(db, now=1):
     db.wl_topology_guard.run_assertion(tags, nodes, now=now)
 
 
-def _seed_active_wl_period(db, *, account_id, starts_at, ends_at, now):
+def _seed_wl_period(db, *, account_id, starts_at, ends_at, now, status="ACTIVE"):
     conn = db._conn
     subscription = conn.execute(
         "SELECT id FROM mgboost_subscriptions WHERE account_id=?", (account_id,)
@@ -73,11 +73,15 @@ def _seed_active_wl_period(db, *, account_id, starts_at, ends_at, now):
     period_id = conn.execute(
         "INSERT INTO mgboost_wl_periods "
         "(account_id,subscription_id,subscription_term_id,sequence_no,starts_at,ends_at,"
-        "quota_mode,status,created_at) VALUES (?,?,?,?,?,?,'UNLIMITED','ACTIVE',?)",
-        (account_id, subscription_id, term_id, period_seq, starts_at, ends_at, now),
+        "quota_mode,status,created_at) VALUES (?,?,?,?,?,?,'UNLIMITED',?,?)",
+        (account_id, subscription_id, term_id, period_seq, starts_at, ends_at, status, now),
     ).lastrowid
     conn.commit()
     return period_id
+
+
+def _seed_active_wl_period(db, *, account_id, starts_at, ends_at, now):
+    return _seed_wl_period(db, account_id=account_id, starts_at=starts_at, ends_at=ends_at, now=now, status="ACTIVE")
 
 
 class FakeServiceMarzban:
@@ -331,6 +335,100 @@ def test_resolve_active_wl_period_matches_covering_window(db):
     assert db.wl_usage_ledger.resolve_active_wl_period(account_id, 1800) == period_id
     assert db.wl_usage_ledger.resolve_active_wl_period(account_id, 3600) is None  # end exclusive
     assert db.wl_usage_ledger.resolve_active_wl_period(account_id, -1) is None
+
+
+# --- PH6-04 corrective addition: the PLANNED -> ACTIVE -> CLOSED status --
+# machine wl_period_lifecycle_schema.py's own docstring reserved but never
+# built -- a real gap this session found while building PH6-04 (a real
+# purchase only ever creates PLANNED rows; nothing ever promoted one).
+
+def _status(db, period_id):
+    return db._conn.execute(
+        "SELECT status FROM mgboost_wl_periods WHERE id=?", (period_id,)
+    ).fetchone()["status"]
+
+
+def test_sync_promotes_planned_to_active_once_starts_at_arrives(db):
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    period_id = _seed_wl_period(db, account_id=account_id, starts_at=1000, ends_at=2000, now=1, status="PLANNED")
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=500)
+    assert _status(db, period_id) == "PLANNED"  # not yet started
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=1000)
+    assert _status(db, period_id) == "ACTIVE"  # starts_at is inclusive
+
+
+def test_sync_closes_active_period_once_ends_at_passes(db):
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    period_id = _seed_wl_period(db, account_id=account_id, starts_at=0, ends_at=1000, now=1, status="ACTIVE")
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=999)
+    assert _status(db, period_id) == "ACTIVE"
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=1000)
+    assert _status(db, period_id) == "CLOSED"  # ends_at is exclusive/closes-on-arrival
+
+
+def test_sync_closes_a_planned_period_directly_if_its_window_already_fully_elapsed(db):
+    """A period that was never separately activated (e.g. after a long
+    collector gap) must still close -- otherwise it would be stuck in
+    PLANNED forever and block every later sequential period from ever
+    resolving as ACTIVE."""
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    period_id = _seed_wl_period(db, account_id=account_id, starts_at=0, ends_at=1000, now=1, status="PLANNED")
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=5000)
+    assert _status(db, period_id) == "CLOSED"
+
+
+def test_sync_handles_the_contiguous_boundary_between_two_sequential_periods(db):
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    p1 = _seed_wl_period(db, account_id=account_id, starts_at=0, ends_at=1000, now=1, status="ACTIVE")
+    p2 = _seed_wl_period(db, account_id=account_id, starts_at=1000, ends_at=2000, now=1, status="PLANNED")
+
+    # At the exact contiguous boundary, one atomic sync closes the first and
+    # activates the second -- never both ACTIVE, never a gap.
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=1000)
+    assert _status(db, p1) == "CLOSED"
+    assert _status(db, p2) == "ACTIVE"
+    assert db.wl_usage_ledger.resolve_active_wl_period(account_id, 1000) == p2
+
+
+def test_sync_never_revives_a_closed_period(db):
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    period_id = _seed_wl_period(db, account_id=account_id, starts_at=0, ends_at=1000, now=1, status="CLOSED")
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=500)  # inside the old window
+    assert _status(db, period_id) == "CLOSED"
+
+
+def test_sync_is_idempotent_across_repeated_calls(db):
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    period_id = _seed_wl_period(db, account_id=account_id, starts_at=0, ends_at=1000, now=1, status="PLANNED")
+
+    for _ in range(3):
+        db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=500)
+    assert _status(db, period_id) == "ACTIVE"
+
+
+def test_sync_never_touches_a_different_accounts_periods(db):
+    fx1 = _build_applied_child(db, mapping="SYNC_SCOPE_1", tg=555101, alias="alice1")
+    fx2 = _build_applied_child(db, mapping="SYNC_SCOPE_2", tg=555102, alias="alice2")
+    account_1 = fx1["account"]["account_id"]
+    account_2 = fx2["account"]["account_id"]
+    period_1 = _seed_wl_period(db, account_id=account_1, starts_at=0, ends_at=1000, now=1, status="PLANNED")
+    period_2 = _seed_wl_period(db, account_id=account_2, starts_at=0, ends_at=1000, now=1, status="PLANNED")
+
+    db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_1, now=500)
+    assert _status(db, period_1) == "ACTIVE"
+    assert _status(db, period_2) == "PLANNED"  # untouched -- different account
 
 
 # --- full collection cycle -------------------------------------------------

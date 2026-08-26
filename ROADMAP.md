@@ -1252,11 +1252,85 @@ duplicate-detection path used for crash/retry safety. `quick_check=ok` and
 0 FK violations held after both runs. Collector lease released
 (`lease_owner=NULL`, `last_run_outcome='OK'`) after each run.
 
-## [ ] PH6-04 — Default shared parent WL pool
+## [x] PH6-04 — Default shared parent WL pool: accounting/read model only, production-deployed 2026-08-27
 
 **Depends:** PH6-02/03 + children. **Policy:** sum child usage on two WL nodes; at quota disable all children. Family использует один общий 150 GB parent pool; optional advanced per-device allocation идёт через PH6-05, purchased traffic увеличивает этот же parent pool.
 **Accept:** 60+20+10 = 90/100; at 100 disable exactly once.
 **Tests:** concurrent children, slot changes, unlimited/non-WL. **Rollback:** derive desired from ledger, no consumed edit.
+
+**Done (accounting/read model scope only -- disable-at-quota is PH6-06, explicitly not built here):**
+`src/wl_parent_pool.py`, new module, no new schema. `compute_parent_wl_pool()` is
+a pure `SUM(bytes_delta)` over the already-durable, already-deduplicated PH6-03
+`mgboost_wl_usage_samples` ledger, grouped by `(account_id, wl_period_id)` and
+filtered to the exact PH0-05 `WL_NODE_IDS` allowlist -- one accounting path,
+zero new tables, exactly matching Rollback's "derive desired from ledger, no
+consumed edit". Parent-pool semantics needed no new "family" concept: WL quota
+already belongs to `mgboost_wl_periods.account_id`, and every child of that
+account contributes regardless of its *current* `observed_state`, so a
+revoked/rebound generation's already-ledgered current-period traffic is never
+lost (the ledger tables are immutable/append-only by PH6-03's own schema).
+`resolve_current_parent_wl_pool()` is the time-aware entrypoint (Non-WL/
+UNLIMITED-WL/between-periods/never-purchased accounts all correctly resolve
+to `None`, not a fabricated zero).
+
+**Real gap found and closed while building this (not scope creep -- PH6-04's
+own pool literally cannot resolve "the current period" without it):**
+`wl_period_lifecycle_schema.py`'s own docstring already named the
+`PLANNED -> ACTIVE -> CLOSED` state machine but explicitly deferred building
+it ("Phase 6's own future runtime concern"); nothing ever actually promoted
+a period past `PLANNED`, so PH6-03's own `resolve_active_wl_period` (already
+deployed, `status='ACTIVE'` filter) could never attribute a live purchase's
+usage to any period. `WLUsageLedgerStore.sync_wl_period_statuses()` (new
+method, `src/wl_usage_ledger.py`) is the mechanical, purely time-driven
+completion of that already-declared machine -- never a new policy decision:
+a period becomes `ACTIVE` the instant its own `starts_at` arrives and
+`CLOSED` the instant its own `ends_at` passes, close-before-activate in one
+atomic transaction so a period whose window already fully elapsed (a long
+collector gap) closes directly without blocking a later sequential period,
+and a `CLOSED` period (including one closed early by ADMIN_RESET) is never
+revived. Wired into `run_collection_cycle` immediately before its existing
+`resolve_active_wl_period` call -- the exact same resolver PH6-03 already
+used, never a second one. Zero new tables; only `mgboost_wl_periods.status`,
+the one column PH5-02's own immutability trigger deliberately left mutable
+for this.
+
+24 new focused tests (`tests/test_wl_usage_ledger.py` +7 for
+`sync_wl_period_statuses`: PLANNED->ACTIVE at `starts_at`, ACTIVE->CLOSED at
+`ends_at`, a fully-elapsed PLANNED period closing directly, the exact
+contiguous two-period boundary in one atomic call, a CLOSED period never
+revived, idempotent repeated calls, cross-account isolation;
+`tests/test_wl_parent_pool.py` 17: one parent/several children summed, quota
+exceeded reported with zero enforcement side effect, one child through both
+WL nodes, duplicate ledger observations never double-counted, a revoked
+generation keeping its already-consumed current-period traffic, the WL
+period boundary never leaking usage, 30d/60d sequential periods never
+merging quota, unknown/cross-account period rejected, a Non-WL account and a
+never-purchased account both resolving to `None`, the real PLANNED->ACTIVE
+gap closed end-to-end through a genuine `run_collection_cycle` call,
+concurrency/restart/idempotent recomputation, and zero raw-identifier
+leakage / zero Marzban or config mutation of any kind). Full regression:
+**`1140 passed, 0 skipped`** (up from `1116`).
+
+**Production deploy (2026-08-27):** application-code-only, no schema
+migration (PH6-04 needed none). Fresh encrypted backup create/restore PASS;
+preflight/post-deploy invariants identical (`quick_check=ok`, 0 FK
+violations, accounts=18, grace=17, subscriptions=18, `mgboost_wl_periods`=0
+-- unchanged, since no real purchase flow calls `apply_same_plan_purchase`
+live yet), all 4 services active, unauthenticated `/admin/accounts`/
+`/admin/dashboard` still `401`, legacy `/sub` bogus-token still `404`.
+Real production observe-only verification: a fresh `run_wl_usage_collector`
+run (now internally calling `sync_wl_period_statuses` per live child, a
+no-op against the real 0-row `mgboost_wl_periods` table) reproduced the same
+outcome shape PH6-03's own prior real run already proved (0 errors, 0
+resets, idempotent second-cycle no-op), confirming the wired-in sync adds no
+observable behavior change for real production data today. `resolve_current_
+parent_wl_pool()` against every one of the 18 real production accounts
+returned `None` for all of them (zero real WL periods exist yet -- expected,
+not a bug) with zero Marzban calls and zero row mutation beyond the
+already-existing collector's own ledger writes. Not wired to any admin
+route/UI/scheduler -- dormant/on-demand, matching the PH6-01/02/03
+precedent; PH6-06 (disable-at-quota enforcement) remains unstarted and
+explicitly out of this task's own scope.
 
 ## [ ] PH6-05 — Optional manual per-device allocation
 
