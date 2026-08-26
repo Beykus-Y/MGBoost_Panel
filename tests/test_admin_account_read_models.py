@@ -141,6 +141,55 @@ def test_detail_exposes_masked_operational_device_and_keeps_internal_ids_technic
     assert detail["subscription"]["effective"]["device_limit"] == 10
 
 
+def test_devices_tab_shows_real_client_evidence_separate_from_slot_and_never_genesis(db):
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_READ_KNOWN_DEVICES", alias="known-dev-user")
+    account_id = account["account_id"]
+    db.device_slots.claim(account_id, _genesis_hwid(account_id), HWID_KEY, now=101)
+
+    db.check_device_access(
+        "known-dev-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "a" * 32,
+            "device_name": "iPhone 15",
+            "platform": "ios",
+            "client_name": "happ",
+            "client_version": "2.7.0",
+        },
+    )
+    # A deactivated device must not leak into the normal read-only view.
+    db.check_device_access(
+        "known-dev-user", "legacy-token-2",
+        {
+            "request_key": "hwid:" + "b" * 32,
+            "device_name": "Old Laptop",
+            "platform": "windows",
+            "client_name": "v2raytun",
+            "client_version": "1.0.0",
+        },
+    )
+    db.deactivate_device(
+        db._conn.execute(
+            "SELECT id FROM user_devices WHERE username='known-dev-user' AND device_name='Old Laptop'"
+        ).fetchone()[0],
+        "known-dev-user",
+    )
+
+    detail = account_detail(db, account_id, now=400, device_slot_hmac_key=HWID_KEY)
+    known = detail["known_client_devices"]
+    assert len(known) == 1
+    assert known[0]["name"] == "iPhone 15"
+    assert known[0]["platform"] == "iOS"
+    assert known[0]["client_name"] == "Happ"
+    assert known[0]["client_version"] == "2.7.0"
+    assert known[0]["last_seen"] is not None
+
+    # The genesis/bootstrap slot placeholder never sends a real HTTP request,
+    # so it can never appear in the client-evidence list -- structurally, not
+    # by filtering it out after the fact.
+    assert any(row["proven_genesis_bootstrap"] for row in detail["devices"])
+    assert all(item["name"] != "Old Laptop" for item in known)
+
+
 def test_dashboard_grace_block_is_conditional_and_ticket_counter_is_compact(db):
     account = db.accounts.create_account("DIRECT")
     assert dashboard_summary(db, now=1_000)["grace_campaign"] is None

@@ -9,12 +9,22 @@ from __future__ import annotations
 import json
 import time
 
+from .device_headers import PLATFORMS as _RAW_PLATFORM_LABELS
 from .internal_entitlements import InternalEntitlementError
 from .legacy_grace_observability import account_grace_snapshot, classify_action
 from .legacy_grace_migration import is_genesis_hwid_verifier
 
 
 _MIGRATED_STATES = ("MIGRATED", "LEGACY_REVOKE_PENDING", "LEGACY_REVOKED")
+
+# Cosmetic casing only, for the small set of VPN clients the owner named
+# explicitly -- an unrecognized client_name is shown exactly as captured,
+# never guessed into one of these.
+_CLIENT_DISPLAY_NAMES = {
+    "happ": "Happ",
+    "v2raytun": "v2rayTun",
+    "incy": "INCY",
+}
 
 
 def _aliases(connection, account_id: int, notes_by_alias: dict[str, str] | None = None) -> list[dict]:
@@ -163,6 +173,55 @@ def _device_summaries(
     return result
 
 
+def _humanize_platform(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return _RAW_PLATFORM_LABELS.get(text.lower(), text)
+
+
+def _humanize_client_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return _CLIENT_DISPLAY_NAMES.get(text.lower(), text)
+
+
+def _known_client_devices(db, aliases: list[dict]) -> list[dict]:
+    """Real client-observed devices for this account's legacy username(s).
+
+    Sourced from the already-existing, continuously-updated `user_devices`
+    table (populated by `Database.check_device_access` on every real legacy
+    `/sub/{token}` hit -- the same path every currently-migrated account's
+    real traffic still runs through). This is genuine client evidence
+    (device name/OS/VPN app+version/last activity), never a per-slot
+    inference: a genesis/bootstrap placeholder slot never sends a real HTTP
+    request, so it can never appear here by construction.
+    """
+    items = []
+    for alias in aliases:
+        username = alias.get("legacy_username")
+        if not username:
+            continue
+        for row in db.get_user_devices(username):
+            if not row.get("is_active"):
+                continue
+            items.append({
+                "name": row.get("display_name") or row.get("device_name"),
+                "platform": _humanize_platform(row.get("platform")),
+                "client_name": _humanize_client_name(row.get("client_name")),
+                "client_version": row.get("client_version") or None,
+                "last_seen": row.get("last_seen"),
+                "first_seen": row.get("first_seen"),
+            })
+    items.sort(key=lambda item: item["last_seen"] or 0, reverse=True)
+    return items
+
+
 def _technical_summary(connection, account_id: int, public_id: str) -> dict:
     rows = connection.execute(
         "SELECT s.slot_number,g.id AS slot_generation_id,g.generation,g.status AS generation_status,g.hwid_verifier,"
@@ -206,6 +265,7 @@ def account_detail(
         "devices": _device_summaries(
             db._conn, account_id, device_slot_hmac_key=device_slot_hmac_key,
         ),
+        "known_client_devices": _known_client_devices(db, aliases),
         "telegram": {
             "status": grace["telegram_status"],
             "identities": [dict(row) for row in identities],
