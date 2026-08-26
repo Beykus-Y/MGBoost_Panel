@@ -1,4 +1,146 @@
-# AGENT_HANDOFF — Wave A corrective UX slice production-deployed / authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — Devices client-evidence addendum + PH5-01 catalog production-deployed / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-26 (later still, same day). **This top section supersedes
+everything below.** Two things happened this session: (1) a small read-only
+Devices addendum the owner asked for before final Wave A sign-off, and (2)
+PH5-01 (versioned six-plan catalog), the first Phase 5 slice, built and
+production-deployed. **PH7-12 stays `[~]`, not closed** -- the addendum did
+not touch either of the two items the prior handoff already flagged as
+outstanding (owner authenticated click-through; legacy `admin.js` monolith
+split), so per that handoff's own explicit boundary this session did not
+start that remaining work.
+
+## Devices: real client-evidence addendum (read-only, PH7-05 mutations not started)
+
+Owner asked to see the actual device/VPN client in Account -> Devices, not
+just slot/technical state, before treating Wave A as fully closed. Added
+`known_client_devices` to `account_detail()`
+(`src/admin_read_models.py::_known_client_devices`), rendered as a new card
+block in `frontend/assets/admin/accounts.js::devicesTab` above the existing
+slot table. Source: the already-existing, continuously-updated `user_devices`
+table, populated by `Database.check_device_access` on every real legacy
+`/sub/{token}` hit -- the same request path every currently-migrated
+account's real traffic still runs through (confirmed by reading
+`src/routes/sub.py`; `check_device_access` runs unconditionally before the
+legacy-bridge resolver). Shows: device name (the admin's own renamed
+`display_name` if set, else the reported device model), humanized OS/
+platform, humanized VPN client name + version (`Happ`/`v2rayTun`/`INCY`
+casing only for the three the owner named explicitly; any other client_name
+is shown exactly as captured, never guessed into a known label), last
+activity. Only `is_active=1` rows are shown.
+
+**Deliberately NOT merged into the existing per-slot table:** a device slot's
+HWID is a keyed HMAC verifier (`privacy_safe_hwid()`, PH3 device-slot
+architecture) while `user_devices.request_key` is a plain SHA-256 hash from
+a completely different scheme (`device_headers.py`) -- there is no shared
+key or provable way to match one specific `user_devices` row to one specific
+slot from stored data alone, and inventing that pairing would have been
+exactly the kind of fabricated metadata the instruction explicitly forbade.
+Shown as a clearly separate, clearly labeled block instead. A genesis/
+bootstrap placeholder slot never issues a real HTTP request, so it can
+never appear in this list -- an inherent property of the data source, not a
+filter applied after the fact, matching the existing `proven_genesis_
+bootstrap` distinction on the slot table. No raw HWID/UUID/request-key is
+exposed in this new block.
+
+Evidence: 1 new focused test
+(`tests/test_admin_account_read_models.py::test_devices_tab_shows_real_client_evidence_separate_from_slot_and_never_genesis`,
+covers real-device-shown / deactivated-device-hidden / genesis-never-shown /
+humanized platform+client casing). Full regression via the already-installed
+`/tmp/mgboost-wave-a-browser-venv` Playwright/Chromium venv: `1039 passed`
+(all browser suites included, zero skips).
+
+## PH5-01 — Versioned six-plan catalog: `[x]`, production-deployed
+
+First Phase 5 slice. Pure catalog/schema work -- **no purchase flow, no
+Stars/LK/bot wiring, nothing production-user-visible changes.** New dormant/
+additive schema (`src/plan_catalog_schema.py`, migration id
+`ph5_01_plan_catalog_v1`, requires the PH3-01 parent schema's exact checksum,
+same pattern PH3-06 already used): `mgboost_price_catalog_versions`
+(immutable identity, at most one `ACTIVE` version per channel) and
+`mgboost_plan_prices` (immutable, FK-bound to a specific plan-version+
+duration). `src/plan_catalog.py` holds the exact owner-approved data --
+copied verbatim from `ROADMAP.md`'s own "Approved product catalog" table and
+DL-040, nothing invented -- and `seed_plan_catalog()` idempotently creates
+the six commercial plans (`BASIC`/`BASIC_PLUS`/`BASIC_PRO`/`WL`/`EXTENDED`/
+`FAMILY`; device limits 3/6/12; WL `NONE` for the three Base tiers,
+`LIMITED` 100/150 decimal-GB per fixed 30-day period for WL/Расширенный/
+Семейный) with 30/60-day durations and both channels' prices (`TELEGRAM_
+STARS` = new `STARS-2026-08-26-v1`, `RUB` = `RUB-2026-08-23-v1` per DL-040)
+-- 12 SKUs/12 prices per channel, 24 total, exactly matching the roadmap
+tables. Seeding is its own explicit script
+(`scripts/seed_ph5_01_plan_catalog.py`), NOT auto-run at `Database` startup
+-- same dormant-until-seeded discipline PH3-01/PH3-06 used. The live
+`stars_tariffs` table and the 199⭐/349⭐ current-tariff mapping decision this
+roadmap entry's own "Migration" line describes are explicitly deferred to
+whichever future phase (PH5-04/05) actually wires a real purchase/
+entitlement flow to this catalog -- out of PH5-01's own schema/data-only
+scope.
+
+9 new focused tests (`tests/test_plan_catalog_schema.py`,
+`tests/test_plan_catalog.py`): migration idempotency, exact-parent-checksum
+requirement, price/catalog-version immutability, one-active-catalog-per-
+channel, positive-amount validation, exact plan terms, exact 12-SKU/24-price
+seeding, reseed idempotency, and the seed script's own `main()` end-to-end.
+
+**Production deploy:** fresh encrypted backup create/restore PASS (via
+`systemctl start mgboost-secure-backup.service`) immediately before deploy.
+Preflight: `quick_check=ok`, 0 FK violations, accounts=18, grace=17,
+`mgboost_plan_versions`=7 (pre-existing `LEGACY_PAID_COMPAT_V1_*`/internal
+rows), `mgboost_plan_prices` table absent, `LEGACY_REVOKED=0`. Fast-forward
+`f4a250e` -> `6414a59`, `mgboost-panel` restart only (schema self-applies on
+`Database` construction; additive-only, no existing table touched). Post-
+deploy: `quick_check=ok`, 0 FK violations, accounts/grace unchanged 18/17,
+`LEGACY_REVOKED=0`, all 4 services active (`mgboost-panel`, `mgboost-
+marzban-broker`, `mgboost-child-worker`, `nginx`), static `accounts.js`/
+`admin.css` `200` with correct MIME and confirmed to actually contain the
+new strings (not a stale-cache repeat of the immediately-prior incident),
+`/admin/accounts`/`/admin/dashboard` still `401` unauthenticated, legacy
+`/sub` bogus-token still `404`. Catalog explicitly seeded in production via
+the new script: 6 plan codes, 24 prices created; re-run immediately after
+confirmed fully idempotent (0 newly-created, invariants unchanged, all 24
+prices spot-checked against the approved tables by direct SQL join --
+verbatim match). `mgboost_plan_versions` went `7` -> `13` (exactly the 6 new
+rows), zero existing row touched.
+
+## Unchanged this session (verify before relying on any of these)
+
+- Production HEAD: `6414a59` (local/origin/production all match, verified
+  via `git log -1` on all three).
+- `mgboost_legacy_grace_periods`: still 17 rows, unchanged by this session
+  (neither slice touches grace). Pull a fresh
+  `scripts/ph4_05_daily_cohort_report.py` run before quoting live counts --
+  they continue to change organically from real client reconnects.
+- PH4-06: **NOT STARTED**. `LEGACY_REVOKED=0`. No shared legacy credential
+  was touched this session.
+- PH7-12 stays `[~]` -- see the "Remaining before Wave A `[x]`" note in
+  `ROADMAP.md` (owner authenticated click-through; `admin.js` monolith
+  split), neither of which this session started.
+
+## Exact next step
+
+No blocking decision pending for either slice this session touched. Two
+independent, owner-scoped next actions exist (pick either, they don't
+conflict):
+
+1. **PH7-12 close-out** (owner-gated): the owner-performed authenticated
+   Dashboard/Accounts/Devices/Migration/Technical/mobile-viewport
+   click-through (this session again had no Marzban admin credentials and
+   did not seek any), then finish splitting `admin.js`'s remaining legacy
+   monolithic screen code into per-domain ES modules.
+2. **Phase 5 continuation**: PH5-02 (30/60-day entitlement and WL-period
+   semantics) is the next PH5 dependency per `ROADMAP.md` -- depends on
+   PH5-01 (done) and a PH6 period interface that does not exist yet, so
+   PH5-02 will need to define that interface itself or the next agent
+   should re-check `ROADMAP.md`'s exact PH5-02/PH6 dependency wording
+   before starting, per this session's own "don't skip a dependency" rule.
+   Not started this session; deliberately stopped here to keep this
+   session's two slices independently reviewable rather than starting a
+   third, larger piece with a partially-open dependency.
+
+---
+
+# PRIOR HANDOFF — Wave A corrective UX slice production-deployed / authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-26 (later, same day; corrective-slice session, continuing a
 prior Codex session that ran out of quota after implementation but before

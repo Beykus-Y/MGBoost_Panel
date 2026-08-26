@@ -787,11 +787,69 @@ user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 
 # Phase 5 — Tariffs and billing
 
-## [ ] PH5-01 — Versioned six-plan catalog
+## [x] PH5-01 — Versioned six-plan catalog
 
 **Depends:** PH3-01. **Scope:** stable plan codes/versions, approved prices/durations/devices/WL; independent Stars and `RUB-2026-08-23-v1` channel-price tables. Current free-form `stars_tariffs` requires migration.
 **Accept/tests:** exact 12 plan-duration combinations in each applicable price channel; RUB values exactly match DL-040; invoice/payment snapshots unchanged by later catalog edits.
 **Migration:** current 199/349 rows map only via explicit production plan; canary archived/retained by decision.
+
+**Implemented and production-deployed (2026-08-26):** new dormant/additive
+schema (`src/plan_catalog_schema.py`, own checksum-pinned migration
+`ph5_01_plan_catalog_v1`, requires the exact PH3-01 parent checksum before
+applying, matching PH3-06's own precedent) adds `mgboost_price_catalog_versions`
+(one row per channel/catalog-version, immutable identity fields, at most one
+`ACTIVE` version per channel via a partial unique index) and
+`mgboost_plan_prices` (immutable, FK-bound to a specific plan-version+duration,
+`UNIQUE(catalog_version_id,plan_version_id,duration_id)`). `src/plan_catalog.py`
+defines the exact owner-approved catalog data (nothing invented: prices/
+durations/device-limits/WL quotas copied verbatim from this file's own
+"Approved product catalog" table and DL-040) and `seed_plan_catalog()`
+idempotently creates the six `mgboost_plan_versions` rows (`BASIC`,
+`BASIC_PLUS`, `BASIC_PRO`, `WL`, `EXTENDED`, `FAMILY`; `COMMERCIAL`,
+`billing_required=1`, device limits 3/6/12, WL `NONE` for the three Base
+tiers and `LIMITED`/100-150 decimal GB/30-day period for WL/Расширенный/
+Семейный) with 30/60-day durations, then both channels' active price
+catalogs (`TELEGRAM_STARS` = new `STARS-2026-08-26-v1`, `RUB` =
+`RUB-2026-08-23-v1` per DL-040) -- exactly 12 SKUs and 12 price rows per
+channel, 24 total. Seeding runs via a new explicit idempotent script
+(`scripts/seed_ph5_01_plan_catalog.py`), NOT automatically at `Database`
+startup -- same dormant-until-explicitly-seeded discipline PH3-01/PH3-06
+used for their own schemas. Nothing in the legacy/Stars/LK/bot purchase
+paths reads this catalog yet; the live `stars_tariffs` table and the actual
+199⭐/349⭐ current-production-tariff -> catalog mapping decision noted in
+this entry's own "Migration" line are explicitly deferred to the purchase-
+flow phase that reads this catalog for real (PH5-04/05), not part of this
+slice's scope (schema/catalog data only, per PH5-01's own "Depends: PH3-01"
+boundary -- no purchase/entitlement wiring dependency yet exists to cut
+over).
+**Tests:** 9 new focused tests (`tests/test_plan_catalog_schema.py`,
+`tests/test_plan_catalog.py`) covering migration idempotency, exact
+PH3-01-parent-checksum requirement, price/catalog-version immutability
+(`UPDATE`/`DELETE` both rejected), one-active-catalog-version-per-channel,
+positive-integer-amount validation, exact device/WL terms per plan, exact
+12-SKU/24-price seeding matching the approved tables verbatim, full
+seed-then-reseed idempotency (zero duplicate plan-version rows, zero
+newly-created prices on the second run), and the seed script's own `main()`
+end-to-end. Full regression `1039 passed` (via the already-installed
+`/tmp/mgboost-wave-a-browser-venv` Playwright/Chromium environment, all
+browser suites included, zero skips).
+**Production deploy:** fresh encrypted backup create/restore PASS
+immediately before deploy; preflight invariants recorded (`quick_check=ok`,
+0 FK violations, accounts=18, grace=17, `mgboost_plan_versions`=7 (pre-
+existing `LEGACY_PAID_COMPAT_V1_*`/internal variants),
+`mgboost_plan_prices` table absent, `LEGACY_REVOKED=0`). Fast-forward pull
+`f4a250e` -> `6414a59`, `mgboost-panel` restart only (schema self-applies
+on `Database` construction, additive-only). Post-deploy: same invariants
+unchanged, new schema present, `mgboost-panel`/`mgboost-marzban-broker`/
+`mgboost-child-worker`/`nginx` all active, static ES modules/CSS `200`
+correct MIME, `/admin/accounts`/`/admin/dashboard` still `401`
+unauthenticated, legacy `/sub` bogus-token still `404`. Catalog explicitly
+seeded in production via the new script: 6 plan codes, 24 prices created,
+re-run immediately after confirmed fully idempotent (0 newly-created,
+`quick_check=ok`, 0 FK violations, accounts/grace still 18/17 unchanged).
+`plan_versions` count went 7 -> 13 (exactly the 6 new commercial rows), no
+existing row touched (immutability triggers make that structurally
+impossible, not just observed).
 
 ## [ ] PH5-02 — 30/60-day entitlement and WL-period semantics
 
@@ -1130,6 +1188,33 @@ gate (against realistic fixtures matching the exact new response shapes)
 session had no Marzban admin login credentials and did not attempt to
 obtain or guess any; that specific check is the owner's own next step (see
 `AGENT_HANDOFF.md`).
+
+**Devices read-only client-evidence addendum (2026-08-26, small follow-up,
+does not close PH7-12):** owner asked, before final Wave A sign-off, to see
+the actual device/VPN client in Devices, not just slot/technical state.
+Added `known_client_devices` to `account_detail()`
+(`src/admin_read_models.py`) sourced from the already-existing, continuously
+-updated `user_devices` table (populated by `Database.check_device_access`
+on every real legacy `/sub/{token}` hit -- the same path every currently
+-migrated account's real traffic still runs through): device name (the
+admin's own renamed `display_name` if set, else the reported model),
+humanized OS/platform, humanized VPN client name (`Happ`/`v2rayTun`/`INCY`
+casing for the three the owner named explicitly; anything else shown
+exactly as captured, never guessed) + version, last activity. Only active
+(`is_active=1`) rows are surfaced. Shown in Devices as its own card block,
+explicitly separate from the existing slot/state table -- the two use
+different, non-comparable technical identifiers (device-slot HWID verifier
+vs. legacy `user_devices.request_key`) with no shared key to prove a 1:1
+match, so this session deliberately did not fabricate a per-slot pairing.
+A genesis/bootstrap placeholder slot never sends a real HTTP request, so it
+structurally can never appear in this list (not a filter, an inherent
+property of where the data comes from) -- keeping genesis/bootstrap and
+real customer devices explicitly distinct, as asked. No raw HWID/UUID/
+request-key exposed; read-only, no PH7-05 mutation started. 1 new focused
+test (`tests/test_admin_account_read_models.py`); full regression `1039
+passed` (browser suites included). Deployed together with PH5-01 below in
+the same `6414a59` production deploy -- see that entry for backup/restart/
+invariant evidence, unchanged here.
 
 **Remaining before Wave A `[x]`:** (1) an owner-performed (or
 owner-authorized, credentialed) interactive authenticated
