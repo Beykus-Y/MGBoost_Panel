@@ -1,4 +1,98 @@
-# AGENT_HANDOFF — PH5-09 + PH5-10 implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / deploy+push forbidden this slice
+# AGENT_HANDOFF — PH5-09 + PH5-10 independently reviewed and production-deployed; dormant (no admin UI/route/bot wiring yet) / PH4-06 not started
+
+Updated: 2026-08-27 (independent review session, following the implementation
+session below). **This top section supersedes everything below.** Owner
+instruction: independently review checkpoint `af1effe` against
+`origin/main`/production (`a5c846b`), fix only real findings, then decide
+on production rollout.
+
+## What this session did
+
+Read `AGENT_HANDOFF.md`/`ROADMAP.md`/`CHANGELOG.md` and the exact DL-029..044
+contracts before touching anything; confirmed local HEAD `af1effe` was one
+commit ahead of `origin/main`/production (`a5c846b`), working tree clean,
+production still read-only at `a5c846b`. Reviewed the full diff
+(`src/manual_payment.py`, `src/manual_payment_schema.py`, both test files)
+line by line against PH5-02/03/04, PH3-08/09 and every relevant DL.
+
+**Verdict: APPROVED, no code fix required.** Findings:
+- Architecture: confirmed no second entitlement/renewal/usage/child-sync
+  engine exists -- every mutation goes through the existing PH5-02
+  `apply_same_plan_purchase`, PH5-03 `grant_paid_package`, PH5-04
+  `calculate`, PH3-08 `run_account_sync_cycle`, PH3-09 `record_payment`.
+  The `mgboost_manual_payment_sync_jobs` bookkeeping table mirrors the
+  already-shipped PH5-05 `stars.py::_sync_canonical_purchase_children`
+  pattern exactly (a local per-payment-type job index driving the *same*
+  outbox function), not a second sync mechanism.
+- Unit semantics: `expected_amount_minor`/`recorded_amount_minor` store
+  whole RUB units (e.g. `169` = 169 ₽), matching PH5-01's own
+  `RUB_PRICES`/`mgboost_plan_prices.amount` and PH3-09's identically-named
+  `amount_minor` field -- a pre-existing repo-wide naming convention, not a
+  unit bug; traced the full chain catalog seed -> lookup -> manual payment
+  snapshot -> provenance -> package grant and found no 169-vs-16900-shaped
+  mismatch anywhere.
+- Applied-immutability without a compensating-operation engine matches this
+  entry's own explicit v1 scoping (no compensation engine exists yet
+  anywhere in the codebase; a fake path was correctly not built).
+- Crash/idempotency: traced all four crash boundaries (pre-renewal,
+  renewal-committed/pre-bookkeeping, bookkeeping-committed/pre-sync-hand-off,
+  partial child sync) through the code; every layer has its own
+  deterministic per-record idempotency key so a retry at any point converges
+  without ever adding duration twice. Replay-after-later-independent-renewal
+  correctly uses `>=` instead of exact equality (DL-044/PH5-05 precedent).
+- **One real product ambiguity found:** `external_reference` was made
+  permanently UNIQUE (including after `CANCELLED`), and no prior DL had
+  fixed whether cancellation should free it for reuse or what scope the
+  uniqueness should have. Raised to the owner rather than decided
+  unilaterally; owner resolved it as **DL-054**: reference stays reserved
+  forever, current `UNIQUE(external_reference)` confirmed correct (it is
+  the exact equivalent of the codebase's established
+  `UNIQUE(payment_channel, external_reference)` precedent, since this
+  module's channel is invariant). No code change was needed.
+- Documentation: `ROADMAP.md` had PH5-09/10 marked `[x]` (this project's
+  convention for production-deployed) while its own text said "NOT
+  deployed" -- corrected to `[~]` during review, then back to `[x]` only
+  after the real production verification below completed.
+
+**Tests:** targeted `47 passed` (unchanged from the implementing session).
+Full non-browser regression re-run this session: `1210 passed, 16
+deselected`, zero failures.
+
+**Production rollout (2026-08-27), owner-approved after the review verdict
+and the DL-054 decision:** fresh encrypted backup create/restore `PASS`
+(`/root/mgboost-preph509-backup`); preflight confirmed HEAD `a5c846b`, only
+the known untracked `extra_configs.json` drift, `quick_check=ok`, 0 FK
+violations, cardinalities `18/18/0/0/0`, all 4 services active; pushed
+reviewed HEAD (`3320bd1`/`5cbee5c`) to `origin/main`; `git pull --ff-only`
+on production to `5cbee5c`; `systemctl restart mgboost-panel` only (additive
+migration self-applies on `Database()` construction); post-deploy: all four
+parent-migration checksums (PH3-01/PH5-01/PH3-09/PH5-03) verified
+byte-identical to production both before and after; new migration
+`ph5_09_manual_payment_v1` present with checksum
+`e3d453176428cffd73243096fc857b7c89933a4a1ad908cad18cbae151ac7223`,
+identical to what current source computes; all 4 new tables and 6
+immutability triggers present; `quick_check=ok`, 0 FK violations;
+cardinalities unchanged `18/18/0/0/0`; all 4 new manual-payment tables `0`
+rows (no real manual payment was created); legacy `stars_invoices`
+unchanged at `2` rows; all four services active; `mgboost-panel` journal
+since restart shows zero errors/tracebacks; safe HTTP smoke unchanged
+(`/admin/accounts`/`/admin/dashboard` `401`, bogus legacy `/sub` `404`). No
+admin route/UI/bot wiring was added, no real manual or Stars payment/
+callback was ever created or mutated. Final HEAD: local/origin/production
+all `5cbee5c`.
+
+## Exact next step
+
+PH5-09/10 are now genuinely production-deployed but still dormant --
+**unblocked**: the owner-gated admin manual-payment mutation wave (route/
+UI/bot wiring) can now be built as its own explicit next step. Per the
+owner's own standing instruction, do not start PH5-06, PH5-07, PH5-08,
+promo codes/trials, PH7-09/10/11, PH6-05..08, WL enforcement, PH4-06, or
+final legacy revoke without a fresh explicit owner decision.
+
+---
+
+# PRIOR HANDOFF — PH5-09 + PH5-10 implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / deploy+push forbidden this slice
 
 Updated: 2026-08-27 (new implementation session). **This top section
 supersedes everything below.** Owner instruction: implement PH5-09 then

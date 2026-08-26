@@ -1125,7 +1125,7 @@ callback was initiated at any point in this verification.
 **Depends:** PH5-01–07. **Scope:** одинаковое explanation в bot/admin/LK, plan version, periods/packages/slots, purchase vs renewal, API versioning.
 **Tests:** snapshot/API/UI/localization. **Rollback:** compatible versioned endpoint.
 
-## [~] PH5-09 — Manual external-payment record and entitlement application
+## [x] PH5-09 — Manual external-payment record and entitlement application
 
 **Depends:** PH3-09, DL-034–036/040, admin session/audit. RUB catalog data blocker закрыт.
 **Actor/channel:** только основной MGBoost admin; account source DIRECT, payment channel `EXTERNAL_PAYMENT`, mutation source `MANUAL_PAYMENT`.
@@ -1166,7 +1166,42 @@ no admin route/UI/bot wiring, no scheduler. Tests:
 `tests/test_manual_payment_ph509.py` (33 checks covering the full matrix
 above minus renewal/concurrency items that belong to PH5-10).
 
-## [~] PH5-10 — Manual external-payment renewal of the same parent account
+**Independently reviewed and production-deployed (2026-08-27):** review of
+checkpoint `af1effe` against `a5c846b` confirmed no second entitlement/
+renewal/usage/child-sync engine was created (reuses PH5-02/03/04, PH3-08/09
+verbatim), the `amount_minor` naming matches the pre-existing repo-wide
+convention (whole RUB units, e.g. `169` = 169 ₽ — same as PH5-01's own
+`RUB_PRICES`/`mgboost_plan_prices.amount`, not kopecks; PH3-09's provenance
+field is named identically and already carries the same convention), and
+applied-record immutability without a compensating-operation engine matches
+this entry's own explicit v1 scoping. One genuine product ambiguity was
+found and resolved by the owner: permanent `external_reference` uniqueness
+even after `CANCELLED` was undocumented by any prior DL; **DL-054** now
+records the owner's decision (reference stays reserved forever; the
+existing table-wide `UNIQUE(external_reference)` is confirmed correct,
+equivalent to the codebase's established `UNIQUE(payment_channel,
+external_reference)` precedent since this module's channel is invariant).
+No code fix was required. Targeted `47 passed`; full non-browser regression
+`1210 passed, 16 deselected` (deselection is pre-existing environment-gated
+browser cases, not new). Production preflight/deploy: fresh encrypted
+backup create/restore `PASS`; all four parent-migration checksums
+(`ph3_01_parent_account_v1`, `ph5_01_plan_catalog_v1`, `ph3_09_provenance_v1`,
+`ph5_03_wl_package_catalog_v1`) verified byte-identical between local code
+and production before deploy; fast-forward `a5c846b` -> `5cbee5c`
+(`mgboost-panel` restart only); migration `ph5_09_manual_payment_v1`
+self-applied, checksum `e3d453176428cffd73243096fc857b7c89933a4a1ad908cad18cbae151ac7223`
+verified identical to what the current source computes; all 4 new tables
+and 6 immutability triggers present; `quick_check=ok`, 0 FK violations;
+cardinalities unchanged `accounts=18/subscriptions=18/wl_periods=0/
+package_grants=0/package_refunds=0`; all 4 new manual-payment tables `0`
+rows each (no real manual payment was created); legacy `stars_invoices`
+unchanged at `2` rows; all four services active; `mgboost-panel` journal
+since restart shows zero errors/tracebacks; safe HTTP smoke unchanged
+(`/admin/accounts`/`/admin/dashboard` `401`, bogus legacy `/sub` `404`). No
+admin route/UI/bot wiring exists; no real manual or Stars payment was
+created or mutated. Final HEAD: local/origin/production all `5cbee5c`.
+
+## [x] PH5-10 — Manual external-payment renewal of the same parent account
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
 **Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
@@ -1200,6 +1235,17 @@ scenario. Tests: `tests/test_manual_renewal_ph510.py` (14 checks: 30/60d
 stacking, expired/far-future anchors, replay-after-later-renewal,
 concurrent Stars+manual and 4-way manual, 0/1/3/12-child topology matrix,
 partial-failure recovery, restart/backoff durability, WL-period history).
+
+**Independently reviewed and production-deployed (2026-08-27):** all four
+crash boundaries (pre-renewal, renewal-committed/pre-bookkeeping,
+bookkeeping-committed/pre-sync-hand-off, partial child sync) traced through
+the code and proven to converge without ever adding duration twice, via
+deterministic per-record idempotency keys at every layer (renewal engine,
+application bookkeeping row, sync job). Replay after a later independent
+renewal correctly uses `effective_expiry >= renewal.new_expiry` instead of
+exact equality, matching the DL-044/PH5-05 precedent. See PH5-09's own
+entry above for the shared review verdict, DL-054 and full production
+evidence (same deploy, same commit).
 
 # Phase 6 — WL quota
 

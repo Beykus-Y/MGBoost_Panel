@@ -18,8 +18,8 @@
 ### Added
 
 - PH5-09 manual external-payment record + PH5-10 same-parent renewal
-  (2026-08-27, `[x]`, implementation-complete / pending independent
-  review; **not deployed**): additive migration `ph5_09_manual_payment_v1`
+  (2026-08-27, `[x]`, independently reviewed and **production-deployed**):
+  additive migration `ph5_09_manual_payment_v1`
   (`src/manual_payment_schema.py`, checksum-gated on exact PH3-01/PH5-01/
   PH3-09/PH5-03 parent schemas) adds four durable tables:
   `mgboost_manual_payment_records` (one row per manually confirmed RUB
@@ -51,11 +51,22 @@
   (33 checks) + `tests/test_manual_renewal_ph510.py` (14 checks incl.
   concurrent Stars+manual stacking, crash-recovery between commit and
   proof/replay, partial remote failure recovery, 0/1/3/12-child
-  topologies). Full non-browser regression: `1223 passed` (baseline
-  collected at the same HEAD without these files: 1176, delta exactly the
-  new tests). Production read-only preflight verified identical gate
-  checksums byte-for-byte, baseline cardinalities `18/18/0/0/0` intact,
-  zero manual-payment tables yet created, HEAD still `a5c846b`.
+  topologies). Independent review confirmed no second entitlement/renewal/
+  sync engine, correct `amount_minor` unit convention (matches PH5-01/
+  PH3-09's own whole-RUB precedent), and correct applied-immutability
+  scoping. **DL-054** records the owner's resolution of one real product
+  ambiguity the review found (undocumented `external_reference` permanent
+  uniqueness after `CANCELLED`) -- current schema confirmed correct
+  unchanged. Full non-browser regression: `1210 passed, 16 deselected`.
+  Production: fresh encrypted backup create/restore `PASS`; all parent
+  migration checksums verified byte-identical pre-deploy; fast-forward
+  `a5c846b` -> `5cbee5c` (`mgboost-panel` restart only); migration
+  self-applied and checksum-verified; 4 new tables + 6 immutability
+  triggers present; `quick_check=ok`, 0 FK violations; cardinalities
+  unchanged `18/18/0/0/0`; all 4 new tables `0` rows (no real manual
+  payment created); legacy `stars_invoices` unchanged at `2`; all services
+  active; zero new errors in the journal; safe HTTP smoke unchanged. Still
+  dormant: no admin UI/route/bot wiring, no real manual payment exists.
 - PH5-05 canonical Telegram Stars purchase + renewal (2026-08-27, `[x]`,
   production-deployed, commit `0d2e354`): new durable evidence chain
   (`mgboost_stars_payment_evidence`, `mgboost_stars_purchase_applications`,
