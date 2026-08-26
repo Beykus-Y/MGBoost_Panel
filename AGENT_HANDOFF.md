@@ -1,4 +1,50 @@
-# AGENT_HANDOFF — admin panel redesign approved (design-only), Wave A next / PH4-05 grace campaign still live / PH4-06 not started
+# AGENT_HANDOFF — Wave A account-centric admin slice implemented/tested locally / production gate next / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-26. **This top section supersedes the older design-only
+handoff below.**
+
+## Current Wave A state
+
+- Actual starting local/origin HEAD was `2f8bf35`; production was still on
+  `8b73843` (the difference was the docs-only redesign commit). The working
+  tree now contains the first Wave A implementation slice; verify the final
+  commit with `git log -1` because this paragraph is written before commit.
+- New read-only account presentation layer: `src/admin_read_models.py`,
+  `src/routes/admin_accounts.py`, routes `/admin/accounts`,
+  `/admin/accounts/{id}`, `/admin/migration-grace`, `/admin/dashboard`.
+  Migration actions directly reuse `account_grace_snapshot()` and
+  `classify_action()`.
+- New UI: Accounts list; Account Overview/Subscription/Devices/Telegram-
+  Ownership/Migration-Grace/Technical tabs; standalone Migration/Grace;
+  grace-first conditional Dashboard; legacy Users moved under
+  `System / Technical / Marzban Raw Users`; existing legacy screens retained.
+  Vanilla-JS modularization started with `frontend/assets/admin/core.js` and
+  `admin/accounts.js`; the remaining monolithic legacy screen code is the main
+  unfinished Wave A item (`ROADMAP.md` `PH7-12 [~]`).
+- Safety/evidence: focused `24 passed, 1 skipped`; full regression
+  `1020 passed, 3 skipped`. Fresh production DB-copy gate assembled all 18
+  account details and dashboard JSON with `quick_check=ok`, 0 FK failures and
+  unchanged account count. No schema or migration is added by Wave A.
+- Fresh read-only production cohort report (same day): 17 members;
+  `OK_MIGRATED=8`, `WAITING_FOR_REGISTRATION=9`; Telegram `BOUND=4`,
+  `UNREGISTERED=13`; active slots 27; real migrated device lineages 15.
+  These counts change organically and must be refreshed before future use.
+- Production deploy has not happened at the moment this section is written.
+  Next safe step: commit/push, fast-forward production, restart only
+  `mgboost-panel`, then admin login/Accounts/detail/Migration/Dashboard plus
+  legacy Users/Tickets/Nodes/configs smoke and DB/service invariants. Local
+  Chromium is unavailable, so the real browser visual/responsive/CSP gate is
+  still explicitly pending rather than silently claimed.
+
+## Unchanged hard boundaries
+
+- PH4-06 is NOT STARTED. Do not revoke any shared legacy credential.
+- Do not wait for grace to end; continue Wave A independently.
+- Do not invent PH5/PH6 catalog, billing or WL data.
+
+---
+
+# PRIOR HANDOFF — admin panel redesign approved (design-only), Wave A next / PH4-05 grace campaign still live / PH4-06 not started
 
 Updated: 2026-08-26 (later still, same day; read-only design/audit session,
 next agent is expected to be Codex). **This is the current top-of-file

@@ -997,7 +997,7 @@ user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 **Scope:** manual create/link, renew, plan, package, expiry, refund/correction and failed/denied attempts.
 **Accept/tests:** every mutation/reconciliation emits correlated append-only events; raw security credentials excluded; audit editable only through compensating event, never reseller API.
 
-## Admin panel redesign — owner-approved architecture/UX decisions (design-only, PH7 statuses unchanged)
+## Admin panel redesign — owner-approved architecture/UX decisions
 
 A read-only audit (2026-08-26, HEAD `8b73843`) of the current admin
 frontend/backend found it is still entirely Marzban-username-centric with
@@ -1009,11 +1009,50 @@ that session are recorded as `DL-048`..`DL-052` (technical-identifier depth,
 PH7-05 Wave B mutation granularity, legacy Users cutover, Dashboard
 priority, frontend technology direction). **This subsection and
 `docs/ADMIN_PANEL_REDESIGN.md` are design/architecture only — no PH7-01..11
-status above changes to `[~]`/`[x]`, and no implementation has started.**
+status above changes to `[~]`/`[x]`; implementation progress is tracked by
+the separate Wave tasks below.**
 The approved implementation order is Wave A (foundation + current-state
 read-only UI, can start immediately) → Wave B (PH7-01/05/08 safe mutations)
 → Wave C (PH5-backed) → Wave D (PH6-backed); see
 `docs/ADMIN_PANEL_REDESIGN.md` §6 for exact scope per wave.
+
+## [~] PH7-12 — Wave A account-centric admin foundation
+
+**Depends:** PH2–PH4 read models and DL-048..052. **Scope:** approved Wave A
+from `docs/ADMIN_PANEL_REDESIGN.md` §6; it does not start PH4-06 and does not
+add Wave B mutations.
+
+**Implemented in the first completed slice (2026-08-26):** new authenticated
+read-only `GET /admin/accounts`, `/admin/accounts/{id}`,
+`/admin/migration-grace`, `/admin/dashboard` presentation APIs;
+`AccountSummary`/`AccountDetail`/device/subscription/dashboard aggregation;
+Migration/Grace classification wraps the canonical
+`account_grace_snapshot()` + `classify_action()` directly. New vanilla-JS
+ES modules (`frontend/assets/admin/core.js`, `admin/accounts.js`) provide the
+primary Accounts list, Account tabs (Overview/Subscription/Devices/Telegram-
+Ownership/Migration-Grace/Technical), standalone Migration/Grace view and
+DL-051 Dashboard. Technical identifiers are rendered only in Technical;
+normal device rows expose masked identifiers and explicitly separate active
+slots/parent readiness from real migration lineages. The production-proven
+opaque credential issue/reissue route is surfaced with reason, explicit
+rotation confirmation and one-time URL display. Legacy Users moved out of
+top-level customer navigation to `System / Technical / Marzban Raw Users`;
+Tickets/Nodes/Extra configs/Stars/Settings remain reachable and responsive.
+
+**Evidence:** focused account/read-route/frontend/security regression
+`24 passed, 1 skipped`; full project regression `1020 passed, 3 skipped`.
+Fresh production DB-copy compatibility gate assembled and JSON-serialized all
+18 accounts/details, reported active grace, `quick_check=ok`, 0 FK failures
+and unchanged account cardinality. Fresh read-only cohort report: 17 members,
+actions `OK_MIGRATED=8`/`WAITING_FOR_REGISTRATION=9`, Telegram
+`BOUND=4`/`UNREGISTERED=13`, active slots 27, real migrated lineages 15.
+
+**Remaining before Wave A `[x]`:** finish splitting the legacy monolithic
+screen code out of `admin.js` into per-domain ES modules, run the real browser
+visual/responsive/CSP gate (local Chromium is currently unavailable), then
+complete the production deploy/canary and equivalent-functionality review of
+the preserved legacy screens. This is a complete deployable slice, not a
+claim that all of Wave A is finished.
 
 # Phase 8 — Hardening and scale
 

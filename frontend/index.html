@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
-<link rel="stylesheet" href="assets/admin.css?v=20260622-support-bot">
+<link rel="stylesheet" href="assets/admin.css?v=20260826-wave-a">
 </head>
 <body>
 
@@ -30,8 +30,14 @@
     <div class="nav-item active" data-action="show-page" data-page="dashboard">
       <span class="nav-icon">▦</span> Дашборд
     </div>
-    <div class="nav-item" data-action="show-page" data-page="users">
-      <span class="nav-icon">◎</span> Пользователи
+    <div class="nav-item" data-action="show-page" data-page="accounts">
+      <span class="nav-icon">◎</span> Аккаунты
+    </div>
+    <div class="nav-item" data-action="show-page" data-page="migration">
+      <span class="nav-icon">↝</span> Migration / Grace
+    </div>
+    <div class="nav-item" data-action="show-page" data-page="tickets">
+      <span class="nav-icon">🎫</span> Тикеты
     </div>
     <div class="nav-item" data-action="show-page" data-page="nodes">
       <span class="nav-icon">◈</span> Ноды
@@ -39,11 +45,12 @@
     <div class="nav-item" data-action="show-page" data-page="configs">
       <span class="nav-icon">⊕</span> Extra конфиги
     </div>
-    <div class="nav-item" data-action="show-page" data-page="tickets">
-      <span class="nav-icon">🎫</span> Тикеты
-    </div>
     <div class="nav-item" data-action="show-page" data-page="stars">
-      <span class="nav-icon">⭐️</span> Stars
+      <span class="nav-icon">⭐️</span> Платежи / Stars
+    </div>
+    <div class="nav-section">System / Technical</div>
+    <div class="nav-item" data-action="show-page" data-page="users">
+      <span class="nav-icon">⌁</span> Marzban Raw Users
     </div>
     <div class="nav-item" data-action="show-page" data-page="settings">
       <span class="nav-icon">⚙</span> Настройки
@@ -76,6 +83,8 @@
           <button data-action="load-dashboard">Обновить</button>
         </div>
       </div>
+      <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка account state...</div></div>
+      <div class="section-heading legacy-health-heading"><div><span class="eyebrow">Marzban / Nodes</span><h2>Инфраструктура</h2></div></div>
       <div class="stats-grid" id="sys-stats">
         <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
@@ -91,10 +100,38 @@
       </div>
     </div>
 
+    <!-- ACCOUNTS -->
+    <div class="page" id="page-accounts">
+      <div class="page-header"><span class="page-title">Аккаунты <span id="accounts-count" class="muted-count"></span></span><div class="page-actions"><input class="search-box" id="account-search" type="text" placeholder="Account ID или legacy alias"/><button data-action="show-page" data-page="accounts">Обновить</button></div></div>
+      <div class="notice">Основная customer-facing поверхность. Числа parent readiness и real migrated device lineages намеренно показаны отдельно.</div>
+      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Аккаунт</th><th>Статус</th><th>Subscription</th><th>Telegram</th><th>Slots</th><th>Real migrated</th><th>Parent</th><th>Action</th></tr></thead><tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+    </div>
+
+    <!-- ACCOUNT DETAIL -->
+    <div class="page" id="page-account-detail">
+      <div class="page-header"><div><button class="back-button" data-action="show-page" data-page="accounts">← Аккаунты</button><span class="page-title" id="account-detail-title">Account</span></div></div>
+      <div class="tabs account-tabs" id="account-tabs">
+        <div class="tab active" data-action="account-tab" data-account-tab="overview">Overview</div>
+        <div class="tab" data-action="account-tab" data-account-tab="subscription">Subscription</div>
+        <div class="tab" data-action="account-tab" data-account-tab="devices">Devices</div>
+        <div class="tab" data-action="account-tab" data-account-tab="telegram">Telegram / Ownership</div>
+        <div class="tab" data-action="account-tab" data-account-tab="migration">Migration / Grace</div>
+        <div class="tab" data-action="account-tab" data-account-tab="technical">Technical</div>
+      </div>
+      <div id="account-tab-content"><div class="loading"><span class="spinner"></span></div></div>
+    </div>
+
+    <!-- MIGRATION / GRACE -->
+    <div class="page" id="page-migration">
+      <div class="page-header"><span class="page-title">Migration / Grace</span><button data-action="show-page" data-page="migration">Обновить</button></div>
+      <div class="notice">Классификация action приходит из canonical `legacy_grace_observability`; frontend её не вычисляет. Active slots могут включать genesis placeholder.</div>
+      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Аккаунт</th><th>Action</th><th>Telegram</th><th>Parent ready</th><th>Active slots</th><th>Real migrated</th><th>Grace</th><th>Legacy req 72h</th></tr></thead><tbody id="migration-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+    </div>
+
     <!-- USERS -->
     <div class="page" id="page-users">
       <div class="page-header">
-        <span class="page-title">Пользователи <span id="users-count" style="font-size:13px;color:var(--text3)"></span></span>
+        <span class="page-title">System / Technical / Marzban Raw Users <span id="users-count" style="font-size:13px;color:var(--text3)"></span></span>
         <div class="page-actions">
           <input class="search-box" type="text" placeholder="Поиск..." id="user-search" data-input-action="filter-users" />
           <button class="primary" data-action="open-create-user">+ Создать</button>
@@ -539,6 +576,6 @@
 
 <div id="toast"></div>
 
-<script src="assets/admin.js?v=20260823-admin-session" defer></script>
+<script src="assets/admin.js?v=20260826-wave-a" defer></script>
 </body>
 </html>

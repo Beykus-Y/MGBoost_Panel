@@ -43,6 +43,10 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/sub-admin/assets/admin.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/accounts.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "accounts.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/core.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "core.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin.css":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.css").read_bytes(), "text/css")
         elif path == "/sub-admin-api/admin/session":
@@ -67,6 +71,10 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                 "status": "active", "used_traffic": 0, "data_limit": None,
                 "expire": None, "online_at": None,
             }]})
+        elif path == "/sub-admin-api/admin/accounts":
+            self._send(200, {"accounts": []})
+        elif path == "/sub-admin-api/admin/dashboard":
+            self._send(200, {"grace_campaign": None, "health": {"error_reconcile": 0, "resolver_errors_72h": 0, "slot_state_mismatches": 0, "child_state_mismatches": 0}, "expiring": {"buckets": {"today": 0, "three_days": 0, "seven_days": 0, "thirty_days": 0}, "accounts": []}, "tickets": {"open": 0, "unanswered": 0}})
         elif path == "/sub-admin-api/admin/node-filters":
             self._send(200, {})
         elif path == "/sub-admin-api/admin/marzban/inbounds":

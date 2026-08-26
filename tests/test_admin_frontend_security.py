@@ -12,6 +12,7 @@ from src.routes.panel import handle_panel
 
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN_JS = ROOT / "frontend" / "assets" / "admin.js"
+ADMIN_MODULES = ROOT / "frontend" / "assets" / "admin"
 ADMIN_HTML = ROOT / "frontend" / "index.html"
 
 
@@ -38,7 +39,8 @@ class FakeHandler:
 def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     html_source = ADMIN_HTML.read_text(encoding="utf-8")
     js_source = ADMIN_JS.read_text(encoding="utf-8")
-    combined = html_source + "\n" + js_source
+    module_source = "\n".join(path.read_text(encoding="utf-8") for path in ADMIN_MODULES.glob("*.js"))
+    combined = html_source + "\n" + js_source + "\n" + module_source
 
     assert not re.search(r"\son[a-z]+\s*=", combined, re.IGNORECASE)
     assert js_source.count(".innerHTML=") == 1
@@ -46,11 +48,12 @@ def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     assert "localStorage.setItem" not in js_source
     assert "Authorization" not in js_source
     assert "data-action" in combined
-    assert "20260823-admin-session" in html_source
+    assert "20260826-wave-a" in html_source
 
     actions = set(re.findall(r'data-action="([a-z0-9-]+)"', combined))
     actions.update({"enable-user", "disable-user"})
     handled_actions = set(re.findall(r"case'([a-z0-9-]+)'", js_source))
+    handled_actions.update(re.findall(r"dataset\.action==='([a-z0-9-]+)'", module_source))
     assert actions <= handled_actions
 
     change_actions = set(re.findall(r'data-change-action="([a-z0-9-]+)"', combined))
@@ -76,6 +79,12 @@ def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for admin JS security test")
 def test_malicious_admin_api_values_are_escaped_by_real_render_path():
     js_source = ADMIN_JS.read_text(encoding="utf-8")
+    js_source = re.sub(
+        r"const ACCOUNT_UI_READY = import\('./admin/accounts\.js'\)\.then\(module=>\{.*?\n\}\);",
+        "const ACCOUNT_UI_READY=Promise.resolve(null);",
+        js_source,
+        flags=re.DOTALL,
+    )
     payload = "<img src=x onerror=globalThis.__xss=1>'\\\"&"
     script = f"""
 const vm=require('vm');

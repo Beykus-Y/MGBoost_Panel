@@ -72,6 +72,12 @@ from .routes.internal import (
     handle_internal_users_list,
 )
 from .routes.admin_proxy import handle_admin_marzban_proxy
+from .routes.admin_accounts import (
+    handle_admin_account_detail,
+    handle_admin_accounts_list,
+    handle_admin_dashboard,
+    handle_admin_migration_grace,
+)
 from .routes.admin_session import (
     handle_admin_session_login,
     handle_admin_session_logout,
@@ -113,6 +119,11 @@ _ROUTES = [
     ("GET",    re.compile(r"^/admin/session$"),                lambda h: handle_admin_session_status(h)),
     ("POST",   re.compile(r"^/admin/session/logout$"),         lambda h: handle_admin_session_logout(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/session/rotate$"),         lambda h: handle_admin_session_rotate(h) if require_admin_auth(h) else None),
+    ("GET",    re.compile(r"^/admin/dashboard$"),              lambda h: handle_admin_dashboard(h)),
+    ("GET",    re.compile(r"^/admin/accounts$"),               lambda h: handle_admin_accounts_list(h)),
+    ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})$"),
+     lambda h, account_id: handle_admin_account_detail(h, account_id)),
+    ("GET",    re.compile(r"^/admin/migration-grace$"),        lambda h: handle_admin_migration_grace(h)),
     ("GET",    re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
     ("PUT",    re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),

@@ -1,9 +1,10 @@
 # ADMIN_PANEL_REDESIGN — account-centric admin panel: audit + owner-approved plan
 
-Status: **design/architecture document, no implementation started, no PH7 status
-changed.** This document is the canonical, durable record of a read-only admin
-audit and the owner's approved UX/architecture decisions for redesigning the
-MGBoost admin panel around `mgboost_account` instead of raw Marzban users.
+Status: **approved design plus active Wave A implementation record.** The first
+account-centric read-only UI/API slice is implemented locally; `ROADMAP.md`
+`PH7-12` tracks its evidence and remaining work. This document remains the
+canonical UX/architecture contract for redesigning the MGBoost admin panel
+around `mgboost_account` instead of raw Marzban users.
 
 Produced: 2026-08-26 (read-only audit session, HEAD `8b73843`, unchanged by
 this document). No production mutation, no runtime code change, no schema
@@ -476,3 +477,19 @@ inventing catalog/tariff data ad hoc.
 - `src/legacy_grace_observability.py`,
   `scripts/ph4_05_daily_cohort_report.py` — canonical Migration/Grace
   business logic, reuse only, never re-derive.
+
+---
+
+## 8. Wave A implementation status
+
+First completed slice (2026-08-26): `src/admin_read_models.py` and
+`src/routes/admin_accounts.py` add authenticated read-only Accounts/detail,
+Migration/Grace and Dashboard APIs. `frontend/assets/admin/core.js` and
+`frontend/assets/admin/accounts.js` add the new account-centric UI while the
+legacy screen code remains functional in `admin.js`. Navigation now follows
+ADMIN-UX-03, Dashboard follows ADMIN-UX-04, and the UI explicitly distinguishes
+parent readiness/active slots from real migration lineages.
+
+This is not full Wave A closure: legacy screen code still needs to be split
+into per-domain ES modules and the browser/production rollout gates remain.
+Canonical progress/evidence lives in `ROADMAP.md` `PH7-12`.

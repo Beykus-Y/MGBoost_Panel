@@ -11,6 +11,11 @@ let dragIdx = null;
 let perUserConfigs = {};
 let userDeviceCounts = {};
 let inboundClientExtras = {};
+let accountUi = null;
+const ACCOUNT_UI_READY = import('./admin/accounts.js').then(module=>{
+  accountUi=module.createAccountUi({adminFetch,html,renderHtml,showPage,toast});
+  return accountUi;
+});
 
 const TRAFFIC_PERIODS = {
   '1h': { label: 'за 1 час', ms: 60 * 60 * 1000 },
@@ -267,8 +272,14 @@ document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key===
 function showPage(name){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
-  document.getElementById('page-'+name).classList.add('active');
-  document.querySelector(`[data-page="${name}"]`).classList.add('active');
+  const page=document.getElementById('page-'+name);
+  if(!page)return;
+  page.classList.add('active');
+  const nav=document.querySelector(`[data-page="${name}"]`);
+  if(nav)nav.classList.add('active');
+  if(name==='accounts')accountUi?.loadAccounts();
+  if(name==='migration')accountUi?.loadMigration();
+  if(name==='users')loadUsers();
   if(name==='nodes')loadNodes();
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
@@ -284,6 +295,7 @@ function switchTab(id,el){
 
 // DASHBOARD
 async function loadDashboard(){
+  accountUi?.loadDashboard();
   const period=getTrafficPeriod();
   const [sysR,nodesR,usageR]=await Promise.all([api('/system'),api('/nodes'),api('/nodes/usage'+period.query)]);
   const sys=await sysR.json();
@@ -1155,8 +1167,9 @@ document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click
 
 let allInbounds={};
 async function bootstrap(){
+  await ACCOUNT_UI_READY;
   loadDashboard();
-  loadUsers();
+  loadAccountsSafely();
   try{
     const [nR,fR,iR]=await Promise.all([api('/nodes'),proxyApi('/admin/node-filters'),api('/inbounds')]);
     allNodes=await nR.json();
@@ -1164,6 +1177,8 @@ async function bootstrap(){
     allInbounds=await iR.json();
   }catch(e){console.warn('bootstrap',e)}
 }
+
+function loadAccountsSafely(){accountUi?.loadAccounts().catch(error=>console.warn('accounts',error));}
 
 // SETTINGS
 async function loadSettings(){
