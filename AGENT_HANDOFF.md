@@ -1,4 +1,105 @@
-# AGENT_HANDOFF — PH5-09 + PH5-10 independently reviewed and production-deployed; dormant (no admin UI/route/bot wiring yet) / PH4-06 not started
+# AGENT_HANDOFF — Operational admin completion implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / no deploy this slice
+
+Updated: 2026-08-27 (new implementation session). **This top section
+supersedes everything below.** Owner instruction: complete the operational
+admin panel over already-proven backend primitives (Wave A consolidation +
+PH7-10 manual payments + Wave B device ops + ownership rebind + audit
+timeline + dashboard queues), then STOP; the next reviewer must diff local
+vs `origin/main` before any deploy decision.
+
+## State after this session
+
+- **Local HEAD = checkpoint commit of this slice; `origin/main` and
+  production both remain at `9d6ef28`** (verified via `git rev-parse`
+  locally/over SSH before writing this). PUSH TO ORIGIN AND PRODUCTION DEPLOY
+  ARE EXPLICITLY FORBIDDEN for this slice.
+- Working tree before commit contained only:
+  - New backend: `src/admin_audit_timeline.py` (read-only unified timeline),
+    `src/routes/admin_support.py` (auth/body/service-client helpers),
+    `src/routes/admin_payments.py`, `src/routes/admin_devices.py`,
+    `src/routes/admin_ownership.py`.
+  - Changed backend: `src/server.py` (route registration only),
+    `src/admin_read_models.py` (entitlement block, payment summaries,
+    per-slot device-action availability, dashboard queues).
+  - Frontend: new ES modules `modals.js`/`payments.js`/`device_ops.js`/
+    `timeline.js`; extended `accounts.js`, `core.js`, `admin.css`,
+    `index.html` (Payments/Audit tabs). Vanilla/no-framework per DL-052;
+    CSP/no-inline/event-delegation preserved and gate-tested.
+  - Tests: `tests/test_admin_operational_admin.py` (22 checks),
+    `tests/_ops_helpers.py` (shared builders, not collected by pytest),
+    extended `tests/test_admin_browser_e2e.py` (+1 full browser gate).
+- No schema/migration of any kind: every production table used was already
+  deployed through PH3-05/PH2-05/PH4-04/PH5-09. Future deploy is application-
+  code-only (`mgboost-panel` restart), same class as prior UI slices.
+
+## Gap-audit → wired vs deliberately not
+
+Reused verbatim (no second engine): PH5-09/10 `ManualPaymentStore`; PH5-02
+renewal + DL-044 formula via the store; PH5-04 calculation surfaced directly;
+child-sync driven through the existing PH3-08 `run_account_sync_cycle` with
+the PH5-05 Stars state-mapping (`pending_sync_jobs`/`record_sync_result`);
+PH3-05 lifecycle (`prepare_*`+`process_*`, slot release/rebind); OPD-39/
+DL-041 ownership rebind incl. COMPROMISE credential rotation; PH4-04
+credential issue flow surfaced unchanged inside Subscription.
+Deliberately unavailable (visible explanation in UI instead of fake controls):
+any non-same-plan purchase / upgrade / downgrade (PH5-06 absent — preview
+blocks with `PLAN_SWITCH_REQUIRES_PH5_06`), extending an admin-granted
+UNLIMITED subscription, WL packages on non-WL real plans, Disable/Enable
+device (no standalone primitive exists yet), expiry editing (PH7-01 not
+started), WL enforcement (PH6-06..09), promo/trial/live Stars/reseller.
+
+## Verification performed
+
+- Targeted routes file `22 passed`; browser gates `2 passed`; static security
+  gate green (it caught one internal listener named like an inline handler and
+  forced a rename — the gate remains load-bearing for new modules).
+- **Final full regression from repo root with the Playwright venv, all suites
+  included: `1249 passed`, 0 failed / 0 skipped** (baseline before this slice
+  was `1210 passed + 16 deselected` non-browser and 16 browser cases via
+  importorskip; delta is exactly this slice's new tests). One earlier run had
+  shown transient collection-time ERRORs in `test_wl_usage_ledger_schema*`;
+  root cause was `/tmp` disk-quota pressure from thousands of stale prior-
+  session `mkdtemp` scratch dirs (the exact failure mode recorded in a
+  previous handoff), not the diff — after removing only hour-stale anonymous
+  `/tmp/tmp*` scratch dirs (venv/caches/product files untouched) the complete
+  suite passes deterministically; verified by re-running that file both in
+  isolation (`11 passed`) and within the full run above.
+- Production read-only preflight over SSH only: HEAD `9d6ef28`, known
+  untracked `extra_configs.json` drift untouched, `quick_check=ok`, zero FK
+  violations, accounts/subscriptions/manual-payment records = `18/18/0`,
+  lifecycle/rebind/credential event tables present, all four services active.
+  NO write/restart/mutation of any kind against production; nginx untouched.
+
+## Reviewer attention list
+
+1. `src/routes/admin_devices.py`: REBIND guard is slot-level and deliberately
+   strict — after an APPLIED rebind a different-HWID request is refused until
+   the successor generation exists; ERROR-state ops require manual
+   reconciliation (same precedent as the PH3-05 canary discipline).
+2. Apply-route inline child-sync drive mirrors the canonical Stars mapping —
+   confirm SYNCED cannot be recorded on partial convergence.
+3. `_device_action_availability` is presentation-only; verify it never
+   advertises an action the server would refuse.
+4. Timeline secret-scrubbing uses a deny-list marker approach on top of
+   column-level selection — check for bypasses.
+5. Payment lifecycle denials map to HTTP 409 via store-message markers
+   (non-invasive; alternative would be store-side exception subclasses).
+6. This session cleaned only stale prior-session test-scratch dirs under
+   `/tmp` (`/tmp/tmp*` older than an hour plus this session's own named
+   prefixes); venvs/caches/repo untouched — same owner-approved precedent as
+   the previous handoff.
+
+## Exact next step
+
+Independent review of this checkpoint against `origin/main`. After approval +
+owner deploy decision this slice ends; do NOT start PH5-06/07, PH5-08,
+PH6-05..09/enforcement, promo codes/trials/live Stars wiring, PH4-06/final
+legacy revoke, PH7-01 expiry ops or Phase 8 items without a fresh explicit
+owner decision.
+
+---
+
+# PRIOR HANDOFF — PH5-09 + PH5-10 independently reviewed and production-deployed; dormant (no admin UI/route/bot wiring yet) / PH4-06 not started
 
 Updated: 2026-08-27 (independent review session, following the implementation
 session below). **This top section supersedes everything below.** Owner

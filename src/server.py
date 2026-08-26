@@ -78,6 +78,24 @@ from .routes.admin_accounts import (
     handle_admin_dashboard,
     handle_admin_migration_grace,
 )
+from .routes.admin_devices import (
+    handle_device_free,
+    handle_device_rebind,
+    handle_device_revoke,
+)
+from .routes.admin_ownership import handle_telegram_ownership_rebind
+from .routes.admin_payments import (
+    handle_manual_payment_apply,
+    handle_manual_payment_cancel,
+    handle_manual_payment_catalog,
+    handle_manual_payment_create,
+    handle_manual_payment_detail,
+    handle_manual_payment_edit,
+    handle_manual_payment_preview,
+    handle_manual_payment_resolve_review,
+    handle_manual_payment_sync,
+    handle_manual_payments_list,
+)
 from .routes.admin_session import (
     handle_admin_session_login,
     handle_admin_session_logout,
@@ -154,6 +172,37 @@ _ROUTES = [
      lambda h, account_id: handle_subscription_credential_status(h, account_id)),
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/subscription-credential/issue$"),
      lambda h, account_id: handle_subscription_credential_issue(h, account_id)),
+    # PH7-10: manual external payments over the deployed PH5-09/10 store.
+    ("GET",    re.compile(r"^/admin/manual-payment-catalog$"),
+     lambda h: handle_manual_payment_catalog(h)),
+    ("GET",    re.compile(r"^/admin/manual-payments$"),
+     lambda h: handle_manual_payments_list(h)),
+    ("GET",    re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})$"),
+     lambda h, payment_record_id: handle_manual_payment_detail(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/manual-payments/preview$"),
+     lambda h, account_id: handle_manual_payment_preview(h, account_id)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/manual-payments$"),
+     lambda h, account_id: handle_manual_payment_create(h, account_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/edit$"),
+     lambda h, payment_record_id: handle_manual_payment_edit(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/cancel$"),
+     lambda h, payment_record_id: handle_manual_payment_cancel(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/resolve-review$"),
+     lambda h, payment_record_id: handle_manual_payment_resolve_review(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/apply$"),
+     lambda h, payment_record_id: handle_manual_payment_apply(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/sync$"),
+     lambda h, payment_record_id: handle_manual_payment_sync(h, payment_record_id)),
+    # PH7-05 (Wave B): device revoke/free/rebind over the PH3-05 lifecycle.
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/revoke$"),
+     lambda h, account_id, slot_number: handle_device_revoke(h, account_id, slot_number)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/free$"),
+     lambda h, account_id, slot_number: handle_device_free(h, account_id, slot_number)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/rebind$"),
+     lambda h, account_id, slot_number: handle_device_rebind(h, account_id, slot_number)),
+    # OPD-39/DL-041: primary-admin Telegram ownership rebind.
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/telegram/rebind$"),
+     lambda h, account_id: handle_telegram_ownership_rebind(h, account_id)),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices-counts$"),      lambda h: handle_admin_user_device_counts(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices/(?P<username>[^/]+)/limit$"), lambda h, username: handle_admin_set_device_limit(h, username) if require_admin_auth(h) else None),

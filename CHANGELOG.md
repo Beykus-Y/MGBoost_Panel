@@ -17,6 +17,47 @@
 
 ### Added
 
+- Operational admin completion over existing primitives (2026-08-27, `[~]`
+  implementation-complete / **pending independent review**, NOT deployed):
+  the account-centric admin panel becomes an actual operational tool without
+  any new domain engine. Manual external payments (PH7-10) are fully wired to
+  the already-deployed PH5-09/10 store through new primary-admin routes:
+  a server-provided RUB-only catalog endpoint (fixed DL-040 prices are the
+  only purchasable facts), a server preview computing same-plan purchasability,
+  exact price and the DL-044 expected-new-expiry estimate, and create /
+  audited pending-edit / cancel / resolve-review / apply / sync-retry routes;
+  apply drives child convergence through the existing PH3-08
+  `run_account_sync_cycle` exactly like PH5-05's Stars driver and returns
+  old/new expiry plus the PH5-04 entitlement summary; other-plan targets and
+  ineligible WL packages render explicitly blocked (`PLAN_SWITCH_REQUIRES_PH5_06`)
+  instead of silently landing in MANUAL_REVIEW. Wave B device operations
+  (PH7-05 slice) wire Revoke / Free / Rebind as three distinct DL-049 actions
+  over the unchanged PH3-05 lifecycle with deterministic per-target idempotency
+  keys (double-submit converges), broker-failure RETRY durability, server-side
+  Free-after-Revoke ordering enforcement and a confirmed-compromise Rebind that
+  creates a successor generation; per-slot availability is derived from the
+  lifecycle tables into the account read model, while Disable/Enable stay
+  honestly absent because no standalone slot-disable primitive exists yet.
+  Telegram ownership rebind (OPD-39/DL-041) is exposed for ORDINARY and
+  COMPROMISE modes with stale-owner CAS rejection and a COMPROMISE notice that
+  the old opaque URL died. Account detail now carries the authoritative PH5-04
+  entitlement block, recent canonical payments, legacy Stars summary, per-slot
+  action availability and a unified read-only audit timeline
+  (`src/admin_audit_timeline.py`) aggregated from the existing immutable event
+  tables with structural secret scrubbing (raw identifiers remain Technical-tab
+  only); Dashboard gained operator queues (pending / manual-review /
+  child-sync payments + Stars manual review) deep-linking into account detail.
+  Frontend stays vanilla ES modules: new `modals.js` two-step consequence
+  dialogs, `payments.js`, `device_ops.js`, `timeline.js`. Security posture of
+  every mutation: admin session + CSRF, sealed primary-admin capability,
+  bounded bodies/strings/integers, IDOR-safe 404s, no trust in any client
+  price/plan/account field, no generic delete route (test-asserted).
+  Targeted tests `tests/test_admin_operational_admin.py` (22) cover the auth
+  matrix, exact catalog prices, tamper rejections, duplicate/replay
+  convergence, immutability after apply, drift→MANUAL_REVIEW→resolve, package
+  grant, forever-reserved references (DL-054), compromise rotation and queue
+  surfacing; browser CSP/XSS gate extended to the new tabs. Production was not
+  touched in this session; deploy will be application-code-only.
 - PH5-09 manual external-payment record + PH5-10 same-parent renewal
   (2026-08-27, `[x]`, independently reviewed and **production-deployed**):
   additive migration `ph5_09_manual_payment_v1`

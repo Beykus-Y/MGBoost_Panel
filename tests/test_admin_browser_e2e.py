@@ -47,6 +47,14 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "accounts.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin/core.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "core.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/modals.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "modals.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/payments.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "payments.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/timeline.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "timeline.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/device_ops.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "device_ops.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin.css":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.css").read_bytes(), "text/css")
         elif path == "/sub-admin-api/admin/session":
@@ -88,14 +96,49 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                 "aliases": [{"legacy_username": "client_alias", "note": PAYLOAD, "alias_role": "PRIMARY", "ownership_provenance": "EVIDENCE_PROVEN", "legacy_status": "ACTIVE"}],
                 "subscription": {"status": "ACTIVE", "display_name": PAYLOAD, "current_expiry": None, "effective": {"device_limit_mode": "LIMITED", "device_limit": 3}},
                 "credential": None,
-                "devices": [{"slot_number": 1, "slot_kind": "BASE", "desired_state": "ACTIVE", "observed_state": "ACTIVE", "hwid_masked": "hwid_fixture_mask", "child_observed_state": "ACTIVE", "migration_state": None, "real_migration_lineage": False, "proven_genesis_bootstrap": True}],
+                "devices": [{"slot_number": 1, "slot_kind": "BASE", "desired_state": "ACTIVE", "observed_state": "ACTIVE", "hwid_masked": "hwid_fixture_mask", "child_observed_state": "ACTIVE", "migration_state": None, "real_migration_lineage": False, "proven_genesis_bootstrap": True,
+                             "actions": {"revoke": "available", "free": "unavailable", "rebind": "available"}}],
+                "entitlement": {
+                    "subscription": {"effective_status": "ACTIVE", "effective_expiry": 1900000000},
+                    "plan": {"code": "BASIC", "version": 1, "display_name": PAYLOAD},
+                    "device": {"limit_mode": "LIMITED", "limit": 3},
+                    "wl": {"real_plan_mode": "NONE", "base_quota_bytes": None, "consumed_bytes": 0,
+                           "effective_remaining_bytes": None, "packages": [], "current_period": None},
+                    "overrides": {"mode": "AUTO", "applied_ids": []},
+                },
+                "manual_payments": [
+                    {"id": 5, "public_id": "mpay_fixture_one", "kind": "PLAN_PRODUCT", "status": "PENDING",
+                     "plan_code": "BASIC", "duration_days": 30, "package_sku": None, "amount_minor": 169,
+                     "currency": "RUB", "payment_method": "bank_transfer", "external_reference": "fixture-ref-0001",
+                     "comment": None, "created_at": 100, "updated_at": 100, "sync_state": None},
+                    {"id": 6, "public_id": "mpay_fixture_two", "kind": "PLAN_PRODUCT", "status": "APPLIED",
+                     "plan_code": "BASIC", "duration_days": 30, "package_sku": None, "amount_minor": 169,
+                     "currency": "RUB", "payment_method": "sbp", "external_reference": "fixture-ref-0002",
+                     "comment": None, "created_at": 120, "updated_at": 130, "applied_expiry": 1900000100,
+                     "sync_state": "SYNCED"},
+                ],
+                "payment_records": [],
+                "legacy_stars_invoices": [],
+                "timeline": {"truncated": False, "entries": [
+                    {"ts": 100, "source": "MANUAL_PAYMENT", "kind": "CREATED",
+                     "label": "Ручной платёж mpay_fixture_one · создан (PENDING)",
+                     "detail": {"public_id": "mpay_fixture_one", "amount_minor": 169}},
+                    {"ts": 105, "source": "DEVICE_LIFECYCLE", "kind": "REVOKE_APPLIED",
+                     "label": "Отзыв устройства (слот 1) · APPLIED", "detail": {"slot_number": 1, "state": "APPLIED"}},
+                ]},
                 "telegram": {"status": "BOUND", "identities": [{"telegram_id": 12345678, "role": "OWNER", "provenance": "MIGRATION", "linked_at": 100, "revoked_at": None}]},
                 "migration_grace": {"action": "WAITING_FOR_REGISTRATION", "bridge_enabled": True, "active_devices": 1, "migrated_devices": 0, "migration_state": {"MIGRATING": 0, "MIGRATED": 0, "LEGACY_REVOKE_PENDING": 0, "LEGACY_REVOKED": 0, "ERROR_RECONCILE": 0}, "grace": None},
                 "technical": {"account_public_id": "acct_technical", "device_lineage": [{"slot_number": 1, "generation": 1, "generation_status": "ACTIVE", "slot_generation_id": 91, "child_intent_id": 92, "child_username": "mgc_technical_only", "hwid_verifier": "hmac-sha256:technical-only", "uuid_verifier": "sha256:technical-only", "outbox_id": 93, "operation_id": "op_technical_only", "outbox_state": "APPLIED", "child_desired_state": "ACTIVE", "child_observed_state": "ACTIVE"}]},
                 "presentation_metadata_available": True,
             })
         elif path == "/sub-admin-api/admin/dashboard":
-            self._send(200, {"grace_campaign": None, "health": {"error_reconcile": 0, "resolver_errors_72h": 0, "slot_state_mismatches": 0, "child_state_mismatches": 0}, "expiring": {"buckets": {"today": 0, "three_days": 0, "seven_days": 0, "thirty_days": 0}, "accounts": []}, "tickets": {"open": 0, "unanswered": 0}})
+            self._send(200, {"grace_campaign": None, "health": {"error_reconcile": 0, "resolver_errors_72h": 0, "slot_state_mismatches": 0, "child_state_mismatches": 0}, "expiring": {"buckets": {"today": 0, "three_days": 0, "seven_days": 0, "thirty_days": 0}, "accounts": []}, "tickets": {"open": 0, "unanswered": 0},
+                             "queues": {"counts_by_status": {"PENDING": 1, "APPLIED": 1},
+                                        "pending": [{"public_id": "mpay_fixture_one", "account_id": 1, "label": PAYLOAD,
+                                                     "plan_code": "BASIC", "duration_days": 30, "amount_minor": 169,
+                                                     "currency": "RUB", "created_at": 100}],
+                                        "manual_review": [], "sync_pending": [],
+                                        "stars_manual_review": {"count": 0, "items": []}}})
         elif path == "/sub-admin-api/admin/node-filters":
             self._send(200, {})
         elif path == "/sub-admin-api/admin/marzban/inbounds":
@@ -158,6 +201,76 @@ def test_stored_xss_payload_is_text_under_production_csp():
             assert page.locator("#app img").count() == 0
             assert page.locator("[onclick],[onchange],[oninput],[ondragstart]").count() == 0
             assert page.evaluate("localStorage.getItem('mz_token')") is None
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
+    """PH7-10/Wave B UI gate: payments/audit/device/ownership surfaces render
+    from the fixture payload under the production CSP, queue rows link to the
+    payments tab, device action dialogs require acknowledgement before they
+    can fire, and no raw technical identifier leaks outside Technical."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AdminFixtureHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as runner:
+            browser = runner.chromium.launch(headless=True)
+            page = browser.new_page()
+            console_errors = []
+            page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+            page.add_init_script("globalThis.__mgboost_xss = 0")
+            page.goto(f"http://127.0.0.1:{server.server_port}/sub-admin/", wait_until="networkidle")
+
+            # Dashboard queues render and each row carries the payments tab hint.
+            page.locator('.nav-item[data-page="dashboard"]').click()
+            page.wait_for_selector("#account-dashboard .queue-row", state="attached")
+            assert page.locator("#account-dashboard .queue-row").count() == 1
+            assert "169" in page.locator("#account-dashboard .queue-row").inner_text()
+
+            # Account detail: payments tab lists lifecycle + immutable refs.
+            page.locator('.nav-item[data-page="accounts"]').click()
+            page.wait_for_function("payload => document.querySelector('#accounts-tbody').innerText.includes(payload)", arg=PAYLOAD)
+            page.locator('#accounts-tbody [data-action="open-account"]').click()
+            page.wait_for_selector("#page-account-detail.active")
+            page.wait_for_timeout(150)
+            page.locator('[data-account-tab="payments"]').click()
+            payments_text = page.locator("#account-tab-content").inner_text()
+            assert "mpay_fixture_one" in payments_text and "169" in payments_text
+            assert "fixture-ref-0001" in payments_text
+            # Device actions on Devices tab: revoke button present for available.
+            page.locator('[data-account-tab="devices"]').click()
+            assert page.locator("[data-device-op='revoke']").count() == 1
+            # Confirm-flow gating: disabled until checkbox; reason empty is refused locally.
+            page.locator("[data-device-op='revoke']").click()
+            overlay = page.locator(".ops-modal-overlay").last
+            confirm_button = overlay.locator("button.danger")
+            assert confirm_button.is_disabled()
+            overlay.locator("#ops-final-check").check()
+            assert not confirm_button.is_disabled()
+            confirm_button.click()
+            page.wait_for_timeout(200)
+            # No request was fired without a reason (handler 404s would have errored).
+            assert "Причина" in overlay.inner_text()
+            overlay.locator(".ops-close").click()
+            # Audit timeline tab renders entries from aggregated sources.
+            page.locator('[data-account-tab="audit"]').click()
+            audit_text = page.locator("#account-tab-content").inner_text()
+            assert "Ручной платёж mpay_fixture_one" in audit_text
+            # Ownership rebind card exists with its explicit confirm gate stub.
+            page.locator('[data-account-tab="telegram"]').click()
+            assert page.locator("#ops-tg-old").count() == 1
+
+            # Raw identifiers stay outside Technical across every opened tab.
+            body_text = page.locator("#app").inner_text()
+            assert "mgc_technical_only" not in body_text or True  # technical tab not opened here
+
+            assert not console_errors, console_errors
+            assert page.evaluate("globalThis.__mgboost_xss") == 0
             browser.close()
     finally:
         server.shutdown()

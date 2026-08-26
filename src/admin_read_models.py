@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import time
 
+from .admin_audit_timeline import account_timeline
 from .device_headers import PLATFORMS as _RAW_PLATFORM_LABELS
+from .entitlement_engine import EntitlementNotFoundError
 from .internal_entitlements import InternalEntitlementError
 from .legacy_grace_observability import account_grace_snapshot, classify_action
 from .legacy_grace_migration import is_genesis_hwid_verifier
@@ -239,6 +241,171 @@ def _technical_summary(connection, account_id: int, public_id: str) -> dict:
     return {"account_public_id": public_id, "device_lineage": [dict(row) for row in rows]}
 
 
+def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
+    """Per-slot Wave B action availability, derived only from the existing
+    durable lifecycle tables. Disable/Enable deliberately have no key here:
+    no standalone slot-disable primitive exists yet in the backend, and the
+    UI must not offer invented operations."""
+    ops = connection.execute(
+        "SELECT s.slot_number,o.operation_kind,o.state,o.last_error_class,"
+        "o.id AS lifecycle_id,c.id AS child_intent_id,"
+        "c.observed_state AS child_observed,s.desired_state AS slot_desired "
+        "FROM mgboost_child_lifecycle_operations o "
+        "JOIN mgboost_child_user_intents c ON c.id=o.old_child_intent_id "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+        "JOIN mgboost_device_slots s ON s.id=g.slot_id "
+        "WHERE o.account_id=? ORDER BY o.updated_at DESC", (int(account_id),),
+    ).fetchall()
+    per_slot: dict[int, list] = {}
+    for row in ops:
+        per_slot.setdefault(row["slot_number"], []).append(row)
+    active_intents = {
+        row["slot_number"]: row
+        for row in connection.execute(
+            "SELECT s.slot_number,c.id AS child_intent_id,c.observed_state "
+            "FROM mgboost_device_slots s "
+            "JOIN mgboost_device_slot_generations g ON g.slot_id=s.id AND g.status='ACTIVE' "
+            "JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
+            "WHERE s.account_id=?", (int(account_id),),
+        ).fetchall()
+    }
+    result = {}
+    for slot_number in sorted(set(per_slot) | set(active_intents)):
+        rows = per_slot.get(slot_number, [])
+        intent_row = active_intents.get(slot_number)
+        child_observed = intent_row["observed_state"] if intent_row else None
+        revoke_applied = any(
+            r["operation_kind"] == "REVOKE" and r["state"] == "APPLIED"
+            for r in rows if intent_row is not None and r["child_intent_id"] == intent_row["child_intent_id"]
+        )
+        pending_free = next(
+            (r for r in rows if r["operation_kind"] == "FREE" and r["state"] != "APPLIED"),
+            None,
+        ) if intent_row else None
+        blocking_rebind = next(
+            (r for r in rows if r["operation_kind"] == "REBIND"),
+            None,
+        ) if intent_row else None
+        slot_desired_value = next((r["slot_desired"] for r in rows), None)
+        if slot_desired_value is None:
+            latest_slot = connection.execute(
+                "SELECT desired_state FROM mgboost_device_slots WHERE account_id=? AND slot_number=?",
+                (int(account_id), slot_number),
+            ).fetchone()
+            slot_desired_value = latest_slot["desired_state"] if latest_slot else None
+        entry: dict = {}
+        if intent_row is not None and child_observed != "REVOKED" and not revoke_applied:
+            entry["revoke"] = "available"
+        elif revoke_applied:
+            entry["revoke"] = "done"
+        else:
+            entry["revoke"] = "unavailable"
+        if revoke_applied and slot_desired_value == "ACTIVE":
+            entry["free"] = "available" if pending_free is None else f"PENDING:{pending_free['state']}"
+        elif pending_free is not None:
+            entry["free"] = f"PENDING:{pending_free['state']}"
+        else:
+            entry["free"] = "unavailable"
+        if intent_row is not None and child_observed != "REVOKED":
+            if blocking_rebind is None:
+                entry["rebind"] = "available"
+            elif blocking_rebind["state"] == "APPLIED":
+                entry["rebind"] = "done"
+            else:
+                entry["rebind"] = f"PENDING:{blocking_rebind['state']}"
+        elif blocking_rebind is not None and blocking_rebind["state"] == "APPLIED":
+            entry["rebind"] = "done"
+        else:
+            entry["rebind"] = "unavailable"
+        last_error = next((r["last_error_class"] for r in rows if r["last_error_class"]), None)
+        if last_error:
+            entry["last_error_class"] = last_error
+        result[slot_number] = entry
+    return result
+
+
+def _manual_payments_summary(db, account_id: int, *, limit: int = 50) -> list[dict]:
+    try:
+        records = db.manual_payments.list_records(account_id=account_id, limit=limit)
+    except Exception:
+        return []
+    conn = db._conn
+    sync_states = {
+        row["payment_record_id"]: dict(row) for row in conn.execute(
+            "SELECT payment_record_id,state,attempts,last_error_class "
+            "FROM mgboost_manual_payment_sync_jobs WHERE account_id=?", (int(account_id),),
+        ).fetchall()
+    }
+    applications = {
+        row["payment_record_id"]: dict(row) for row in conn.execute(
+            "SELECT payment_record_id,applied_operation,applied_expiry,created_at AS applied_at "
+            "FROM mgboost_manual_payment_applications WHERE account_id=?", (int(account_id),),
+        ).fetchall()
+    }
+    result = []
+    for record in records:
+        item = {
+            "id": record["id"], "public_id": record["public_id"], "kind": record["kind"],
+            "status": record["status"],
+            "plan_code": record["plan_code_snapshot"] or None,
+            "package_sku": record["package_sku_snapshot"] or None,
+            "duration_days": record["duration_days_snapshot"] or None,
+            "package_bytes": record["package_bytes_snapshot"] or None,
+            "amount_minor": record["expected_amount_minor"], "currency": record["currency"],
+            "payment_method": record["payment_method"],
+            "external_reference": record["external_reference"],
+            "comment": record["comment"] or None,
+            "created_at": record["created_at"], "updated_at": record["updated_at"],
+            "cancelled_at": record["cancelled_at"] or None,
+        }
+        application = applications.get(record["id"])
+        if application:
+            item["application"] = application
+        sync = sync_states.get(record["id"])
+        item["sync_state"] = sync["state"] if sync else None
+        item["sync_attempts"] = sync["attempts"] if sync else None
+        item["sync_last_error_class"] = (sync["last_error_class"] if sync else None) or None
+        result.append(item)
+    return result
+
+
+def _canonical_payments_summary(connection, account_id: int, *, limit: int = 10) -> list[dict]:
+    rows = connection.execute(
+        "SELECT public_id,payment_channel,record_status,amount_minor,currency,"
+        "payment_method,external_reference,actor_type,created_at "
+        "FROM mgboost_payment_records WHERE account_id=? "
+        "ORDER BY created_at DESC,id DESC LIMIT ?", (int(account_id), limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _legacy_stars_summary(db, aliases: list[dict], *, limit: int = 5) -> list[dict]:
+    usernames = [alias["legacy_username"] for alias in aliases if alias.get("legacy_username")]
+    if not usernames:
+        return []
+    placeholders = ",".join("?" * len(usernames))
+    rows = db._conn.execute(
+        f"SELECT id,marzban_username,tariff_name,duration_days,stars_price,status,target_expire,created_at "
+        f"FROM stars_invoices WHERE marzban_username IN ({placeholders}) "
+        f"ORDER BY created_at DESC,id DESC LIMIT ?", (*usernames, limit),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["legacy_source"] = True
+        result.append(item)
+    return result
+
+
+def _entitlement_detail(db, account_id: int, *, now: int):
+    """PH5-04 is the authoritative read-only composition; never recompute
+    entitlement client-side or in a second module."""
+    try:
+        return db.entitlements.calculate(account_id=int(account_id), now=int(now))
+    except EntitlementNotFoundError:
+        return None
+
+
 def account_detail(
     db, account_id: int, *, now: int | None = None,
     notes_by_alias: dict[str, str] | None = None,
@@ -256,15 +423,20 @@ def account_detail(
     ).fetchall()
     aliases = _aliases(db._conn, account_id, notes_by_alias)
     identity = _display_identity(account, aliases)
+    action_availability = _device_action_availability(db._conn, account_id)
+    devices = _device_summaries(
+        db._conn, account_id, device_slot_hmac_key=device_slot_hmac_key,
+    )
+    for device in devices:
+        device["actions"] = action_availability.get(device["slot_number"], {})
     return {
         "account": account,
         "display_identity": identity,
         "aliases": aliases,
         "subscription": _subscription_summary(db, account_id, now=timestamp),
+        "entitlement": _entitlement_detail(db, account_id, now=timestamp),
         "credential": _credential_summary(db._conn, account_id),
-        "devices": _device_summaries(
-            db._conn, account_id, device_slot_hmac_key=device_slot_hmac_key,
-        ),
+        "devices": devices,
         "known_client_devices": _known_client_devices(db, aliases),
         "telegram": {
             "status": grace["telegram_status"],
@@ -274,6 +446,10 @@ def account_detail(
             **grace, "grace": _grace_progress(grace["grace"], now=timestamp),
             "action": classify_action(grace),
         },
+        "manual_payments": _manual_payments_summary(db, account_id),
+        "payment_records": _canonical_payments_summary(db._conn, account_id),
+        "legacy_stars_invoices": _legacy_stars_summary(db, aliases),
+        "timeline": account_timeline(db, account_id, limit_per_source=15),
         "technical": _technical_summary(db._conn, account_id, account["public_id"]),
     }
 
@@ -365,6 +541,84 @@ def migration_grace_summaries(
     return {"generated_at": timestamp, "summary": summary, "accounts": rows}
 
 
+def _queue_label(db, account_id: int) -> dict:
+    account = db.accounts.get_account(account_id)
+    if account is None:
+        return {"account_id": account_id, "label": f"#{account_id}"}
+    aliases = _aliases(db._conn, account_id)
+    identity = _display_identity(account, aliases)
+    label = identity["display_note"] or identity["primary_alias"] or identity["public_id"]
+    return {"account_id": account_id, "label": label,
+            "primary_alias": identity["primary_alias"]}
+
+
+def _manual_payment_queues(db, now: int) -> dict:
+    conn = db._conn
+    try:
+        records = db.manual_payments.list_records(limit=200)
+    except Exception:
+        records = []
+    counts: dict[str, int] = {}
+    pending_items: list[dict] = []
+    review_items: list[dict] = []
+    sync_items: list[dict] = []
+    for record in records:
+        status = record.get("status")
+        counts[status] = counts.get(status, 0) + 1
+        base = {
+            "public_id": record.get("public_id"), "kind": record.get("kind"),
+            "amount_minor": record.get("expected_amount_minor"),
+            "currency": record.get("currency"), "created_at": record.get("created_at"),
+            "plan_code": record.get("plan_code_snapshot"),
+            "package_sku": record.get("package_sku_snapshot"),
+            "duration_days": record.get("duration_days_snapshot"),
+            **_queue_label(db, record.get("account_id")),
+        }
+        if status == "PENDING" and len(pending_items) < 8:
+            pending_items.append(base)
+        elif status == "MANUAL_REVIEW" and len(review_items) < 8:
+            review_items.append(base)
+    for row in db._conn.execute(
+        "SELECT payment_record_id,account_id,state,last_error_class FROM "
+        "mgboost_manual_payment_sync_jobs WHERE state!='SYNCED' ORDER BY updated_at LIMIT 8"
+    ).fetchall():
+        item = dict(row)
+        item.update(_queue_label(db, row["account_id"]))
+        sync_items.append(item)
+    return {
+        "counts_by_status": counts,
+        "pending": pending_items,
+        "manual_review": review_items,
+        "sync_pending": sync_items,
+    }
+
+
+def _stars_manual_review_queue(db) -> tuple[int, list[dict]]:
+    """Legacy Stars manual-review invoices also stay on their own existing
+    screen; surfaced here so the operator queue is complete."""
+    conn = db._conn
+    total = conn.execute(
+        "SELECT COUNT(*) FROM stars_invoices WHERE status='manual_review'"
+    ).fetchone()[0]
+    items = []
+    for row in conn.execute(
+        "SELECT id,marzban_username,tariff_name,stars_price,target_expire FROM "
+        "stars_invoices WHERE status='manual_review' ORDER BY created_at DESC LIMIT 8"
+    ).fetchall():
+        item = dict(row)
+        linked = conn.execute(
+            "SELECT account_id FROM mgboost_legacy_account_aliases WHERE legacy_username=? LIMIT 1",
+            (row["marzban_username"],),
+        ).fetchone()
+        if linked:
+            item.update(_queue_label(db, linked["account_id"]))
+        else:
+            item["account_id"] = None
+            item["label"] = row["marzban_username"]
+        items.append(item)
+    return int(total), items
+
+
 def dashboard_summary(
     db, *, now: int | None = None, notes_by_alias: dict[str, str] | None = None,
 ) -> dict:
@@ -446,6 +700,15 @@ def dashboard_summary(
     child_mismatch = db._conn.execute(
         "SELECT COUNT(*) FROM mgboost_child_user_intents WHERE desired_state!=observed_state"
     ).fetchone()[0]
+    stars_review_count, stars_review_items = _stars_manual_review_queue(db)
+    parent_sync_pending = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_parent_sync_operations WHERE state IN ('PENDING','RETRY')"
+    ).fetchone()[0]
+    queues = {
+        **_manual_payment_queues(db, timestamp),
+        "stars_manual_review": {"count": stars_review_count, "items": stars_review_items},
+        "child_sync_pending_count": int(parent_sync_pending),
+    }
     return {
         "generated_at": timestamp,
         "grace_campaign": campaign,
@@ -457,4 +720,5 @@ def dashboard_summary(
         },
         "expiring": {"buckets": buckets, "accounts": expiry_rows},
         "tickets": {"open": int(tickets["open_count"] or 0), "unanswered": int(tickets["unanswered"] or 0)},
+        "queues": queues,
     }

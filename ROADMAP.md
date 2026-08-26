@@ -1622,11 +1622,33 @@ explicitly out of this task's own scope.
 **Depends:** PH6-02. **Scope:** close old `ADMIN_RESET`, create successor consumed=0, preserve ledger.
 **Tests:** collector boundary, duplicate request, pending disable. **Correction:** another explicit period action.
 
-## [ ] PH7-05 — Device slot administration
+## [~] PH7-05 — Device slot administration
 
 **Depends:** Phase 3. **Display:** slot/type, masked HWID/UUID, name, child, dates, traffic/WL, status, desired/observed.
 **Ops:** unbind/disable/enable/revoke/free/rebind/add/remove/restore baseline.
 **Accept/tests:** old UUID fails all nodes; permissions/stale UUID/partial failure/12 slots.
+
+**Wave B slice implemented (2026-08-27), implementation-complete / pending
+independent review; NOT deployed:** Revoke / Free / Rebind wired as three
+distinct authenticated primary-admin routes
+(`src/routes/admin_devices.py`; DL-049 granularity preserved) over the
+unchanged PH3-05 durable primitives (`prepare_*` + `process_*` +
+`DeviceSlotStore.release/rebind`), each with deterministic per-target
+idempotency keys so double-clicks/retries converge; remote broker failures
+leave a durably scheduled RETRY instead of an orphaned lease; Free refuses
+without an APPLIED REVOKE (server-side hard ordering); Rebind additionally
+requires explicit `confirm:true` + a new-device HWID and creates the successor
+generation (new child provisioning via the existing PH3-03 outbox). Per-slot
+action availability is derived server-side from lifecycle tables into
+`account_detail.devices[].actions` (`src/admin_read_models.py`) and rendered
+as buttons in Devices. **Disable/Enable remain explicitly unavailable:** no
+standalone slot-disable backend primitive exists yet (no writer of a per-slot
+administrative pause anywhere), so nothing was offered rather than inventing a
+lifecycle; add/remove slots & restore-baseline stay `[ ]` (PH5-07/PH7-06
+territory). Generic delete does not exist (asserted by test over `_ROUTES`).
+Confirmation UX: preview consequences list, mandatory reason, typed
+acknowledgement checkbox (Rebind adds an extra compromise acknowledgement).
+Targeted coverage in `tests/test_admin_operational_admin.py`.
 
 ## [ ] PH7-06 — Explicit conflict resolution on limit reduction
 
@@ -1640,25 +1662,71 @@ explicitly out of this task's own scope.
 **Authority:** unlimited grants only by primary MGBoost admin.
 **Tests:** each override with exhausted/available/unlimited, reject >90 days, expiry-to-AUTO, renewal during override, Base+FORCE_ENABLED package rejection, non-primary unlimited denial. **Rollback:** audited return AUTO.
 
-## [ ] PH7-08 — Immutable administrative audit trail
+## [~] PH7-08 — Immutable administrative audit trail
 
 **Depends:** PH1-01/PH2-05 actor model. **Fields:** who/when/account/operation/old/new/reason/source/order/correlation.
 **Scope:** GB/reset/device/slot/expiry/plan/override/token/migration/revoke/Telegram ownership rebind; rebind stores old/new Telegram ID, primary-admin actor, reason and timestamp; no raw secrets.
 **Tests:** complete before/after for success/failure/partial/reconcile, redaction; rejected and successful rebind actor/target assertions; Telegram IDs absent from unrelated logs/exports.
 **Migration:** preserve current `audit_log` as legacy evidence.
 
+**Read-side aggregate implemented (2026-08-27), pending independent review;
+NOT deployed:** `src/admin_audit_timeline.py::account_timeline()` is a pure
+read-only join over the already-existing immutable evidence tables (entitlement
+mutations, canonical payment records, manual payments + edits/applications +
+sync state, child lifecycle operations, migration binding events, grace events,
+credential events, ownership-rebind events incl. old/new Telegram IDs) with a
+scrubbing layer that structurally excludes token/verifier/HWID/idempotency-key
+material and bounds every value; rendered by the new account `Audit` tab
+(`timeline.js`). No second audit framework or writer was created — this is the
+presentation aggregation the section above scoped, while the complete
+write-side emit-coverage goal stays `[ ]` until the remaining operation kinds
+(expiry ops PH7-01, WL override/reset, refunds/compensations) exist.
+
 ## [ ] PH7-09 — Safe plan/entitlement admin
 
 **Depends:** PH5-04/06 and admin ticket workflow. **Fixed policies:** approved OPD/DL decisions referenced by PH5-04/06 and PH7-06/07; no open plan/entitlement-transition decision remains for this task. **Scope:** preview effective change/conflicts/schedule/reasons/confirmations; no raw counters.
 **Tests:** plan matrix, invalid transition, concurrent payment. **Rollback:** compensation with snapshot.
 
-## [ ] PH7-10 — Manual external-payment admin UI
+## [~] PH7-10 — Manual external-payment admin UI
 
 **Depends:** PH3-09, PH5-09; только основной admin.
 **Account UI:** payment channel, plan, expiry, WL/devices; first rollout фиксирует RUB и позволяет выбрать только versioned fixed RUB price, exact amount/method/reference/comment с preview entitlement change. Pending можно исправить до apply; applied record read-only, correction создаётся отдельной compensation action.
 **No separate reseller UI/login.** Raw subscription bearer, UUID и full HWID не нужны для payment operation.
 **Controls:** backend проверяет admin session, target account и fixed catalog; confirmation/reason mandatory.
 **Tests:** account IDOR, masked fields, non-RUB/manipulated plan/price/days/GB, pending edit/apply race, applied edit denial, duplicate reference and confirmation.
+
+**Implemented (2026-08-27), implementation-complete / pending independent
+review; NOT deployed to production:** authenticated primary-admin HTTP surface
+(`src/routes/admin_payments.py` + `admin_support.py`, registered in
+`src/server.py`) over the already-deployed PH5-09/10 `ManualPaymentStore`
+verbatim -- no payment logic in routes: `GET /admin/manual-payment-catalog`
+(server-provided RUB products only), `POST /admin/accounts/{id}/manual-payments
+/preview|create-flow` (preview computes same-plan purchasability + exact price
++ DL-044 expiry estimate via PH5-04/PH5-02 read paths; other-plan targets are
+shown as explicitly blocked with reason `PLAN_SWITCH_REQUIRES_PH5_06`,
+UNLIMITED admin grants blocked, WL packages eligibility-gated by the real plan),
+plus per-record edit (min-8-char reason → append-only before/after),
+cancel, resolve-review, apply and sync-retry endpoints. Apply drives child
+convergence through the existing PH3-08 `run_account_sync_cycle` exactly like
+PH5-05's Stars driver (`pending_sync_jobs`+`record_sync_result` mapping,
+worker_id `admin-manual-ph5-09`) and returns old/new expiry + PH5-04
+entitlement summary; every mutation requires session+CSRF AND the sealed
+primary-admin capability; bodies bounded; IDOR-safe 404s; double-submit
+converges via the store's durable idempotency key; DL-054 forever-reserved
+references enforced (409 reuse). Vanilla-JS UI (`frontend/assets/admin/
+payments.js` + Payments tab in `accounts.js`, no framework): server-catalog
+product grid with purchasable=false explanations, server preview panel,
+bounded create form minting one idempotency key per wizard, pending card with
+Edit/Cancel/Apply dialogs (apply shows immutable warning + result panel with
+old→new expiry, entitlement, child-sync state), cancelled-reference warning;
+payment rows show sync badge for applied records. Blockers honest: non-
+purchasable products render disabled with reasons instead of silently going
+to MANUAL_REVIEW. Targeted tests: `tests/test_admin_operational_admin.py`
+(22 checks incl. exact DL-040 price table, manipulated price/duration/product/
+account rejection, duplicate-submit convergence, edit/cancel/apply/immutability,
+drift→MANUAL_REVIEW→resolve, package grant, DL-054 reuse 409, auth matrix,
+no raw secrets in list/detail/timeline payloads). Production untouched this
+session (HEAD verified unchanged); deploy is application-code-only.
 
 ## [ ] PH7-11 — Immutable manual-payment mutation audit
 
@@ -1667,6 +1735,13 @@ explicitly out of this task's own scope.
 **Fields:** admin actor, end account, operation, old/new, reason, amount/currency/method/reference, timestamp, result, idempotency and retry/reconciliation state.
 **Scope:** manual create/link, renew, plan, package, expiry, refund/correction and failed/denied attempts.
 **Accept/tests:** every mutation/reconciliation emits correlated append-only events; raw security credentials excluded; audit editable only through compensating event, never reseller API.
+**Note (2026-08-27):** the mutation events themselves already exist durably
+via the deployed stores (`mgboost_manual_payment_edits/_applications`,
+`mgboost_entitlement_mutations`+links, lifecycle/rebind/credential/grace event
+tables) and are surfaced read-only by the new `Audit` tab aggregate — but a
+correlated *unified write-side* audit framework (one emit point covering every
+mutation kind incl. future refund/correction ops) is NOT built here; PH7-11
+stays `[ ]`.
 
 ## Admin panel redesign — owner-approved architecture/UX decisions
 
@@ -1838,6 +1913,20 @@ monolithic screen code out of `admin.js` into per-domain ES modules, then
 an equivalent-functionality review of the preserved legacy screens. This
 is a completed, production-deployed slice, not a claim that all of Wave A
 is finished.
+
+**Operational-admin completion slice (2026-08-27, pending independent
+review; NOT deployed):** account detail extended with the authoritative
+PH5-04 `entitlement` block (`Overview` renders status/expiry/plan/device/WL
+consumption/packages/overrides read-only), recent canonical payments,
+legacy Stars invoice summary and the unified timeline; Dashboard gained
+actionable operator queues (`queues`: manual payments PENDING / MANUAL_REVIEW
+/ sync-pending + child-sync pending count + Stars manual-review count, each
+row deep-linking to the Payments tab; no fabricated monitoring state — every
+queue reads an existing durable store). Credential issue/reissue flow kept as-is inside Subscription with its rotation warning. Telegram
+ownership rebind form added to the Telegram tab per OPD-39/DL-041. New
+frontend ES modules: `modals.js` (reusable two-step consequence dialogs),
+`payments.js`, `device_ops.js`, `timeline.js`; monolithic `admin.js`
+split-out remains the open Wave A item above.
 
 # Phase 8 — Hardening and scale
 

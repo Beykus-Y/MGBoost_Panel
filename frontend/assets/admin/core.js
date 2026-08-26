@@ -33,6 +33,18 @@ const HUMAN_LABELS=Object.freeze({
   FREE:'Свободен',INTERNAL_SLOT:'Служебный',CUSTOMER:'Клиентский',
   APPLIED:'Применено',IN_FLIGHT:'Выполняется',RETRY:'Повтор',ERROR:'Ошибка',
   AUTO:'Автоматически',ENDED:'Завершён',NOT_CREATED:'Не создан',
+  SYNCED:'Синхронизировано',CANCELLED:'Отменён',LIMITED:'Ограниченный',NONE:'Нет',
+  PLAN_PRODUCT:'Продление тарифа',WL_PACKAGE:'WL-пакет',
+  ENTITLEMENT_MUTATION:'Entitlement',PAYMENT_RECORD:'Платёж',
+  MANUAL_PAYMENT:'Ручной платёж',MANUAL_PAYMENT_EDIT:'Правка платежа',
+  DEVICE_LIFECYCLE:'Устройство',MIGRATION_BINDING:'Миграция',LEGACY_GRACE:'Grace-период',
+  SUBSCRIPTION_CREDENTIAL:'Credential',OWNERSHIP_REBIND:'Владелец Telegram',
+  CREATED:'Создан',CONFIRMED:'Подтверждён',ADMIN_GRANTED:'Начислен админом',
+  EXTERNAL_PAYMENT:'Внешний платёж',TELEGRAM_STARS:'Telegram Stars',
+  MANUAL_PAYMENT_SRC:'Ручной платёж',SYSTEM:'Система',ADMIN:'Админ',
+  ORDINARY:'Обычный rebind',COMPROMISE:'Компрометация',BASIC:'Базовый',
+  BASIC_PLUS:'Базовый Плюс',BASIC_PRO:'Базовый Про',WL:'WL',
+  EXTENDED:'Расширенный',FAMILY:'Семейный',
 });
 
 export function humanLabel(value,fallback){
@@ -48,4 +60,14 @@ export function maskTelegram(value){
   const text=String(value??'');
   if(text.length<=4)return '••••';
   return `${text.slice(0,2)}••••${text.slice(-2)}`;
+}
+
+export function formatRub(amountMinor,currency='₽'){
+  if(amountMinor===null||amountMinor===undefined)return '—';
+  return `${Number(amountMinor).toLocaleString('ru-RU')} ${currency}`;
+}
+
+export function formatGb(bytes){
+  if(bytes===null||bytes===undefined)return '—';
+  return `${(Number(bytes)/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})} ГБ`;
 }
