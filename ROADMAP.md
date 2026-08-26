@@ -231,12 +231,37 @@ Stars и RUB — независимые утверждённые retail price ta
 **Depends:** PH1-03/04, PH8-03. **Test:** reproducible staging + secret-safe drift report.
 **Migration:** log/DB-backup/token-evidence retention утверждена DL-042; cleanup только по controlled deletion после verified backup/restore и confirmed rotation/reissue strategy. Untracked legacy JSON требует отдельного ownership/content inventory и не удаляется автоматически.
 
-## [~] PH0-05 — Exact versioned WL topology
+## [x] PH0-05 — Exact versioned WL topology
 
-**Сделано:** 12 live tags и два nodes подтверждены.
-**Осталось:** versioned config с node IDs/roles/assertions; fuzzy matching запрещён.
-**Blocks:** PH6-01/06. **Tests:** exact live set, stale hosts excluded.
-**Rollback:** prior allowlist применим только после live validation.
+**Сделано (2026-08-26, production-deployed):** `src/wl_topology.py` — exact
+versioned baseline (`WL_TOPOLOGY_VERSION="2026-08-26-v1"`): 12 live WL
+inbound tags (unchanged from the 2026-08-23 baseline) and the exact two
+real WL nodes, confirmed directly against production Marzban this session
+(`GET /api/nodes`, `GET /api/inbounds`, and the `hosts` table's `address`
+column to tie each live `wl-*` tag to a physical node): node id 4
+("RU ONLY WL", `84.201.130.217`, serves `wl-tcp-*`) and node id 7
+("Selectel", `5.178.85.8`, serves `wl-selec-grpc-*`), both
+`usage_coefficient=1.0`. The other 3 real Marzban nodes (Estonia id 3,
+Beget id 6, germanyp2 id 8) carry no WL inbound and are excluded by exact
+id, never by node-name substring (node id 4's own name literally contains
+"WL" -- exactly the kind of accidental match fuzzy matching would produce).
+Six stale `wl-selec-tcp-*` `hosts` rows (ids 4451-4453, 4469-4471,
+referencing an inbound tag that no longer exists in live config) are
+excluded automatically, since `diff_topology()` only ever compares against
+live `get_inbounds()` output, not the `hosts` table.
+**`diff_topology(observed_tags, observed_nodes)`** is pure/exact-set-only:
+`missing_tags` (declared but absent live), `extra_wl_like_tags`
+(alert-only: a live tag that looks WL-shaped but isn't on the allowlist --
+never auto-included), `missing_node_ids`, `node_field_mismatches`
+(role/address/coefficient drift on a declared WL node id). No `wl` substring
+search is ever used to decide membership.
+**Blocks:** PH6-01/06 -- PH6-01 now consumes this module directly.
+**Tests:** `tests/test_wl_topology.py` (11 tests: exact baseline shape,
+clean match, missing/extra/renamed tag, stale non-wl-like tag ignored,
+missing node, coefficient/role-rename mismatch, node-name-contains-"wl"
+never auto-included, real-payload shaping helpers).
+**Rollback:** pure data/diff module, no schema, no live enforcement wired
+-- reverting is a plain code revert.
 
 ## [x] PH0-06 — Token/device/payment execution paths
 
@@ -999,18 +1024,103 @@ dependency or starting Phase 6, both explicitly out of scope.
 
 # Phase 6 — WL quota
 
-## [ ] PH6-01 — Runtime topology allowlist/assertions
+## [x] PH6-01 — Runtime topology allowlist/assertions
 
-**Depends:** PH0-05. **Scope:** exact 12 tags + exact two node IDs/roles/coefficient; stale exclusion; config version on events.
-**Accept:** mismatch blocks destructive enforcement and alerts.
-**Tests:** missing/extra/renamed/stale tag, non-WL traffic assertion. **Rollback:** prior validated version after live reread.
+**Сделано (2026-08-26, production-deployed):** `src/wl_topology_guard.py` +
+`src/wl_topology_guard_schema.py` (additive migration
+`ph6_01_wl_topology_guard_v1`). `WLTopologyGuardStore.run_assertion()`
+diffs a live observation against PH0-05's exact baseline and records one
+immutable append-only row per check in the new
+`mgboost_wl_topology_assertions` table (config version, ok/mismatch,
+missing/extra tags, missing nodes, field mismatches, timestamp) --
+no UPDATE/DELETE ever, mirroring the project's established audit-log
+pattern. `require_topology_ok()` is the fail-closed gate a future PH6-06
+destructive enforcement action must consult (raises `TopologyMismatchError`
+both on an actual mismatch and on "no assertion has ever run" -- never
+assumes OK by default). `fetch_live_topology_observation()` wraps the
+already-existing read-only `MarzbanClient.get_nodes`/`get_inbounds` calls,
+zero new Marzban API surface, zero mutation.
+**Not yet wired to any live enforcement path** -- PH6-06 (which does not
+exist yet) is the future consumer; running an assertion today is an
+on-demand library call, not a scheduled job.
+**Accept:** confirmed -- a mismatch is durably recorded and
+`require_topology_ok()` blocks (raises) on it; a clean assertion allows.
+**Tests:** `tests/test_wl_topology_guard.py` (8 tests: ok/mismatch
+recording, append-only enforcement, fail-closed with no prior assertion,
+fail-closed after a mismatch, live-payload fetch helper, a real non-WL
+node present live never satisfying the WL-node requirement).
+**Rollback:** additive-only schema (new table, no existing table touched);
+revert is a plain code+migration revert, no data ever depended on for
+correctness elsewhere.
 
-## [ ] PH6-02 — Immutable WL periods
+## [x] PH6-02 — Immutable WL periods
 
 **Depends:** PH5-02; units/anchor закрыты DL-016/DL-020.
 **Fields:** UTC-hour-aligned start/end, decimal quota bytes (GB x 1,000,000,000), source/reason, closed/successor; ADMIN_RESET closes and creates, never rewrites consumed. Subscription expiry хранится отдельно.
 **Tests:** two periods for 60d, overlap/gap, UTC/partial-hour/reset.
 **Migration:** explicit initial period; no guessed historical usage.
+
+**Gap audit against PH5-02's existing engine (2026-08-26, before doing any
+work):** decimal-GB units and full immutability (identity fields + no-delete
+triggers) were already correct and already deployed (PH5-02/its own
+`wl_period_lifecycle_schema`) -- not rebuilt. Two real gaps against this
+entry's own Accept/Fields text: (1) `schedule_wl_period_windows`'s anchor
+was exact-second, not UTC-hour-aligned as DL-020 requires; (2) there was no
+ADMIN_RESET close+successor mechanism at all. Both closed, in the existing
+engine, without a second period engine:
+- **UTC-hour alignment:** `subscription_renewal.align_to_utc_hour()` floors
+  a timestamp down to the current UTC hour; used only for the WL-period
+  anchor passed into the unchanged, still-pure `schedule_wl_period_windows`
+  -- the subscription's own `current_expiry`/DL-044 anchor stays
+  exact-second, per DL-020's own "subscription expiry хранится отдельно."
+  Floor (not ceil) was chosen because every plan duration is a whole
+  multiple of 86400s (itself a multiple of 3600s), which makes flooring
+  each purchase's own anchor independently always reproduce exact
+  contiguity with the previous purchase's own floored period boundary --
+  verified both by proof and by
+  `test_repeated_equal_duration_purchases_stack_and_periods_keep_incrementing`.
+- **ADMIN_RESET close+successor:** new additive
+  `src/wl_period_admin_reset_schema.py` (migration
+  `ph6_02_wl_period_admin_reset_v1`, requires the exact PH3-01 checksum,
+  same pattern as PH5-02's own lifecycle schema) adds
+  `mgboost_wl_period_resets` (append-only audit: closed period id, successor
+  period id, reason, actor). `src/wl_period_admin_reset.py`'s
+  `WLPeriodAdminResetStore.reset_period()` requires the same sealed
+  `PrimaryAdminAuthority` capability every other PH3-06+ consequential
+  action requires; closes the old period (`status='CLOSED'`, the one
+  field PH5-02's own migration docstring already left mutable for exactly
+  this), creates a successor with the same account/subscription/term/
+  quota, starting at the UTC-hour-floored reset time and ending at the
+  **original period's own `ends_at`** (never extends the schedule), refuses
+  a period that isn't `PLANNED`/`ACTIVE`, refuses a period already reset,
+  refuses a reset at/after the period's own end. "Never rewrites consumed"
+  holds by construction, not just by discipline: there is no `consumed`
+  column on `mgboost_wl_periods` (that ledger is PH6-03, keyed by period
+  id) -- a closed period keeps its own id and any future ledger rows keyed
+  to it untouched; only a brand-new period id starts counting.
+- Decimal-GB (`GB_DECIMAL = 10**9` in `src/plan_catalog.py`, already
+  verified against the PH5-01 catalog) and source/reason for ordinary
+  (non-reset) period creation (already fully recoverable via the existing
+  `mgboost_wl_periods.subscription_term_id -> mgboost_subscription_terms.
+  mutation_id -> mgboost_entitlement_mutations` join, which already carries
+  `payment_channel`/`mutation_source`/`actor_type`/`actor_ref`/`reason`)
+  needed no new column -- adding one would have duplicated existing
+  provenance, not filled a gap.
+**Production-deployed 2026-08-26** together with PH0-05/PH6-01 in the same
+commit/deploy (`a223f80`); `mgboost_wl_period_resets`=0 rows post-deploy
+(dormant, no purchase flow calls `apply_same_plan_purchase` live yet, and
+nobody has ever called `reset_period` -- both are already true for
+`mgboost_wl_periods` itself since PH5-02's own deploy).
+**Tests:** `tests/test_wl_period_admin_reset.py` (6 tests: close+successor
+end-to-end incl. UTC-hour-aligned successor start and unchanged `ends_at`,
+double-reset refused, already-closed-period refused, capability required,
+reset-at-or-after-end refused, append-only audit rows) +
+`tests/test_subscription_renewal.py` (2 new: `align_to_utc_hour` boundary
+table, a genuine partial-hour purchase producing an hour-floored period
+start while the subscription's own anchor stays exact) + 2 existing
+PH5-02 integration tests updated for the now-correct hour-floored absolute
+values (their own relative/contiguity assertions were already
+alignment-agnostic and needed no change).
 
 ## [ ] PH6-03 — Durable monotonic usage ledger/collector
 
@@ -1377,8 +1487,8 @@ Hard blockers:
 - PH2-05 and PH3-04 implementation/security tests block ownership recovery/rebind activation; OPD-39/DL-041 now fix the product policy and are not blockers.
 - PH3-09 + PH5-09/10 block structured manual/external-payment rollout; reseller self-service не существует.
 - PH3-02/03/05 block real per-device revoke/allocation.
-- PH0-05/PH6-01 block inbound removal.
-- PH6-02/03/06/07 block WL sales/enforcement.
+- PH0-05/PH6-01 closed 2026-08-26; inbound removal is no longer blocked by an unversioned topology.
+- PH6-03/06/07 block WL sales/enforcement (PH6-02 closed 2026-08-26).
 - PH5-01/03/04/05 and payment reconciliation block package sales; OPD-02/03/04/12/13/32 policies are already closed and are not blockers.
 - PH4-05/06 plus successful migration verification block final legacy revoke; OPD-09 already fixes the grace period at 14 days and is not a blocker.
 - PH2-03/PH3-02/PH6-03 block multi-worker.

@@ -1,4 +1,143 @@
-# AGENT_HANDOFF — PH5-02 renewal/WL-period engine production-deployed / PH5-03 blocked on unbuilt Phase 6 / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — Phase 6 started: PH0-05/PH6-01/PH6-02 closed and production-deployed; PH6-03/04 not started / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-26 (new session, continuing from the immediately-prior
+handoff below, which correctly identified PH5-03 as blocked on unbuilt
+Phase 6 infrastructure). **This top section supersedes everything below.**
+The owner explicitly authorized starting Phase 6 this session, in
+dependency order: PH0-05 first (it blocks PH6-01), then PH6-01, then a
+gap-audit-first PH6-02 (the owner explicitly warned that PH5-02 already
+built the real period engine/schema/immutability and PH6-02 must extend
+it, never duplicate it). PH6-03 (usage ledger/collector) and PH6-04
+(shared parent pool) were **not started** this session -- see "Exact next
+step" below for why.
+
+## PH0-05 — Exact versioned WL topology: `[x]`, production-deployed
+
+`src/wl_topology.py`. The prior 2026-08-23 audit already had the exact 12
+live WL inbound tags, but not exact node IDs -- this session obtained
+those for real, directly against production Marzban, via a short-lived
+root-only script (`GET /api/nodes`/`GET /api/inbounds` through the
+already-existing read-only `MarzbanClient` methods, using the isolated
+broker's own `/etc/mgboost/marzban-broker.env` credentials; the script was
+deleted immediately after use, nothing was printed beyond the node/tag
+data). Real production Marzban has 5 nodes total; cross-referencing the
+`hosts` table's `address` column against each live `wl-*` inbound tag
+showed only 2 of them actually serve WL traffic: node id 4 ("RU ONLY WL",
+`84.201.130.217`) and node id 7 ("Selectel", `5.178.85.8`), both
+`usage_coefficient=1.0`. The other 3 real nodes (Estonia id 3, Beget id 6,
+germanyp2 id 8) are excluded by exact id -- notably node id 4's own live
+Marzban *name* literally contains the substring "WL", which is exactly why
+the owner's "no fuzzy matching" rule matters: it's included because its id
+is on the allowlist, not because of its name. Six `wl-selec-tcp-*` rows
+found in the Marzban `hosts` table (ids 4451-4453, 4469-4471) reference an
+inbound tag that no longer exists in live `get_inbounds()` output -- these
+are the "stale WL-like host records" the 2026-08-23 audit already flagged,
+and are excluded automatically since the module only ever compares against
+live inbound config, never the `hosts` table.
+
+## PH6-01 — Runtime topology allowlist/assertions: `[x]`, production-deployed
+
+`src/wl_topology_guard.py` + `wl_topology_guard_schema.py` (additive
+migration `ph6_01_wl_topology_guard_v1`, new append-only
+`mgboost_wl_topology_assertions` table). `require_topology_ok()` is the
+fail-closed gate a future PH6-06 destructive enforcement action must call
+before touching any real inbound state -- it is not called by anything
+live yet, since PH6-06 doesn't exist. Running an assertion today is an
+on-demand library call (`fetch_live_topology_observation()` wraps the
+existing read-only `get_nodes`/`get_inbounds` calls); nothing schedules it
+automatically yet, matching this project's established "build the contract
+before its future consumer exists, dormant until wired" discipline.
+
+## PH6-02 — Immutable WL periods: `[x]`, production-deployed (gap-fill, not a new engine)
+
+Per the owner's explicit warning, this session read PH5-02's already-
+deployed `subscription_renewal.py`/`wl_period_lifecycle_schema.py` in full
+before writing anything, and confirmed: decimal-GB units (`GB_DECIMAL =
+10**9` in `plan_catalog.py`) and full identity/quota-field immutability
+were already correct and already deployed -- not touched. Two real gaps
+against PH6-02's own Accept/Fields text: (1) `schedule_wl_period_windows`'s
+anchor was exact-second, not UTC-hour-aligned per DL-020; (2) no
+ADMIN_RESET close+successor mechanism existed. Both fixed *in* the
+existing engine: `subscription_renewal.align_to_utc_hour()` floors only
+the WL-period anchor (the subscription's own DL-044 exact-second
+anchor/expiry is untouched, per DL-020's "subscription expiry хранится
+отдельно"); a new additive `mgboost_wl_period_resets` table + capability-
+gated `WLPeriodAdminResetStore.reset_period()` close the current period and
+open a successor covering the remaining window with the same quota,
+recording an immutable audit row. "Never rewrites consumed" holds by
+construction (no `consumed` column exists yet on `mgboost_wl_periods` --
+that's PH6-03's future ledger, keyed by period id, so a closed period's own
+id is simply never touched again). Source/reason for *ordinary*
+period creation needed no new column: it's already fully recoverable via
+the existing `wl_periods -> subscription_terms -> entitlement_mutations`
+join (payment_channel/mutation_source/actor/reason) -- adding a duplicate
+column would have violated the owner's "don't duplicate schema" instruction.
+
+27 new/updated focused tests across `tests/test_wl_topology.py` (11),
+`tests/test_wl_topology_guard.py` (8), `tests/test_wl_period_admin_reset.py`
+(6), plus 2 new + 2 updated in `tests/test_subscription_renewal.py`. Full
+regression via the already-installed `/tmp/mgboost-wave-a-browser-venv`:
+**`1081 passed, 0 skipped`** (up from `1054 passed`; all browser suites
+included, zero skips, zero regressions). Production: fresh encrypted
+backup create/restore PASS, preflight (`quick_check=ok`, 0 FK violations,
+accounts=18, grace=17, subscriptions=18, `mgboost_wl_periods`=0), fast-
+forward `dba4749` -> `a223f80` (`mgboost-panel` restart only, additive
+schema self-applies on `Database()` construction, no existing table
+touched), post-deploy invariants identical plus both new tables present
+and empty (`mgboost_wl_topology_assertions`=0,
+`mgboost_wl_period_resets`=0), all 4 services active, unauthenticated
+`/admin/accounts` still `401` (via `127.0.0.1:8001` directly -- the
+external `178.250.186.127` IP without the real `Host:` header returns
+nginx's own unrelated `404`, unrelated to this change and reproduced
+identically before touching anything), legacy `/sub` bogus-token still
+`404`.
+
+## Why PH6-03/04 were not started this session
+
+The owner's instruction was explicitly conditional: move to PH6-03 only
+"если PH6-02 закрыт и зависимости чистые," and to PH6-04 only if PH6-03 is
+"полностью завершён." PH6-03 (durable monotonic usage ledger/collector) is
+a materially larger, higher-risk subsystem than PH0-05/PH6-01/PH6-02
+combined -- it requires querying real Marzban per-user/per-node usage data,
+building idempotent non-decreasing merge logic across duplicate/out-of-
+order/node-reset/restart/clock-skew scenarios, a leader-election-or-CAS
+concurrency story, and a cursor/snapshot/reconciliation design, none of
+which exists as a reusable primitive anywhere in this codebase yet (unlike
+PH6-02, which could extend PH5-02's already-proven engine). Building it
+correctly needs its own dedicated session with room for the same
+gap-audit-first, tests-first, single-increment discipline this session
+just used -- attempting it as a fourth item in an already-large single
+turn was judged the same kind of avoidable batch risk this project's own
+history repeatedly flags (see, e.g., the PH4-05 mass-migration-batch
+reasoning further below). PH6-04 was never reachable this session since it
+explicitly depends on PH6-03.
+
+## Unchanged this session (verify before relying on any of these)
+
+- Production HEAD: `a223f80` (local/origin/production all match, verified
+  via `git log -1` on all three).
+- `mgboost_legacy_grace_periods`: still 17 rows, untouched.
+- PH4-06: **NOT STARTED**. No shared legacy credential was touched.
+- PH5-03 remains exactly as blocked as the immediately-prior handoff
+  describes it -- PH6-03/04 (real consumption data) still don't exist.
+- PH7-12 stays `[~]`, unaffected by this session.
+
+## Exact next step
+
+PH6-03 (durable monotonic usage ledger/collector) is the next Phase 6 item
+in dependency order, now that PH6-01/02 are both closed. Before starting
+it, re-read this session's own PH6-02 gap-audit discipline: read the
+*actual* current `src/` state first (there is still no usage-ledger
+primitive anywhere to extend), design the schema/idempotency/leader-lock
+contract, get it right in a focused session, then build. Do not invent
+consumption data under any circumstance -- if real Marzban per-user/
+per-node usage data cannot be obtained or doesn't behave as expected during
+that design pass, stop and report back rather than fabricating numbers.
+PH6-04 (shared parent pool) and everything gated on it (PH5-03 onward)
+remain blocked until PH6-03 is genuinely complete, tested, and deployed.
+
+---
+
 
 Updated: 2026-08-26 (later still, same day; continuation of the same
 session, same owner instruction thread). **This top section supersedes
