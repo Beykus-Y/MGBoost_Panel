@@ -41,6 +41,10 @@ from .internal_entitlements import InternalEntitlementStore
 from .plan_catalog_schema import apply_plan_catalog_schema
 from .plan_catalog import PlanCatalogStore
 from .wl_period_lifecycle_schema import apply_wl_period_lifecycle_schema
+from .wl_topology_guard_schema import apply_wl_topology_guard_schema
+from .wl_topology_guard import WLTopologyGuardStore
+from .wl_period_admin_reset_schema import apply_wl_period_admin_reset_schema
+from .wl_period_admin_reset import WLPeriodAdminResetStore
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
 from .provenance_schema import apply_provenance_schema
@@ -140,6 +144,10 @@ class Database:
             self._conn, self._lock, self.accounts, self.primary_admin_authority
         )
         self.legacy_grace = LegacyGraceStore(self._conn, self._lock, self.primary_admin_authority)
+        self.wl_topology_guard = WLTopologyGuardStore(self._conn, self._lock)
+        self.wl_period_admin_reset = WLPeriodAdminResetStore(
+            self._conn, self._lock, self.primary_admin_authority
+        )
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -396,6 +404,8 @@ class Database:
         apply_internal_entitlement_schema(self._conn)
         apply_plan_catalog_schema(self._conn)
         apply_wl_period_lifecycle_schema(self._conn)
+        apply_wl_topology_guard_schema(self._conn)
+        apply_wl_period_admin_reset_schema(self._conn)
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
         apply_child_workflow_schema(self._conn)

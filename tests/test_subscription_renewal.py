@@ -82,8 +82,9 @@ def test_first_purchase_of_wl_plan_creates_subscription_and_periods(db):
     assert result["anchor"] == 1_000
     assert result["new_expiry"] == 1_000 + 30 * 86400
     assert len(result["wl_periods"]) == 1
-    assert result["wl_periods"][0]["starts_at"] == 1_000
-    assert result["wl_periods"][0]["ends_at"] == 1_000 + 30 * 86400
+    # WL period start is UTC-hour-floored (DL-020); subscription anchor/expiry above stay exact-second.
+    assert result["wl_periods"][0]["starts_at"] == 0
+    assert result["wl_periods"][0]["ends_at"] == 30 * 86400
 
     sub = db._conn.execute(
         "SELECT * FROM mgboost_subscriptions WHERE account_id=?", (account["id"],)
@@ -126,7 +127,15 @@ def test_repeated_equal_duration_purchases_stack_and_periods_keep_incrementing(d
     assert second["anchor"] == first["new_expiry"]  # still-active subscription extends forward
     assert second["new_expiry"] == first["new_expiry"] + 30 * 86400
     assert second["wl_periods"][0]["sequence_no"] == 2  # continues, never restarts at 1
-    assert second["wl_periods"][0]["starts_at"] == first["new_expiry"]
+    # Both anchors floor to the same UTC hour boundary + one duration's worth
+    # of whole days (a multiple of 3600s), so the second purchase's floored
+    # WL-period start lines up exactly with the first purchase's own floored
+    # period end -- still gapless/non-overlapping even though the
+    # subscription's own exact-second expiry (`first["new_expiry"]`) isn't
+    # itself hour-aligned.
+    from src.subscription_renewal import align_to_utc_hour
+    assert second["wl_periods"][0]["starts_at"] == align_to_utc_hour(first["new_expiry"])
+    assert second["wl_periods"][0]["starts_at"] == first["wl_periods"][0]["ends_at"]
 
     sub = db._conn.execute(
         "SELECT current_expiry, row_version FROM mgboost_subscriptions WHERE id=?",
@@ -199,3 +208,24 @@ def test_timestamps_are_pure_utc_epoch_seconds_no_calendar_semantics(db):
     account = db.accounts.create_account("DIRECT", now=1)
     result = _purchase(db, account["id"], plan_code="BASIC", duration_days=30, key="tz-key-0001-xxxxxx", now=0)
     assert result["new_expiry"] == 30 * 86400  # exact seconds, no month-length ambiguity
+
+
+def test_align_to_utc_hour_floors_partial_hour():
+    from src.subscription_renewal import align_to_utc_hour
+
+    assert align_to_utc_hour(0) == 0
+    assert align_to_utc_hour(3599) == 0
+    assert align_to_utc_hour(3600) == 3600
+    assert align_to_utc_hour(3601) == 3600
+    assert align_to_utc_hour(7199) == 3600
+
+
+def test_wl_period_start_is_utc_hour_aligned_for_a_partial_hour_purchase(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    # now=5_000 is mid-hour (1h23m20s into the epoch) -- PH6-02 "partial-hour" case.
+    result = _purchase(db, account["id"], plan_code="WL", duration_days=30, key="partial-hour-key-01", now=5_000)
+
+    assert result["anchor"] == 5_000  # subscription anchor itself stays exact
+    assert result["wl_periods"][0]["starts_at"] == 3_600  # WL period floors to the hour
+    assert result["wl_periods"][0]["starts_at"] % 3600 == 0
+    assert result["wl_periods"][0]["ends_at"] % 3600 == 0

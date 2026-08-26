@@ -76,6 +76,19 @@ def compute_new_expiry(current_expiry: int | None, duration_days: int, *, now: i
     return anchor, anchor + int(duration_days) * 86400
 
 
+def align_to_utc_hour(timestamp: int) -> int:
+    """DL-020: WL quota periods are UTC-hour-aligned. Floors down to the
+    start of the current UTC hour -- floor (not ceil) so that, because every
+    plan duration is a whole number of days (a multiple of the 3600-second
+    hour), flooring the anchor of each successive purchase always lands
+    exactly on the previous purchase's own (also-floored) period boundary:
+    no gap, no overlap, ever, across repeated purchases. Subscription
+    expiry itself is never aligned this way (DL-020: "subscription expiry
+    хранится отдельно") -- only the WL period anchor is.
+    """
+    return int(timestamp) - (int(timestamp) % 3600)
+
+
 def schedule_wl_period_windows(
     *, anchor: int, duration_days: int, wl_period_days: int
 ) -> list[tuple[int, int]]:
@@ -283,7 +296,7 @@ class SubscriptionRenewalStore:
                 periods = []
                 if plan["wl_mode"] == "LIMITED":
                     windows = schedule_wl_period_windows(
-                        anchor=anchor, duration_days=int(duration_days),
+                        anchor=align_to_utc_hour(anchor), duration_days=int(duration_days),
                         wl_period_days=plan["wl_period_days"],
                     )
                     existing_wl_seq = self._conn.execute(
