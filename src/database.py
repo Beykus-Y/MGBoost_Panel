@@ -50,6 +50,7 @@ from .wl_usage_ledger import WLUsageLedgerStore
 from .wl_package_schema import apply_wl_package_schema
 from .wl_package_catalog import WLPackageCatalogStore
 from .wl_packages import WLPackageStore
+from .entitlement_engine import EntitlementEngine
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
 from .provenance_schema import apply_provenance_schema
@@ -156,6 +157,7 @@ class Database:
         self.wl_usage_ledger = WLUsageLedgerStore(self._conn, self._lock)
         self.wl_package_catalog = WLPackageCatalogStore(self._conn, self._lock)
         self.wl_packages = WLPackageStore(self._conn, self._lock, self.wl_package_catalog)
+        self.entitlements = EntitlementEngine(self)
 
     def _create_tables(self):
         self._conn.executescript("""
