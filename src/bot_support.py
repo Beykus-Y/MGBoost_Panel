@@ -609,6 +609,26 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return
 
         db.save_tg_user(message.from_user.id, username)
+
+        # PH4-05 grace campaign: if this legacy username was bootstrapped
+        # into a grace-cohort account (ABSENT ownership, no Telegram claim
+        # made at bootstrap time -- see legacy_grace_registration.py), this
+        # is the exact moment real evidence first exists. Reuses the same
+        # ambiguity bar enroll_direct_account(PROVEN) already enforces and
+        # the existing link_telegram_owner primitive; never an automatic
+        # rebind, never resolves an ambiguous mapping on its own. A
+        # username with no bootstrapped account (the ordinary case for
+        # every non-cohort user) is a silent no-op ('NO_ACCOUNT') -- zero
+        # behavior change for anyone outside the grace campaign.
+        try:
+            from .legacy_grace_registration import bind_telegram_after_registration
+            bind_telegram_after_registration(
+                db, legacy_username=username, telegram_id=message.from_user.id,
+                actor="mgboost-bot-grace-registration",
+            )
+        except Exception as exc:
+            logger.warning(f"grace telegram bind skipped error_type={type(exc).__name__}")
+
         await state.set_state(SupportStates.in_dialog)
         await message.answer(
             f"✅ Аккаунт привязан: {username}\n\nЧем могу помочь?",

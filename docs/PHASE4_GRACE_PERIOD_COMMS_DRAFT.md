@@ -1,59 +1,89 @@
 # PH4-05 grace-period communications -- DRAFT ONLY, NOT SENT
 
 Nothing in this file has been sent to any real user, and nothing in this
-session sent it. These are drafts for the owner to review/edit/approve
-before PH4-05 is ever started for a real account. No code in this session
-sends a Telegram message or renders an LK notice from this text.
+session sent it. This is the finalized text for the owner to review/edit
+and publish through whatever channel they already use to reach legacy
+users (Telegram channel/group post, pinned message, etc.) -- no code in
+this session publishes it automatically, and no existing safe publishing
+mechanism was identified in this project to do so (see "Explicit
+non-goals" below).
 
-Placeholders: `{DAYS_LEFT}`, `{DEADLINE_DATE}` (owner's local time zone,
-formatted for end users, not raw UTC epoch), `{NEW_URL_HELP_LINK}` (support
-contact/instructions, not the raw opaque URL itself -- never put the actual
-bearer token in a broadcast message).
+Placeholders: `{DEADLINE_DATE}` (owner's local time zone, formatted for end
+users -- filled in from the real `cohort_end_at` once the cohort actually
+starts, never a raw UTC epoch), `{SUPPORT_CONTACT}` (however the owner
+already handles support, e.g. the bot's own "🆘 Позвать человека" flow).
 
-## Telegram (bot message, private chat only, same channel `/newsub` already uses)
+## Primary communication: one public informational post (owner-published)
 
-Initial notice, sent once when an account's grace period starts:
+This is the main channel per the 2026-08-26 product decision: grace
+membership does not wait on Telegram registration, so most cohort members
+cannot yet receive a personal bot message -- the post is what reaches them.
 
-> Обновление подписки MGBoost
+> 📢 Важное обновление MGBoost
 >
-> Ваша старая ссылка подписки будет отключена через 14 дней
-> ({DEADLINE_DATE}). Пожалуйста, перейдите на новую защищённую ссылку
-> заранее -- отправьте команду /newsub в этот чат, чтобы получить новую
-> ссылку, и обновите её в вашем VPN-клиенте.
+> Мы переводим все подписки на новую, более защищённую систему выдачи
+> конфигураций. Ваша текущая ссылка подписки (та же самая, которой вы
+> пользуетесь сейчас) продолжит работать без каких-либо действий с вашей
+> стороны в течение следующих 14 дней, до {DEADLINE_DATE}.
 >
-> Если у вас уже несколько устройств -- обновите ссылку на каждом из них.
-> Если возникнут сложности, напишите в поддержку: {NEW_URL_HELP_LINK}
+> Чтобы гарантированно сохранить доступ после этого срока, пожалуйста,
+> в течение этих 14 дней зарегистрируйтесь в этом Telegram-боте:
+>
+> 1. Откройте бота и нажмите /start (или пришлите вашу текущую ссылку
+>    подписки, если бот попросит).
+> 2. Бот привяжет вашу подписку к вашему Telegram-аккаунту.
+> 3. После этого мы переведём ваш аккаунт на новую систему и, если
+>    потребуется, пришлём новую ссылку -- никаких сложных действий с вашей
+>    стороны не нужно.
+>
+> Если у вас несколько устройств -- достаточно один раз пройти регистрацию,
+> дальше мы разберёмся сами. После {DEADLINE_DATE} старая инфраструктура
+> будет отключена, и без регистрации в боте восстановить доступ будет
+> сложнее. Если у вас уже есть вопросы -- {SUPPORT_CONTACT}.
 
-Reminder (e.g. at day 7 and day 12, only if `last_opaque_activity` is still
-null for the account -- do not remind someone who has already switched):
+## Reminder for users who registered but have not yet switched
+
+Only ever sent to an already-Telegram-`BOUND` account whose
+`last_opaque_activity` is still null -- reuses the bot's existing private-
+chat send path, the same one `/newsub` already uses, so this is safe to
+implement without a new notification subsystem when there is time for it;
+it must never delay or gate the cohort clock itself.
 
 > Напоминание: осталось {DAYS_LEFT} дней до отключения старой ссылки
-> подписки MGBoost ({DEADLINE_DATE}). Похоже, вы ещё не переключились на
-> новую ссылку. Отправьте /newsub, чтобы получить новую ссылку сейчас.
+> подписки MGBoost ({DEADLINE_DATE}). Вы уже зарегистрированы -- отправьте
+> /newsub, чтобы получить новую ссылку и обновить её в VPN-клиенте.
 
-## LK (in-app banner, shown while an active grace period exists for the
-logged-in account and `last_opaque_activity` is still null)
+## LK banner (shown while an active grace period exists for the logged-in
+account and `last_opaque_activity` is still null)
 
-> ⚠️ Старая ссылка подписки будет отключена {DEADLINE_DATE} ({DAYS_LEFT}
-> дней осталось). Получите новую ссылку и обновите её в VPN-клиенте на всех
-> устройствах, чтобы не потерять доступ.
+> ⚠️ Старая ссылка подписки будет отключена {DEADLINE_DATE}. Получите новую
+> ссылку и обновите её в VPN-клиенте на всех устройствах, чтобы не потерять
+> доступ.
 > [Получить новую ссылку]
 
 ## Support-ticket macro (for manual use only, not automated)
 
 > Здравствуйте! Ваша подписка переходит на новый защищённый формат ссылки.
-> Старая ссылка перестанет работать {DEADLINE_DATE}. Я отправил(а) вам
-> новую ссылку -- пожалуйста, обновите её в клиенте на всех ваших
-> устройствах. Если что-то не работает после обновления, напишите нам
-> снова, и мы поможем.
+> Старая ссылка перестанет работать {DEADLINE_DATE}. Пожалуйста,
+> зарегистрируйтесь в нашем Telegram-боте (пришлите вашу текущую ссылку
+> подписки), и мы переведём вас на новую систему. Если что-то не работает
+> после этого, напишите нам снова, и мы поможем.
 
 ## Explicit non-goals of this draft
 
-- No automated send path exists yet for any of the above -- wiring a real
-  send (bot broadcast job, LK banner render) is separate follow-up work,
-  intentionally not built in this session (it would be the first
-  genuinely user-visible PH4-05 change, and is exactly the kind of action
-  this session was told to stop short of).
+- No automated publish path exists in this project for a Telegram
+  channel/group post, and none was built this session -- the owner
+  publishes the primary post manually through whatever channel/account
+  they already use. This session does not attempt to publish it, per
+  instruction ("не пытайся самостоятельно публиковать его... если
+  существующая инфраструктура не имеет явно предусмотренного безопасного
+  механизма публикации").
+- The per-user reminder and LK banner reuse fully existing, already-proven
+  send/render mechanisms (the bot's private-chat message path, the LK's
+  existing banner surface) -- wiring either is small, optional follow-up
+  work that must never gate or delay the cohort clock itself, and was not
+  wired live in this session (kept as a documented, ready-to-implement
+  draft instead, per instruction not to expand scope beyond the clock).
 - No language/tone A-B testing, no multi-language variants -- single
   Russian draft only, matching this project's existing bot/LK copy
   convention observed elsewhere in the codebase.

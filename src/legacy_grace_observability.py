@@ -89,6 +89,108 @@ def _opaque_last_used(connection: sqlite3.Connection, account_id: int) -> int | 
     return int(row[0]) if row and row[0] is not None else None
 
 
+def _last_child_fetch(connection: sqlite3.Connection, account_id: int) -> int | None:
+    """Proxy for "successful child subscription delivery": the most recent
+    time this account's PH4-02 migration lineage moved to a state that only
+    happens after a real, successful child fetch (`mark_migrated()` is only
+    called on `OUTCOME_OK`). Honest proxy, not a literal per-request signal
+    -- documented as such in the grace-period runbook."""
+    row = connection.execute(
+        "SELECT MAX(updated_at) FROM mgboost_migration_bindings "
+        "WHERE account_id=? AND state IN "
+        "('MIGRATED','LEGACY_REVOKE_PENDING','LEGACY_REVOKED')",
+        (int(account_id),),
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def telegram_status(db, account_id: int) -> str:
+    """One of `BOUND` (an active OWNER identity exists), `AMBIGUOUS` (no
+    owner yet, but more than one distinct Telegram ID has linked one of
+    this account's legacy usernames via the existing bot flow),
+    `PENDING_LINK` (exactly one distinct Telegram ID has registered via the
+    bot but `bind_telegram_after_registration` has not run for it yet --
+    the daily report's catch-up sweep should retry it) or `UNREGISTERED`."""
+    connection = db._conn
+    account_id = int(account_id)
+    owner = connection.execute(
+        "SELECT 1 FROM mgboost_telegram_identities "
+        "WHERE account_id=? AND role='OWNER' AND revoked_at IS NULL",
+        (account_id,),
+    ).fetchone()
+    if owner is not None:
+        return "BOUND"
+    row = connection.execute(
+        "SELECT COUNT(DISTINCT t.telegram_id) FROM tg_users t "
+        "JOIN mgboost_legacy_account_aliases a ON a.legacy_username=t.marzban_username "
+        "WHERE a.account_id=?",
+        (account_id,),
+    ).fetchone()
+    distinct_count = int(row[0]) if row and row[0] is not None else 0
+    if distinct_count > 1:
+        return "AMBIGUOUS"
+    if distinct_count == 1:
+        return "PENDING_LINK"
+    return "UNREGISTERED"
+
+
+def _bridge_enabled(connection: sqlite3.Connection, account_id: int) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM mgboost_legacy_bridge_bindings WHERE account_id=? AND enabled=1",
+        (int(account_id),),
+    ).fetchone()
+    return row is not None
+
+
+def _raw_legacy_request_seen(connection: sqlite3.Connection, account_id: int, *, since: int) -> bool:
+    """Uses the pre-existing, unrelated `sub_requests` log (raw
+    Marzban-username-keyed, present since before PH4-05) to detect "a
+    client is still actively hitting this account's legacy subscription" --
+    independent of whether a bridge binding exists yet. Never stores or
+    returns anything from that table beyond a boolean."""
+    row = connection.execute(
+        "SELECT 1 FROM sub_requests WHERE timestamp>=? AND username IN "
+        "(SELECT legacy_username FROM mgboost_legacy_account_aliases WHERE account_id=?) LIMIT 1",
+        (int(since), int(account_id)),
+    ).fetchone()
+    return row is not None
+
+
+ACTION_OK_MIGRATED = "OK_MIGRATED"
+ACTION_WAITING_FOR_REGISTRATION = "WAITING_FOR_REGISTRATION"
+ACTION_CONTACT_USER = "CONTACT_USER"
+ACTION_MANUAL_REVIEW = "MANUAL_REVIEW"
+ACTION_COMPATIBILITY_BLOCK = "COMPATIBILITY_BLOCK"
+ACTION_RECONCILE_REQUIRED = "RECONCILE_REQUIRED"
+
+CONTACT_USER_DAYS_REMAINING_THRESHOLD = 3
+
+
+def classify_action(snapshot: dict) -> str:
+    """Pure decision over an already-assembled `account_grace_snapshot()`
+    result -- no query, no mutation, trivially unit-testable. Order matters:
+    the most actionable/urgent category wins."""
+    migration_state = snapshot["migration_state"]
+    if migration_state["ERROR_RECONCILE"] > 0:
+        return ACTION_RECONCILE_REQUIRED
+    if snapshot["telegram_status"] == "AMBIGUOUS":
+        return ACTION_MANUAL_REVIEW
+    if (
+        snapshot["bridge_enabled"]
+        and snapshot["active_devices"] == 0
+        and snapshot["raw_legacy_request_seen_72h"]
+    ):
+        return ACTION_COMPATIBILITY_BLOCK
+    if snapshot["migrated_devices"] > 0 and snapshot["active_devices"] > 0:
+        return ACTION_OK_MIGRATED
+    grace = snapshot["grace"]
+    if grace is not None and grace["active"]:
+        days_remaining = grace["seconds_remaining"] / 86400
+        if days_remaining <= CONTACT_USER_DAYS_REMAINING_THRESHOLD and snapshot["telegram_status"] != "BOUND":
+            return ACTION_CONTACT_USER
+    return ACTION_WAITING_FOR_REGISTRATION
+
+
 def account_grace_snapshot(db, account_id: int, *, now: int) -> dict:
     """Assembles the full per-account visibility set required by PH4-05's
     accept criteria. `grace` is `None` for an account that has not started
@@ -124,13 +226,18 @@ def account_grace_snapshot(db, account_id: int, *, now: int) -> dict:
         newest = max(filter(None, [legacy_last, opaque_last]), default=None)
         inactive_since_grace_start = newest is None or newest < started
 
+    migration_state = _migration_state_counts(connection, account_id)
+
     return {
         "account_id": account_id,
         "grace": grace_summary,
-        "migration_state": _migration_state_counts(connection, account_id),
+        "migration_state": migration_state,
+        "migrated_devices": migration_state["MIGRATED"],
         "active_devices": _active_device_count(connection, account_id),
+        "telegram_status": telegram_status(db, account_id),
         "last_legacy_activity": legacy_last,
         "last_opaque_activity": opaque_last,
+        "last_child_fetch": _last_child_fetch(connection, account_id),
         "legacy_requests_24h": count_since(connection, account_id, "LEGACY", since=since_24h, now=now),
         "legacy_requests_72h": count_since(connection, account_id, "LEGACY", since=since_72h, now=now),
         "opaque_requests_24h": count_since(connection, account_id, "OPAQUE", since=since_24h, now=now),
@@ -139,4 +246,6 @@ def account_grace_snapshot(db, account_id: int, *, now: int) -> dict:
         "reconciliation_failures_72h": _reconciliation_failures(connection, account_id, since=since_72h),
         "revoke_rebind_events_72h": _revoke_rebind_events(connection, account_id, since=since_72h),
         "inactive_since_grace_start": inactive_since_grace_start,
+        "bridge_enabled": _bridge_enabled(connection, account_id),
+        "raw_legacy_request_seen_72h": _raw_legacy_request_seen(connection, account_id, since=since_72h),
     }

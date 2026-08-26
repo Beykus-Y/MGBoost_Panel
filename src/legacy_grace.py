@@ -131,6 +131,21 @@ class LegacyGraceStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_by_cohort(self, cohort_ref: str | None = None) -> list[dict]:
+        """All grace rows, optionally filtered to one cohort_ref. No time
+        filtering -- callers wanting active/expired-only use the two
+        methods above."""
+        if cohort_ref is None:
+            rows = self._conn.execute(
+                "SELECT * FROM mgboost_legacy_grace_periods ORDER BY account_id ASC",
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM mgboost_legacy_grace_periods WHERE cohort_ref=? ORDER BY account_id ASC",
+                (cohort_ref,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # --- start (idempotent, primary-admin gated) ------------------------------
 
     def start(
