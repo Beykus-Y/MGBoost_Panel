@@ -52,6 +52,8 @@ from .wl_package_catalog import WLPackageCatalogStore
 from .wl_packages import WLPackageStore
 from .stars_purchase_schema import apply_stars_purchase_schema
 from .stars_purchase import StarsPurchaseStore
+from .manual_payment_schema import apply_manual_payment_schema
+from .manual_payment import ManualPaymentStore
 from .entitlement_engine import EntitlementEngine
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
@@ -164,6 +166,12 @@ class Database:
             self._conn, self._lock, self.accounts, self.plan_catalog, self.subscription_renewal
         )
         self.stars_purchases.bind_database(self)
+        self.manual_payments = ManualPaymentStore(
+            self._conn, self._lock, self.accounts, self.plan_catalog,
+            self.subscription_renewal, self.provenance, self.wl_packages,
+            self.wl_package_catalog, self.primary_admin_authority,
+        )
+        self.manual_payments.bind_database(self)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -430,6 +438,7 @@ class Database:
         apply_child_lifecycle_schema(self._conn)
         apply_parent_sync_schema(self._conn)
         apply_stars_purchase_schema(self._conn)
+        apply_manual_payment_schema(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)
         apply_ownership_rebind_schema(self._conn)

@@ -1,4 +1,91 @@
-# AGENT_HANDOFF — PH5-05 canonical Stars purchase/renewal production-deployed and independently verified; Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH5-09 + PH5-10 implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / deploy+push forbidden this slice
+
+Updated: 2026-08-27 (new implementation session). **This top section
+supersedes everything below.** Owner instruction: implement PH5-09 then
+PH5-10 sequentially in one slice, then STOP -- no further phase may be
+started.
+
+## State after this session
+
+- **Local HEAD = checkpoint commit of this slice; `origin/main` and
+  production both remain at `a5c846b`** (verified via `git rev-parse`
+  locally/over SSH before writing this). PUSH TO ORIGIN AND PRODUCTION
+  DEPLOY ARE EXPLICITLY FORBIDDEN for this slice: the next reviewer
+  (Claude) must diff local vs `origin/main` independently.
+- Working tree before commit contained only:
+  `src/manual_payment_schema.py` (new), `src/manual_payment.py` (new),
+  `src/database.py` (wiring: import + schema call + store attribute +
+  `bind_database`), `tests/test_manual_payment_ph509.py` (new),
+  `tests/test_manual_renewal_ph510.py` (new), plus ROADMAP.md /
+  CHANGELOG.md / this file's documentation updates.
+- No product ambiguity required a STOP: DL-029..040 already fix channel,
+  actor, currency scope, price authority and edit lifecycle; the gap audit
+  found every needed engine (PH5-02 renewal incl. the DL-044 formula,
+  PH3-09 provenance writers, PH5-03 package grant/refund with
+  EXTERNAL_PAYMENT support built in, PH5-04 proof calculation, PH3-08
+  outbox + `run_account_sync_cycle`) and nothing was duplicated.
+- Deliberately dormant: **no admin route/UI/bot wiring, no scheduler, no
+  production manual payment exists.** Wiring is exactly what the future
+  admin manual-payment mutation wave (owner-gated) will add; when it does,
+  `pending_apply_records()` / `pending_sync_jobs()` +
+  `record_sync_result()` mirror the canonical PH5-05 driver semantics
+  (`src/stars.py::_sync_canonical_purchase_children`).
+
+## What was built (details belong to ROADMAP.md PH5-09/PH5-10 entries)
+
+Additive migration `ph5_09_manual_payment_v1` gated on exact
+PH3-01/PH5-01/PH3-09/PH5-03 checksums (all verified byte-identical on
+production during read-only preflight) adds four tables with trigger-level
+immutability for applied facts and append-only edit history;
+`ManualPaymentStore` records/pends/edits/cancels/applies manually
+confirmed RUB plan payments (same-plan renewal through PH5-02, other-plan
+fail-closed to MANUAL_REVIEW) and RUB WL packages (through the existing
+PH5-03 grant/refund engines). Price authority is exclusively the pinned
+versioned fixed RUB catalog rows; stale/retired versions keep their
+contractual price and nothing reprices from current tables. Every
+idempotency boundary is durable (UNIQUE key hash, UNIQUE external
+reference across all statuses incl. cancelled, UNIQUE application link,
+engine-level mutation keys); process-local locks are never a correctness
+boundary. A compensating-operation engine does not exist anywhere yet --
+applied records therefore have NO edit or cancel path instead of a fake
+one.
+
+## Verification performed
+
+- Targeted: `tests/test_manual_payment_ph509.py` (33) +
+  `tests/test_manual_renewal_ph510.py` (14) = `47 passed`.
+- Full non-browser regression: **`1223 passed`**, clean baseline collected
+  at the same HEAD without the two new files = `1176`, so the delta is
+  exactly the new tests, zero regressions. Browser files were excluded by
+  path (nothing in the diff touches any browser-tested surface; same
+  discipline as the previous handoff). One environment event mid-session:
+  `/tmp` filled with stale test-scratch `tempfile.mkdtemp` dirs from prior
+  sessions' runs (only ever containing fixture `db.sqlite3`) which broke
+  suite startup with disk-I/O errors; cleaned following the previously
+  owner-approved precedent (venvs/caches untouched).
+- `git diff --check` clean.
+- Production read-only preflight over SSH (no write of any kind):
+  `HEAD=a5c846b`, known untracked `extra_configs.json` drift still present
+  and untouched, `quick_check=ok`, zero FK violations, cardinalities
+  accounts/subscriptions/WL-periods/package-grants/refunds =
+  `18/18/0/0/0`, all four services active, all four parent migration
+  checksums byte-identical to the gates my schema requires, and zero
+  `mgboost_manual_payment%` tables exist yet -- the future deploy is a
+  purely additive self-applying migration like PH5-05's.
+
+## Exact next step
+
+Independent review of this checkpoint against `origin/main` by Claude.
+After approval/deploy decision, PH5-09/10 need the owner-gated admin
+manual-payment mutation wave to become reachable. Per owner instruction
+this session STOPS here: do not start PH5-06, PH5-07, PH5-08, promo
+codes, trials, new admin mutation UI, PH7-09/10/11, PH6-05..08, WL
+enforcement, PH4-06, or final legacy revoke without a fresh explicit
+owner decision.
+
+---
+
+# PRIOR HANDOFF — PH5-05 canonical Stars purchase/renewal production-deployed and independently verified; Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-27 (independent production-verification session, closing
 out PH5-05 after the implementing Codex session hit a rate limit before

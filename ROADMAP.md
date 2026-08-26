@@ -1125,7 +1125,7 @@ callback was initiated at any point in this verification.
 **Depends:** PH5-01–07. **Scope:** одинаковое explanation в bot/admin/LK, plan version, periods/packages/slots, purchase vs renewal, API versioning.
 **Tests:** snapshot/API/UI/localization. **Rollback:** compatible versioned endpoint.
 
-## [ ] PH5-09 — Manual external-payment record and entitlement application
+## [x] PH5-09 — Manual external-payment record and entitlement application
 
 **Depends:** PH3-09, DL-034–036/040, admin session/audit. RUB catalog data blocker закрыт.
 **Actor/channel:** только основной MGBoost admin; account source DIRECT, payment channel `EXTERNAL_PAYMENT`, mutation source `MANUAL_PAYMENT`.
@@ -1135,13 +1135,71 @@ callback was initiated at any point in this verification.
 **Tests:** account IDOR, non-RUB rejection, stale price version, amount/price/plan tamper, pending edit/apply race, applied-record edit denial, compensating operation, negative days/GB, duplicate/replay/reference collision, manual package eligibility/refund, partial remote failure.
 **Migration/rollback:** historical facts импортируются только по evidence; unknown amount/channel остаётся unknown, entitlement correction после apply только через compensation.
 
-## [ ] PH5-10 — Manual external-payment renewal of the same parent account
+**Implemented (2026-08-27), implementation-complete / pending independent
+review; NOT deployed to production:** additive migration
+`ph5_09_manual_payment_v1` (`src/manual_payment_schema.py`, requires exact
+PH3-01/PH5-01/PH3-09/PH5-03 checksums) with four tables:
+`mgboost_manual_payment_records` (full durable payment contract incl.
+snapshots pinned to concrete catalog/plan/duration/price rows,
+`expected=recorded` amount CHECK, `currency='RUB'` locked server-side,
+UNIQUE external_reference and idempotency-key hash, lifecycle/status plus
+review/cancel fields), `mgboost_manual_payment_edits` (append-only
+before/after audit for pending field edits, review resolution and
+cancellation), `mgboost_manual_payment_applications` (immutable one-per-
+record link to the entitlement mutation) and `mgboost_manual_payment_sync_jobs`
+(expiry hand-off; not created for packages). Triggers refuse UPDATE of an
+APPLIED/CANCELLED record and any UPDATE/DELETE of the audit/application
+rows. `ManualPaymentStore` (`src/manual_payment.py`) validates account/
+catalog/RUB channel/exact fixed price/duration/admin capability
+server-side at create AND at apply; the pinned snapshot is re-validated
+against its own referenced rows so a retired or superseded catalog version
+remains the contractual price and nothing is ever repriced from a current
+table. Pending correction is the only sanctioned modification path; a
+compensating-operation engine does not exist anywhere yet, so none was
+built -- applied facts simply have no edit/cancel path at all. Wrong
+amounts are rejected outright (fail-closed, no ambiguous parking state).
+Package purchases ride the existing PH5-03 grant/refund machinery
+unchanged via a canonical CONFIRMED EXTERNAL_PAYMENT row in
+`mgboost_payment_records`; plan renewals follow the PH5-05 precedent
+(this module's own tables carry the evidence chain). Dormant by design:
+no admin route/UI/bot wiring, no scheduler. Tests:
+`tests/test_manual_payment_ph509.py` (33 checks covering the full matrix
+above minus renewal/concurrency items that belong to PH5-10).
+
+## [x] PH5-10 — Manual external-payment renewal of the same parent account
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
 **Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
 **Accept:** retry cannot create new parent/root user or double-add days; admin actor/payment/reference/channel recorded.
 **Tests:** repeated same-duration purchase, concurrent Stars/admin/manual renew, duplicate callback/reference, crash/retry, 12 children, remote partial failure; каждый unique successful payment применяется ровно один раз.
 **Rollback:** durable target and reconciliation/compensation; never subtract guessed days or restore stale child state.
+
+**Implemented (2026-08-27) as the application half of the same slice,
+implementation-complete / pending independent review; NOT deployed:**
+`apply_record()` on a PLAN_PRODUCT record reuses PH5-02's canonical
+renewal (`payment_channel='EXTERNAL_PAYMENT'`,
+`mutation_source='MANUAL_PAYMENT'`, actor PRIMARY_ADMIN, per-record
+durable idempotency key) which updates only the existing subscription row
+-- a different real plan fails closed to MANUAL_REVIEW (PH5-06 territory),
+admin-granted UNLIMITED can never be overwritten. Every unique successful
+payment therefore applies exactly once to the SAME parent account/root
+identity: device slots, HWID verifiers/masks, child UUID verifiers and WL
+period history are structurally untouched by this path (proven by
+byte-equal before/after snapshots in tests), while new WL periods append
+contiguously on the UTC-hour-aligned anchor exactly like PH5-05. Crash
+between the local commit and this module's bookkeeping converges on retry
+through the engines' own keys without a second term; replays after later
+independent renewals verify without rolling anything back. Child expiry
+sync enqueues the durable PH3-08 hand-off (`run_account_sync_cycle`,
+never an inline Marzban loop); partial remote failures stay recoverable
+(PENDING/lease) and converge without ever subtracting guessed days.
+Concurrent Stars + manual, and multiple simultaneous manual payments,
+stack each exactly once under SQLite serialization with CAS backstop.
+Verified result conformance against PH5-04 `calculate` after every
+scenario. Tests: `tests/test_manual_renewal_ph510.py` (14 checks: 30/60d
+stacking, expired/far-future anchors, replay-after-later-renewal,
+concurrent Stars+manual and 4-way manual, 0/1/3/12-child topology matrix,
+partial-failure recovery, restart/backoff durability, WL-period history).
 
 # Phase 6 — WL quota
 

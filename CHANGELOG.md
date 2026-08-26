@@ -17,6 +17,45 @@
 
 ### Added
 
+- PH5-09 manual external-payment record + PH5-10 same-parent renewal
+  (2026-08-27, `[x]`, implementation-complete / pending independent
+  review; **not deployed**): additive migration `ph5_09_manual_payment_v1`
+  (`src/manual_payment_schema.py`, checksum-gated on exact PH3-01/PH5-01/
+  PH3-09/PH5-03 parent schemas) adds four durable tables:
+  `mgboost_manual_payment_records` (one row per manually confirmed RUB
+  payment: immutable plan/version/duration/package snapshots, exact expected
+  and recorded amount equality CHECK, currency locked to RUB, bounded
+  payment method/external reference/comment, primary-admin actor,
+  lifecycle `PENDING/APPLIED/CANCELLED/MANUAL_REVIEW`, unique
+  idempotency-key hash and unique external reference),
+  `mgboost_manual_payment_edits` (append-only before/after pending-edit /
+  review-resolution / cancellation audit), `mgboost_manual_payment_
+  applications` (single immutable link to the entitlement mutation) and
+  `mgboost_manual_payment_sync_jobs` (PH3-08 hand-off for expiry-extending
+  payments). SQLite triggers make APPLIED/CANCELLED records and all
+  edit/application rows update/delete-proof. `src/manual_payment.py`
+  `ManualPaymentStore` reuses -- never duplicates -- the established
+  engines: price authority is only the versioned fixed RUB catalog (PH5-01
+  plan prices / PH5-03 package prices, pinned by exact rows so a later
+  catalog change can never reprice an in-flight record); application goes
+  through PH5-02 `apply_same_plan_purchase` (`EXTERNAL_PAYMENT`/
+  `MANUAL_PAYMENT`, DL-044 `max(current_expiry, now) + purchased_duration`
+  on the SAME subscription/account row), packages through PH5-03
+  `grant_paid_package` on a canonical CONFIRMED PH3-09 payment row, proof
+  through PH5-04 calculation, child convergence through the existing PH3-08
+  outbox. Pending records may be corrected with audited before/after until
+  apply; applied facts are immutable at the DB level and have no hidden
+  rewrite path (a compensating-operation contract does not exist yet).
+  First rollout is deliberately dormant: no admin UI/route/bot wiring, no
+  production payment. Focused tests: `tests/test_manual_payment_ph509.py`
+  (33 checks) + `tests/test_manual_renewal_ph510.py` (14 checks incl.
+  concurrent Stars+manual stacking, crash-recovery between commit and
+  proof/replay, partial remote failure recovery, 0/1/3/12-child
+  topologies). Full non-browser regression: `1223 passed` (baseline
+  collected at the same HEAD without these files: 1176, delta exactly the
+  new tests). Production read-only preflight verified identical gate
+  checksums byte-for-byte, baseline cardinalities `18/18/0/0/0` intact,
+  zero manual-payment tables yet created, HEAD still `a5c846b`.
 - PH5-05 canonical Telegram Stars purchase + renewal (2026-08-27, `[x]`,
   production-deployed, commit `0d2e354`): new durable evidence chain
   (`mgboost_stars_payment_evidence`, `mgboost_stars_purchase_applications`,
