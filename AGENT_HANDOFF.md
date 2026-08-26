@@ -1,4 +1,58 @@
-# AGENT_HANDOFF — PH6-03 closed and production-deployed (real observe-only collection verified); PH6-04 next / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — F1 orphan-lock corrective fix production-deployed; PH6-04 in progress / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-27 (new session, continuing from the PH6-03 handoff below).
+**This top section supersedes everything below.** Before starting PH6-04,
+the owner required one corrective slice: an independent read-only audit
+flagged a potential P2 in `_CrossThreadLockCtx`
+(`src/routes/internal.py:97`) — `asyncio.run_coroutine_threadsafe(lock.
+acquire(), loop).result(timeout=10)` did not cancel the scheduled coroutine
+on timeout, so an abandoned `acquire()` could later win the lock (once the
+real holder released) with nobody left to release it, permanently blocking
+that username's in-process lock and, eventually, the Stars apply-loop.
+
+**F1 confirmed real, not theoretical.** Reproduced against `main` *before*
+any fix with a standalone harness (`asyncio.run_coroutine_threadsafe` timing
+out in the caller thread while a slower real holder released afterward):
+`lock.locked()` stayed `True` forever and a subsequent normal
+`acquire()` hung/timed out — a genuine permanent-lock leak, exactly as the
+audit predicted.
+
+**Fix:** `__enter__` now calls the documented `future.cancel()` idiom
+(`asyncio.run_coroutine_threadsafe`'s own docs: "the coroutine won't be
+cancelled... you have to call `future.cancel()` explicitly") on timeout to
+stop the abandoned `acquire()` coroutine; in the rare case `cancel()`
+returns `False` because the coroutine had *already* finished acquiring the
+instant before cancellation landed, `__enter__` schedules `lock.release()`
+on the lock's own loop instead of leaking it. 1 new regression test
+(`tests/test_internal_renew_lock.py::test_enter_timeout_does_not_orphan_the_lock`)
+reproduces the exact race via the real production code path (monkeypatches
+only `concurrent.futures.Future.result` at the real `timeout=10` call site,
+nothing else) and proves timeout -> no orphan acquire -> a subsequent
+normal acquire/release still works. The existing Stars/internal-renew race
+test (`test_stars_worker_and_internal_renew_race_on_same_username_serialize`)
+still passes unchanged — serialization semantics untouched. Full regression:
+**`1116 passed, 0 skipped`** (up from `1115`).
+
+**Production deploy (2026-08-27):** fresh encrypted backup create/restore
+PASS; preflight (`quick_check=ok`, 0 FK violations, accounts=18, grace=17);
+fast-forward `ed77b11` -> `096c8d4` (`mgboost-panel` restart only, pure
+application code, no schema change); post-deploy invariants identical, all
+4 services active, unauthenticated `/admin/accounts`/`/admin/dashboard`
+still `401`, legacy `/sub` bogus-token still `404`. Production HEAD:
+`096c8d4` (local/origin/production all match).
+
+Other findings from that same independent audit are explicitly **out of
+scope** this session — only F1 was investigated/fixed, per instruction.
+
+## Exact next step
+
+PH6-04 (default shared parent WL pool) is now in progress this session,
+following directly from the PH6-03 handoff immediately below (still
+accurate for all PH6-01/02/03 context).
+
+---
+
+# PRIOR HANDOFF — PH6-03 closed and production-deployed (real observe-only collection verified); PH6-04 next / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-27 (new session). **This top section supersedes everything
 below.** The owner explicitly authorized building PH6-03 (durable monotonic

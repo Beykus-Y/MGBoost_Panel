@@ -280,6 +280,7 @@ never auto-included, real-payload shaping helpers).
 **Files:** `src/security.py`, `src/routes/internal.py`, `src/server.py`, `tests/test_internal_renew_lock.py`; внешний caller вне этого repo.
 **Tests:** read-only contract/permission map; не выгружать raw credentials/customer UUID.
 **Migration:** нельзя infer external payment по username prefix/note; backfill только при transaction/admin evidence, иначе provenance `UNKNOWN_LEGACY`.
+**Corrective fix (2026-08-27):** независимый read-only аудит нашёл P2 в `_CrossThreadLockCtx.__enter__` (`src/routes/internal.py`) — `result(timeout=10)` не отменял зависший `lock.acquire()`, который мог позже выиграть lock без владельца, кто мог бы его освободить, навсегда блокируя per-username lock (и потенциально Stars apply-loop). Воспроизведено на `main` до фикса отдельным harness'ом. Исправлено вызовом документированного `future.cancel()` по timeout + освобождением lock на его собственном loop в редком случае, когда acquire успел выполниться за мгновение до отмены. 1 новый regression test; race-serialization test не пострадал. Full regression `1116 passed`. Деплой `ed77b11`->`096c8d4`, только restart `mgboost-panel`, схема не менялась.
 
 # Phase 1 — Emergency security
 
