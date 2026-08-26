@@ -17,6 +17,28 @@
 
 ### Added
 
+- PH5-05 canonical Telegram Stars purchase + renewal (2026-08-27, `[x]`,
+  production-deployed, commit `0d2e354`): new durable evidence chain
+  (`mgboost_stars_payment_evidence`, `mgboost_stars_purchase_applications`,
+  `mgboost_stars_purchase_sync_jobs`) makes a paid Stars charge, its single
+  entitlement mutation and the later child-expiry sync independently
+  durable and immutable. Legacy `stars_invoices` rows stay untouched
+  expire-only snapshots -- a DB trigger blocks any legacy row from ever
+  being reinterpreted as a canonical purchase. Child expiry sync goes
+  through the existing PH3-08 outbox, not an inline call. Repeated/
+  concurrent successful payments each add exactly one term; duplicate
+  callbacks never double-grant. Focused tests: `56 passed`. Independently
+  production-verified in a follow-up session (rate-limit handoff from the
+  implementing session): production `HEAD=0d2e354` matches local/origin;
+  real `data/db.sqlite3` `quick_check=ok`, 0 FK violations; migration
+  checksum byte-identical to source; all 3 new tables/columns/triggers
+  present; accounts/subscriptions/WL periods/package grants/refunds
+  unchanged at `18/18/0/0/0`; legacy Stars invoices unchanged at 2 rows,
+  both still `LEGACY_EXPIRE`; all 3 new canonical tables at 0 rows (no
+  purchase flow live yet, no fictitious payment/application/grant record);
+  all 4 services active, no error in the panel journal since its last
+  restart; full non-browser regression re-confirmed `1163 passed, 15
+  deselected`.
 - PH5-04 deterministic entitlement engine (2026-08-27, `[x]`,
   production-deployed): `db.entitlements.calculate(account_id=..., now=...)`
   is one versioned (`ph5-04-entitlement-v1`), side-effect-free SQLite-snapshot

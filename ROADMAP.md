@@ -1055,12 +1055,57 @@ violations; subscriptions/WL periods/package grants/package refunds stayed
 Only `mgboost-panel` restarted. No purchase, Stars worker, enforcement,
 subscription/expiry/UUID/config/inbound/user-access mutation was introduced.
 
-## [ ] PH5-05 — Stars purchase + renewal
+## [x] PH5-05 — Stars purchase + renewal
 
 **Depends:** PH5-01/04; сохранить текущие payer/currency/amount/CAS/refund/reconcile strengths.
 **Scope:** distinguish purchase/renewal, product version, outbox entitlement and child expiry sync. Повторная покупка того же plan всегда renewal; покупка другого plan проходит PH5-06 и не использует stacking.
 **Accept/tests:** atomic/idempotent apply; repeated и concurrent successful payments каждого добавляют срок ровно один раз; duplicate callback не даёт double grant; crash/retry восстанавливает единственный apply; mismatches manual-review.
 **Migration:** old invoices остаются expire-only snapshots, не переинтерпретируются.
+
+**Implemented and production-deployed (2026-08-27, commit `0d2e354`):**
+`src/stars_purchase.py` + additive migration `ph5_05_stars_purchase_v1`
+(`src/stars_purchase_schema.py`, requires exact PH3-01/PH5-01/PH3-08
+checksums). New durable evidence chain: `mgboost_stars_payment_evidence`
+(captured Telegram charge, immutable, no update/delete), `mgboost_stars_
+purchase_applications` (one entitlement mutation per invoice, immutable),
+`mgboost_stars_purchase_sync_jobs` (PENDING/SYNCED/MANUAL_REVIEW child
+expiry sync, reusing the PH3-08 outbox rather than an inline call). Legacy
+`stars_invoices` rows are untouched: new columns are additive
+(`invoice_kind` defaults `'LEGACY_EXPIRE'`), and
+`trg_stars_legacy_invoice_kind_immutable` blocks any legacy row from ever
+being reinterpreted as `'CANONICAL_PLAN'`.
+
+**Independent production-verification session (2026-08-27), closing this
+entry after the implementing session hit a rate limit before final
+docs/commit:** local/origin/production `HEAD` all confirmed `0d2e354`
+(fast-forward already applied, no dirty state beyond the pre-existing
+untracked `extra_configs.json`). Real production `data/db.sqlite3`
+(not the empty repo-root `panel.db` stub) checked directly over SSH:
+`quick_check=ok`, 0 FK violations; `mgboost_schema_migrations` carries
+`ph5_05_stars_purchase_v1` with checksum
+`9ab3bbfda297641a00e087ec76c8efc20315117ce8979de270d35f6fb8c0f724`,
+byte-for-byte identical to the checksum the current `src/stars_purchase_
+schema.py` computes locally. All three new tables, all `stars_invoices`/
+`mgboost_entitlement_state.desired_expire` columns, and all 6 immutability
+triggers present and correct. Cardinalities: accounts=18, subscriptions=18,
+WL periods=0, package grants=0, package refunds=0 (all unchanged from
+PH5-04's own baseline); legacy `stars_invoices` still exactly 2 rows, both
+`invoice_kind='LEGACY_EXPIRE'` (zero reinterpreted); the 3 new canonical
+PH5-05 tables (payment evidence/applications/sync jobs) are all **0 rows**
+-- no purchase flow is wired to any live route yet, so no fictitious
+payment/application/grant record exists. All 4 services
+(`mgboost-panel`/`mgboost-marzban-broker`/`mgboost-child-worker`/`nginx`)
+active; `mgboost-panel` has been running without a single error/exception
+in its journal since the last restart (`2026-08-26 22:15:23`, over an hour
+uptime at verification time). Unauthenticated `/admin/accounts` and
+`/admin/dashboard` still `401`, bogus legacy `/sub/<token>` still `404`.
+Targeted regression: `tests/test_stars_purchase.py` + `tests/test_bot_
+support_stars.py` = `56 passed`. Full non-browser regression re-run against
+the exact checkpoint commit (code identical to what was deployed, so this
+was a confirmation run, not a code-change trigger): `1163 passed, 15
+deselected` (browser suite deselected since nothing changed since the
+last recorded browser-inclusive full run). No real Stars invoice/payment
+callback was initiated at any point in this verification.
 
 ## [ ] PH5-06 — Upgrade/downgrade engine
 

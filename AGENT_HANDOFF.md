@@ -1,6 +1,71 @@
-# AGENT_HANDOFF — PH5-04 deterministic entitlement engine production-deployed; PH5-05 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH5-05 canonical Stars purchase/renewal production-deployed and independently verified; Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
-Updated: 2026-08-27. **This top section supersedes everything below.**
+Updated: 2026-08-27 (independent production-verification session, closing
+out PH5-05 after the implementing Codex session hit a rate limit before
+its own final regression/docs/commit). **This top section supersedes
+everything below.**
+
+## PH5-05 — `[x]`, production-deployed, independently production-verified
+
+Implementation (commit `0d2e354`, by the prior session) was already
+fast-forwarded to production and `mgboost-panel` already restarted before
+this session started; nothing new was built or changed here. This session's
+job was solely to independently confirm the rollout was actually correct
+end to end, per explicit owner instruction not to redo or extend PH5-05.
+
+**Verified, this session, directly against real production over SSH**
+(`root@178.250.186.127`, real DB at `/opt/MGBoost_Panel/data/db.sqlite3` --
+note the repo-root `panel.db` is an unrelated empty stub, not the live DB):
+local/origin/production `git log -1` all `0d2e354`, no dirty state beyond
+the already-known untracked `extra_configs.json`. `PRAGMA quick_check=ok`,
+`PRAGMA foreign_key_check` = 0 rows. `mgboost_schema_migrations` has
+`ph5_05_stars_purchase_v1` with checksum
+`9ab3bbfda297641a00e087ec76c8efc20315117ce8979de270d35f6fb8c0f724`,
+identical to what `src/stars_purchase_schema.py` computes from the current
+source. All 3 new tables (`mgboost_stars_payment_evidence`,
+`mgboost_stars_purchase_applications`, `mgboost_stars_purchase_sync_jobs`),
+all new `stars_invoices`/`mgboost_entitlement_state.desired_expire`
+columns, and all 6 immutability triggers present. Cardinalities
+unchanged from PH5-04's own recorded baseline: accounts=18,
+subscriptions=18, WL periods=0, package grants=0, package refunds=0.
+Legacy `stars_invoices`: exactly 2 rows, both still `invoice_kind=
+'LEGACY_EXPIRE'` -- proves no legacy invoice was reinterpreted. All 3 new
+canonical PH5-05 tables: **0 rows each** -- proves no fictitious payment/
+application/grant record was created (no purchase flow is wired to any
+live route yet). All 4 services (`mgboost-panel`, `mgboost-marzban-broker`,
+`mgboost-child-worker`, `nginx`) active; `mgboost-panel`'s journal since its
+last restart (`2026-08-26 22:15:23`) shows zero errors/tracebacks. Safe
+HTTP smoke tests only: unauthenticated `/admin/accounts`/`/admin/dashboard`
+still `401`, bogus legacy `/sub/<token>` still `404` -- no admin mutation,
+no credential rotation, no real Stars invoice/payment callback was
+initiated at any point.
+
+**Tests:** targeted `tests/test_stars_purchase.py` +
+`tests/test_bot_support_stars.py` = `56 passed` (re-run this session).
+Full non-browser regression re-run against the exact checkpoint commit
+(code unchanged since checkpoint, so this is a confirmation run, not a
+post-fix re-test): `1163 passed, 15 deselected` (browser suite skipped --
+nothing in the diff touches any browser-tested surface and the last
+recorded browser-inclusive full run already covered this exact code).
+
+**No fix was needed.** The rollout Codex described (additive migration
+applied via `Database()` init, `database_init=ok`, panel restarted) is
+exactly what production shows.
+
+Full technical detail recorded in `ROADMAP.md`'s own `PH5-05` entry and
+`CHANGELOG.md`'s `Unreleased` section (both updated this session).
+
+## Exact next step
+
+No new phase started, per explicit instruction. Do not start PH5-06,
+PH5-07, PH5-09/10, PH6-05..08, promo codes/trials, admin mutation
+implementation, or PH4-06 without a fresh explicit owner decision.
+
+---
+
+# PRIOR HANDOFF — PH5-04 deterministic entitlement engine production-deployed; PH5-05 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-27. **This top section is preserved for continuity; the new top section above supersedes it.**
 
 ## PH5-04 — `[x]`, production-deployed, deterministic read-only composition only
 
