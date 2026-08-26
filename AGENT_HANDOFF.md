@@ -1,4 +1,48 @@
-# AGENT_HANDOFF — PH4-05 (crash-safe, update after every major checkpoint)
+# AGENT_HANDOFF — PH4-03 REOPENED / PH4-05 blocked (crash-safe, update after every major checkpoint)
+
+Updated: 2026-08-26 (later still, same day). **STOP -- decision gate, owner
+review required.** After the deploy described below, the owner flagged a
+concern that production only has 3 real migrated parent accounts, which
+looked inconsistent with "mass migration". A read-only audit (no mutation)
+confirmed it: **PH4-03 is REOPENED `[~]`** in `ROADMAP.md` -- its own
+written contract required a "mass migration" cohort stage that was never
+executed, and the original closing verdict never said so explicitly (unlike
+PH4-08/PH5-09, which were explicitly named as deferred). The original
+canary evidence itself is NOT retracted -- internal cohort + 2 real
+DIRECT/`EXTERNAL_PAYMENT` migrations genuinely happened and passed exactly
+as documented; only the "mass" step was skipped without being called out.
+**PH4-05 real `start()` remains blocked** until this is resolved (or the
+owner explicitly overrides) -- see `ROADMAP.md` PH4-03/PH4-05 for the full
+counts and the proposed mass-migration plan (evidence collection, ambiguous
+case review, staged batches -- no new code needed, every primitive already
+exists and is tested).
+
+## Exact production counts (read-only audit, 2026-08-26)
+
+- 44 total Marzban users -> 24 real legacy users (19 active, 5 expired) after excluding 18 `mgc_*` children, 1 PH3-08 test canary, 1 generic test user.
+- Only 5 of 24 real usernames have any `mgboost_legacy_account_aliases` row (account 1's 3 + account 3's 1 + account 4's 1) -> only **3 real parent accounts** exist (`mgboost_accounts=4`, but account 2 is the PH3-08 test canary, not a real user).
+- 19 real users have zero parent-account representation: 13 active with no Telegram-bot linkage, 5 expired with no linkage, 1 active with an ambiguous multi-Telegram mapping (a second, distinct case from the already-known excluded one).
+- Zero of the 19 meet the "single unambiguous Telegram mapping" bar the original cohort selection used -- the cheap-evidence pool is exhausted; the gap is ownership evidence, not engineering.
+- 7 currently-`ACTIVE` device-slot generations exist across the 3 real migrated accounts (2+2+3).
+
+## What happened this session, in order
+
+1. PH4-05 reversible/dormant part built, tested (38 new tests), committed, pushed (`4b49450`).
+2. Owner authorized SSH production access with an explicit checklist. Encrypted backup+restore verified PASS. Baseline HEAD/cardinality recorded (`6323823`). Fast-forward deployed to `4b49450`, restarted, all 4 services active, `quick_check=ok`, 0 FK violations, cardinality unchanged, 3 new PH4-05 tables present and empty.
+3. Smoke-tested legacy `/sub` -- first attempt accidentally hit Marzban's own port 8000 instead of the app's real `LISTEN_PORT=8001` (a testing mistake, not a production incident -- caught and corrected). Redone correctly on 8001: real `200`, real VLESS body, and the new grace-activity telemetry counter genuinely incremented for a real request without affecting the response, proving the fail-open hook works on live traffic.
+4. Ran the dry-run eligibility report against a `VACUUM INTO` copy of the live DB (never the live file itself), copy deleted after use. Result: accounts 1/3/4 = `START_GRACE` (no blocker by the script's own narrow migration-state heuristic), account 2 = `HOLD` (`DISABLED`, no migration).
+5. Reported this to the owner. **Owner did not authorize starting any real grace clock** and instead flagged the 3-vs-mass discrepancy -- exactly the scenario this "decision gate" pause exists for.
+6. This read-only audit (all `-readonly`/`mode=ro` SQLite connections, zero writes, `quick_check=ok` reconfirmed) found the mass-cohort gap above. `ROADMAP.md`/`CHANGELOG.md` updated to honestly reopen PH4-03 with the full counts and a concrete mass-migration plan; this file updated; nothing else touched.
+
+## Exact next step
+
+1. Owner reviews the reopened PH4-03 section in `ROADMAP.md` (counts, ambiguous case, proposed plan) and decides: proceed with mass-migration evidence collection (bot-link flow / `OWNER_APPROVED` attestation) for the 13 active unlinked real users, resolve the 1 new ambiguous case, and decide the 5 expired users' fate -- OR explicitly override and authorize a partial (3-account) grace rollout anyway, understanding the tradeoff spelled out in PH4-05's updated entry.
+2. Nothing in this repository or on production currently depends on this decision being made quickly -- `OPAQUE_SUBSCRIPTION_ENABLED`/`LEGACY_BRIDGE_ENABLED` are unchanged, no real grace clock is running, no communication was sent, and the dormant PH4-05 code causes zero user-visible change either way.
+3. Do not re-run the SSH production deploy step -- it is already done (`4b49450` is live). Any future session should start from `git log -1`/`ROADMAP.md` here, not repeat the deploy.
+
+---
+
+# PRIOR HANDOFF (this session, PH4-05 build): still accurate, kept for continuity
 
 Updated: 2026-08-26 (later same day). **PH4-05 is `[~]`: reversible/dormant
 part only.** The owner explicitly authorized starting PH4-05 work "до
