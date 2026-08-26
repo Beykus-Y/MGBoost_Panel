@@ -1,14 +1,108 @@
-# AGENT_HANDOFF — Devices client-evidence addendum + PH5-01 catalog production-deployed / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH5-02 renewal/WL-period engine production-deployed / PH5-03 blocked on unbuilt Phase 6 / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
-Updated: 2026-08-26 (later still, same day). **This top section supersedes
-everything below.** Two things happened this session: (1) a small read-only
-Devices addendum the owner asked for before final Wave A sign-off, and (2)
-PH5-01 (versioned six-plan catalog), the first Phase 5 slice, built and
-production-deployed. **PH7-12 stays `[~]`, not closed** -- the addendum did
-not touch either of the two items the prior handoff already flagged as
-outstanding (owner authenticated click-through; legacy `admin.js` monolith
-split), so per that handoff's own explicit boundary this session did not
-start that remaining work.
+Updated: 2026-08-26 (later still, same day; continuation of the same
+session, same owner instruction thread). **This top section supersedes
+everything below, including the immediately-prior section (kept further
+down for continuity).** This continuation built and production-deployed
+PH5-02 (30/60-day entitlement and WL-period semantics), then stopped: the
+next item by number, PH5-03, genuinely depends on Phase 6 usage-tracking
+infrastructure that does not exist yet (see its own ROADMAP.md entry for
+the full reasoning), and starting Phase 6 is explicitly out of this
+session's scope. **PH7-12 still stays `[~]`, not closed** -- unchanged this
+continuation.
+
+## PH5-02 — 30/60-day entitlement and WL-period semantics: `[x]`, production-deployed
+
+`src/subscription_renewal.py` -- resolves the "PH6 period interface" this
+task's own `Depends` line names: not a wait for Phase 6 code (`PH6-02
+Immutable WL periods` itself `Depends: PH5-02`, so that would be a cycle),
+but the contract PH6-02 will later consume. `compute_new_expiry()`
+implements DL-044's exact formula `max(current_expiry, now) +
+purchased_duration` as ONE formula, no active/expired branch needed
+(`max` degenerates correctly in both cases). `schedule_wl_period_windows()`
+splits a purchase into sequential, contiguous `wl_period_days`-long windows
+in the existing PH3-01 `mgboost_wl_periods` table (60d -> exactly two
+30-day periods, never merged; Non-WL -> zero periods).
+`SubscriptionRenewalStore.apply_same_plan_purchase()` composes both
+transactionally: idempotent per `idempotency_key`, same-plan-only
+(different plan = `PlanMismatch`, that's PH5-06 territory), never
+overwrites an admin-granted `UNLIMITED` subscription, validates plan/
+duration actually exist in the PH5-01 catalog. New additive migration
+(`src/wl_period_lifecycle_schema.py`, `ph5_02_wl_period_lifecycle_v1`)
+closes a real gap PH3-01 left open: `mgboost_wl_periods` had zero
+immutability triggers before this; now its identity/quota fields are
+guarded, `status` stays mutable for Phase 6's own future runtime state
+machine. **Not wired to any live purchase flow** -- PH5-05/PH5-09 are the
+future callers.
+
+15 new focused tests (`tests/test_wl_period_lifecycle_schema.py`,
+`tests/test_subscription_renewal.py`). Full regression via the
+already-installed `/tmp/mgboost-wave-a-browser-venv`: **`1054 passed`**
+(all browser suites, zero skips). Production: fresh encrypted backup
+create/restore PASS, preflight (`quick_check=ok`, 0 FK violations,
+accounts=18, grace=17, `mgboost_subscriptions`=18 pre-existing,
+`mgboost_wl_periods`=0, `LEGACY_REVOKED=0`), fast-forward `6414a59` ->
+`7820443`, `mgboost-panel` restart only, post-deploy invariants identical,
+all 4 services active, unauthenticated `/admin/accounts` still `401`,
+legacy `/sub` bogus-token still `404`.
+
+## Why PH5-03 was not started, and why that's a real stop, not a scope choice
+
+PH5-03 (Versioned WL package catalog)'s own Accept/Tests require
+"base-first consumption", "unused-only refund", "freeze/resume" -- these
+are meaningless without a real measured WL consumption number, and **zero**
+of PH6-01 (topology allowlist), PH6-02 (immutable periods runtime),
+PH6-03 (usage ledger/collector) or PH6-04 (parent pool) exists yet (all
+still `[ ]` in `ROADMAP.md`). This is unlike PH5-02's own "PH6 period
+interface" dependency, which turned out to be a forward-interface-contract
+PH5-02 itself had to produce (no real wait, no cycle risk once understood).
+PH5-03 has no equivalent resolution: there is no existing consumption data
+anywhere in this codebase to build a rollover/refund ledger against, and
+fabricating one would be exactly the kind of invented data this project's
+own discipline forbids. Building the real Phase 6 usage-tracking machinery
+to unblock it is explicitly out of scope for this session (Phase 6/Wave B
+excluded by instruction). PH5-04 depends on PH5-03; PH5-05/06/08 depend on
+PH5-04; PH5-09's own test list ("manual package eligibility/refund") is
+entangled with PH5-03 too even though its `Depends` line doesn't name it
+explicitly. No further PH5 slice was judged safely startable without
+either skipping this dependency or starting Phase 6.
+
+## Unchanged this continuation (verify before relying on any of these)
+
+- Production HEAD: `7820443` (local/origin/production all match, verified
+  via `git log -1` on all three).
+- `mgboost_legacy_grace_periods`: still 17 rows, untouched.
+- PH4-06: **NOT STARTED**. `LEGACY_REVOKED=0`.
+- PH7-12 stays `[~]` -- unaffected by this continuation.
+
+## Exact next step
+
+**Genuinely blocked without a fresh owner decision:** either (a) the owner
+explicitly authorizes starting Phase 6's real usage-tracking machinery
+(PH6-01..04) so PH5-03's rollover/refund/consumption semantics have
+something real to be built against, or (b) the owner picks a different
+next Phase 5 item that doesn't need consumption data -- re-check each
+remaining PH5-*'s own exact dependency wording in `ROADMAP.md` before
+picking one, since several (PH5-04/05/06/08) transitively need PH5-03
+despite not naming it directly, and PH5-09's own test list is entangled
+with PH5-03 too. Do not start Phase 6 or skip PH5-03's real blocker without
+that explicit decision. PH7-12's own remaining items (owner authenticated
+click-through; `admin.js` monolith split) also remain open and independent
+of this Phase 5 line of work.
+
+---
+
+# PRIOR HANDOFF (this session's earlier continuation) — Devices client-evidence addendum + PH5-01 catalog production-deployed / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-26 (later still, same day). **This section is preserved for
+continuity; the new top section above supersedes it.** Two things happened
+this earlier continuation: (1) a small read-only Devices addendum the owner
+asked for before final Wave A sign-off, and (2) PH5-01 (versioned six-plan
+catalog), the first Phase 5 slice, built and production-deployed. **PH7-12
+stays `[~]`, not closed** -- the addendum did not touch either of the two
+items the prior handoff already flagged as outstanding (owner authenticated
+click-through; legacy `admin.js` monolith split), so per that handoff's own
+explicit boundary this session did not start that remaining work.
 
 ## Devices: real client-evidence addendum (read-only, PH7-05 mutations not started)
 

@@ -851,12 +851,94 @@ re-run immediately after confirmed fully idempotent (0 newly-created,
 existing row touched (immutability triggers make that structurally
 impossible, not just observed).
 
-## [ ] PH5-02 — 30/60-day entitlement and WL-period semantics
+## [x] PH5-02 — 30/60-day entitlement and WL-period semantics
 
 **Depends:** PH5-01, PH6 period interface. **Policy:** 60d = two sequential 30d WL periods; Non-WL unlimited. По OPD-40/DL-044 повторная покупка того же plan — renewal с формулой `max(current_expiry, now) + purchased_duration`; накопленный срок создаёт последовательные 30-day WL periods, а не объединённый base quota.
 **Accept:** purchase создаёт expiry/schedule без сброса WL на plain expiry admin action; active subscription продлевается от current expiry, expired — от текущего момента; каждая успешно оплаченная покупка добавляет duration ровно один раз.
 **Tests:** boundary, second/следующие periods стартуют ровно один раз со fresh base quota; active/expired formula; repeated equal durations; timezone semantics explicit.
 **Rollback:** immutable scheduled periods/invoice snapshot preserved.
+
+**Implemented and production-deployed (2026-08-26):** "PH6 period interface"
+in this entry's own `Depends` line is not a wait for Phase 6 code to exist
+first -- `PH6-02 Immutable WL periods` itself `Depends: PH5-02`, so that
+would be a dependency cycle. It is the contract PH6-02 will later consume:
+sequential, UTC-epoch-second-aligned WL period rows in the already-existing
+PH3-01 `mgboost_wl_periods` table. `src/subscription_renewal.py` is that
+contract's producer plus the DL-044 renewal formula itself.
+`compute_new_expiry()` implements `max(current_expiry, now) +
+purchased_duration` as one formula with no separate active/expired branch
+(`max` degenerates to `now` when `current_expiry` is `None` or already
+past -- exactly "expired -- от текущего момента", and equals
+`current_expiry` when it's still in the future -- exactly "active --
+продлевается от current expiry"). `schedule_wl_period_windows()` splits the
+purchased duration into sequential, contiguous, non-overlapping
+`wl_period_days`-long windows (60 days / 30-day period -> exactly two
+windows, second starts exactly where the first ends); a `wl_mode='NONE'`
+plan schedules zero periods (Non-WL is unlimited, nothing to track).
+`SubscriptionRenewalStore.apply_same_plan_purchase()` composes both inside
+one transaction: idempotent per `idempotency_key` (reuses
+`mgboost_entitlement_mutations.idempotency_key_hash` uniqueness, replays the
+prior result rather than re-applying on a repeat call), same-plan-only
+(`PlanMismatch` if the account's current live plan differs -- a different
+plan is upgrade/downgrade policy, PH5-06, not stacking), refuses to ever
+touch an admin-granted `UNLIMITED` subscription
+(`UnlimitedSubscriptionConflict`), validates the plan/duration actually
+exist in the PH5-01 catalog (`UnknownPlan`/`RenewalError`, never invents
+one), and writes an immutable `mgboost_subscription_terms` snapshot per
+purchase. A new additive migration
+(`src/wl_period_lifecycle_schema.py`, `ph5_02_wl_period_lifecycle_v1`,
+requires the exact PH3-01 parent checksum) closes a real PH3-01 gap:
+`mgboost_wl_periods` had no immutability triggers at all (unlike
+`mgboost_plan_versions`/`mgboost_subscription_terms`, which already did) --
+now its identity/quota fields (`account_id`/`subscription_id`/
+`subscription_term_id`/`sequence_no`/`starts_at`/`ends_at`/`quota_mode`/
+`base_quota_bytes`/`created_at`) are guarded against `UPDATE`/`DELETE`;
+`status` alone stays mutable for Phase 6's own future
+`PLANNED`->`ACTIVE`->`CLOSED` runtime transitions, not built here. Not
+wired to any live purchase flow yet -- PH5-05 (Stars) and PH5-09 (manual
+external payment) are the future callers, each responsible for its own
+payment/actor verification before calling this engine.
+**Tests:** 15 new focused tests (`tests/test_wl_period_lifecycle_schema.py`,
+`tests/test_subscription_renewal.py`): migration idempotency/parent-
+checksum requirement, WL-period identity immutability (`status` alone still
+transitions), the exact DL-044 boundary (`current_expiry == now` counts as
+already-ended, matching this project's existing grace-period convention),
+first purchase, 60-day-creates-exactly-two-contiguous-periods, Non-WL
+creates zero periods, repeated-equal-duration purchases stack and periods
+keep incrementing (never restart at sequence 1), idempotency-key replay,
+different-plan refusal, unlimited-subscription refusal, unknown-plan/
+unknown-duration rejection, and pure-UTC-epoch-seconds arithmetic (no
+calendar/timezone semantics). Full regression via the already-installed
+`/tmp/mgboost-wave-a-browser-venv` Playwright/Chromium venv: `1054 passed`
+(all browser suites included, zero skips).
+**Production deploy:** fresh encrypted backup create/restore PASS
+immediately before deploy; preflight invariants recorded (`quick_check=ok`,
+0 FK violations, accounts=18, grace=17, `mgboost_subscriptions`=18
+(pre-existing `LEGACY_PAID_COMPAT_V1_*` rows), `mgboost_wl_periods`=0,
+`LEGACY_REVOKED=0`). Fast-forward pull `6414a59` -> `7820443`,
+`mgboost-panel` restart only (new triggers self-apply on `Database`
+construction, additive-only, no existing row touched -- `mgboost_wl_periods`
+was and still is empty in production). Post-deploy: same invariants
+unchanged, new migration row present, all 4 services active, unauthenticated
+`/admin/accounts` still `401`, legacy `/sub` bogus-token still `404`.
+
+**Next Phase 5 slice explicitly NOT started this session:** PH5-03
+(Versioned WL package catalog) is next by number, but its own `Depends`
+line ("PH5-01/02 и entitlement ledger") and its own Accept/Tests
+("base-first consumption", "unused-only refund", "freeze/resume") are not
+satisfiable without a real measured WL consumption number -- and zero of
+PH6-01..04's actual usage-tracking/collector/pool infrastructure exists yet
+(all still `[ ]`). This is a real, non-circular blocking dependency (unlike
+PH5-02's own "PH6 period interface" naming, which was a forward-interface-
+contract, not a real wait) -- inventing a fake consumption number to make
+PH5-03's rollover/refund logic "work" would be exactly the kind of
+fabricated data this project's own discipline forbids, and building the
+real Phase 6 usage-tracking machinery is explicitly out of this session's
+scope. PH5-04 depends on PH5-03; PH5-05/06/08 depend on PH5-04; PH5-09's own
+test list ("manual package eligibility/refund") is also entangled with
+PH5-03 despite its `Depends` line not naming it explicitly. No further PH5
+slice was judged safely startable this session without either skipping this
+dependency or starting Phase 6, both explicitly out of scope.
 
 ## [ ] PH5-03 — Versioned WL package catalog
 
