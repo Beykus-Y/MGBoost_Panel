@@ -1,4 +1,126 @@
-# AGENT_HANDOFF — F1 orphan-lock corrective fix production-deployed; PH6-04 in progress / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — F1 orphan-lock corrective fix + PH6-04 shared parent WL pool both production-deployed; PH5-03 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-27 (continuation of this same session, after the F1
+corrective slice below closed). **This top section supersedes everything
+below.** The owner asked for PH6-04 (default shared parent WL pool) next,
+reusing PH6-01/02/03 without a second accounting path.
+
+## PH6-04 — Default shared parent WL pool: `[x]`, production-deployed, accounting/read model only
+
+`src/wl_parent_pool.py` (new module, no new schema): `compute_parent_wl_
+pool()` is a pure `SUM(bytes_delta)` over the already-durable, already-
+deduplicated PH6-03 `mgboost_wl_usage_samples` ledger, grouped by
+`(account_id, wl_period_id)` and filtered to the exact PH0-05 `WL_NODE_IDS`
+allowlist. WL quota already belongs to the parent account in this schema
+(`mgboost_wl_periods.account_id`) -- "family" needed no new concept, it is
+simply an account with more than one device-slot generation, and every
+child of that account (ACTIVE or historical/revoked) contributes to its
+period's pool regardless of current `observed_state`, since the ledger
+tables are immutable/append-only by PH6-03's own schema. `resolve_current_
+parent_wl_pool()` is the time-aware entrypoint; a Non-WL account, an
+UNLIMITED-WL account, an account between two periods and a never-purchased
+account all correctly resolve to `None`, never a fabricated zero.
+
+**Real gap found and closed, not scope creep:** `wl_period_lifecycle_
+schema.py`'s own docstring had already named the `PLANNED -> ACTIVE ->
+CLOSED` WL-period status machine but explicitly deferred building it
+("Phase 6's own future runtime concern"). Nothing in the already-deployed
+codebase ever actually promoted a period past `PLANNED`
+(`apply_same_plan_purchase` and `WLPeriodAdminResetStore.reset_period` both
+only ever leave rows `PLANNED`), so PH6-03's own already-deployed
+`resolve_active_wl_period` (`status='ACTIVE'` filter) could never have
+attributed a single real purchase's usage to any period, ever -- a real,
+verified defect in already-shipped code, found while confirming PH6-04's
+own pool could resolve "the current period" at all. `WLUsageLedgerStore.
+sync_wl_period_statuses()` (new method, `src/wl_usage_ledger.py`) is the
+purely mechanical, time-driven completion of that already-declared state
+machine -- never a new policy decision: a period becomes `ACTIVE` the
+instant its own `starts_at` arrives, `CLOSED` the instant its own `ends_at`
+passes, close-before-activate in one atomic transaction (so a period whose
+window already fully elapsed during a long collector gap closes directly
+without ever blocking a later sequential period), a `CLOSED` period
+(including one closed early by ADMIN_RESET) never revived. Wired into
+`run_collection_cycle` immediately before its existing `resolve_active_wl_
+period` call -- the exact same resolver PH6-03 already used, never a second
+one. Zero new tables; only `mgboost_wl_periods.status`, the one column
+PH5-02's own immutability trigger deliberately left mutable for this.
+
+24 new focused tests: `tests/test_wl_usage_ledger.py` +7 for `sync_wl_
+period_statuses` (PLANNED->ACTIVE at `starts_at`, ACTIVE->CLOSED at
+`ends_at`, a fully-elapsed PLANNED period closing directly, the exact
+contiguous two-period boundary handled atomically, a CLOSED period never
+revived, idempotent repeated calls, cross-account isolation); `tests/
+test_wl_parent_pool.py` 17 (one parent/several children summed exactly
+matching the roadmap's own 60+20+10=90/100 example, quota exceeded reported
+with zero enforcement side effect, one child through both WL nodes, three
+duplicate ledger observations never double-counted, a revoked generation
+keeping its already-consumed current-period traffic after a real
+`child_lifecycle`-shaped state transition, the exact WL period boundary
+never leaking usage between two periods, 30d/60d sequential real purchases
+never merging quota, an unknown/cross-account period id rejected rather
+than silently returning zero, a Non-WL account and a never-purchased
+account and a between-periods account all resolving to `None`, the real
+PLANNED->ACTIVE gap proven closed end-to-end through a genuine
+`run_collection_cycle` call against a real purchase, concurrency/restart/
+idempotent recomputation, and zero raw-identifier leakage / zero Marzban or
+config mutation of any kind). Full regression via `/tmp/mgboost-wave-a-
+browser-venv`: **`1140 passed, 0 skipped`** (up from `1116`, zero
+regressions).
+
+**Production deploy (2026-08-27):** application-code-only, no schema
+migration (PH6-04 needed none -- pure read model over existing tables plus
+one already-mutable column). Fresh encrypted backup create/restore PASS;
+preflight/post-deploy invariants identical (`quick_check=ok`, 0 FK
+violations, accounts=18, grace=17, subscriptions=18, `mgboost_wl_periods`=0
+-- unchanged, no real purchase flow calls `apply_same_plan_purchase` live
+yet), all 4 services active, unauthenticated `/admin/accounts`/`/admin/
+dashboard` still `401`, legacy `/sub` bogus-token still `404`. **Real
+production observe-only verification:** `python3 -m scripts.run_wl_usage_
+collector` (now internally calling the new `sync_wl_period_statuses` per
+live child) reproduced the exact same outcome shape as PH6-03's own prior
+real run (31 children, 62 samples, 0 errors, 0 resets) -- confirming the
+newly-wired sync is a genuine no-op against real production data today
+(0 real WL periods exist). `resolve_current_parent_wl_pool()` was then run
+for real against all 18 real production accounts: **all 18 returned `None`**
+(correct -- zero real WL periods exist yet), with zero additional Marzban
+calls and zero `mgboost_wl_periods` row created (`0` before and after).
+`quick_check=ok`/0 FK violations held throughout; collector lease released
+(`lease_owner=NULL`, `last_run_outcome='OK'`) after the run.
+
+**Confirmed unchanged:** enforcement/user-visible behavior untouched --
+PH6-06 (disable-at-quota) does not exist and this task never built it;
+nothing in this task disables, resets, throttles or otherwise changes any
+real customer's device, subscription, or Marzban config. Not wired to any
+admin route/UI/scheduler -- dormant/on-demand, matching the PH6-01/02/03
+precedent. `mgboost_legacy_grace_periods`: unaffected. PH4-06: **NOT
+STARTED**.
+
+**PH5-03 is no longer blocked by missing Phase 6 infrastructure** -- real
+consumption data (PH6-03's ledger) and the real shared-pool sum PH5-03's
+own base-first/rollover/freeze semantics need (PH6-04) now both exist and
+are production-verified. PH5-03 still needs its own fresh scoping session
+(package purchase/refund/rollover ledger design is its own scope, not
+touched here); see `ROADMAP.md` PH5-03's own updated entry.
+
+## Exact next step
+
+Two independent options, owner's choice:
+1. **PH5-03** (versioned WL package catalog) -- now genuinely unblocked,
+   needs its own fresh scoping/design session (rollover bucket, base-first
+   consumption, freeze/resume, unused-only refund -- none of that is
+   PH6-04's own scope).
+2. **PH6-05/06** (optional per-device allocation / disable-at-quota
+   enforcement) -- PH6-06 is the first *enforcement* action in this whole
+   ledger chain; do not start it without a fresh explicit owner decision,
+   per this project's consistent "don't build a phase's enforcement inside
+   an earlier phase's own task" discipline already applied at every PH6-01
+   through PH6-04 boundary.
+
+Final HEAD this session: local/origin/production all `1ce80a3`.
+
+---
+
+# PRIOR HANDOFF — F1 orphan-lock corrective fix production-deployed; PH6-04 in progress / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-27 (new session, continuing from the PH6-03 handoff below).
 **This top section supersedes everything below.** Before starting PH6-04,

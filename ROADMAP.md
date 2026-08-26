@@ -972,6 +972,13 @@ dependency or starting Phase 6, both explicitly out of scope.
 **Accept:** invoice snapshot, eligibility, rollover bucket, adjustment/audit durable; period reset не удаляет remainder; expiry/Base transition freezes bucket; unused-only refund atomically revokes it.
 **Tests:** all packages, base-first consumption, multiple period transitions, freeze/resume, stale callback, Base rejection, zero-consumption refund, partial-consumption refund denial, duplicate payment.
 **Rollback:** stop sales; paid grant follows recorded product version.
+**Unblocked 2026-08-27:** this task's own "base-first consumption"/rollover/
+freeze semantics need a real measured WL consumption number to build
+against -- PH6-03 (durable ledger) and PH6-04 (shared parent pool sum) are
+now both closed and production-verified, so that real consumption data
+exists. No longer blocked by missing Phase 6 infrastructure; still needs its
+own fresh scoping session (package purchase/refund/rollover ledger design,
+package logic is explicitly out of PH6-04's own scope).
 
 ## [ ] PH5-04 — Deterministic entitlement engine
 
@@ -1685,7 +1692,7 @@ Hard blockers:
 - PH3-09 + PH5-09/10 block structured manual/external-payment rollout; reseller self-service не существует.
 - PH3-02/03/05 block real per-device revoke/allocation.
 - PH0-05/PH6-01 closed 2026-08-26; inbound removal is no longer blocked by an unversioned topology.
-- PH6-04/06/07 block WL sales/enforcement (PH6-02/03 closed 2026-08-26/27; the durable ledger PH6-04's shared-pool sum needs now exists and is production-verified).
+- PH6-06/07 block WL enforcement/sales (PH6-02/03/04 closed 2026-08-26/27; the durable ledger and shared-pool sum PH5-03's rollover/refund semantics need now exist and are production-verified -- PH5-03 itself is no longer blocked by missing Phase 6 infrastructure).
 - PH5-01/03/04/05 and payment reconciliation block package sales; OPD-02/03/04/12/13/32 policies are already closed and are not blockers.
 - PH4-05/06 plus successful migration verification block final legacy revoke; OPD-09 already fixes the grace period at 14 days and is not a blocker.
 - PH2-03/PH3-02 block multi-worker; PH6-03's own single-leader CAS lease (`mgboost_wl_usage_collector_lease`) is already safe for multiple collector processes/hosts, so it is no longer part of this blocker.
