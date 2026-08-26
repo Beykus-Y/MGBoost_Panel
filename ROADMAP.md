@@ -1125,7 +1125,7 @@ callback was initiated at any point in this verification.
 **Depends:** PH5-01–07. **Scope:** одинаковое explanation в bot/admin/LK, plan version, periods/packages/slots, purchase vs renewal, API versioning.
 **Tests:** snapshot/API/UI/localization. **Rollback:** compatible versioned endpoint.
 
-## [x] PH5-09 — Manual external-payment record and entitlement application
+## [~] PH5-09 — Manual external-payment record and entitlement application
 
 **Depends:** PH3-09, DL-034–036/040, admin session/audit. RUB catalog data blocker закрыт.
 **Actor/channel:** только основной MGBoost admin; account source DIRECT, payment channel `EXTERNAL_PAYMENT`, mutation source `MANUAL_PAYMENT`.
@@ -1166,7 +1166,7 @@ no admin route/UI/bot wiring, no scheduler. Tests:
 `tests/test_manual_payment_ph509.py` (33 checks covering the full matrix
 above minus renewal/concurrency items that belong to PH5-10).
 
-## [x] PH5-10 — Manual external-payment renewal of the same parent account
+## [~] PH5-10 — Manual external-payment renewal of the same parent account
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
 **Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
