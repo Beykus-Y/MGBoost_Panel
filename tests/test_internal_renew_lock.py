@@ -247,6 +247,61 @@ def test_stars_worker_and_internal_renew_race_on_same_username_serialize(db, mon
         t.join(timeout=2)
 
 
+def test_enter_timeout_does_not_orphan_the_lock():
+    """F1 corrective regression: if __enter__'s own result(timeout=10) times
+    out while another holder still owns the lock, the abandoned acquire()
+    coroutine must not silently win the lock later with nobody left to
+    release it. Reproduces the exact race: a slow holder releases AFTER our
+    caller-side timeout fires, then proves a subsequent normal
+    acquire/release still works (no permanent leak that would later stall
+    the Stars apply-loop)."""
+    from src.routes import internal as internal_mod
+    from src.marzban_lock import marzban_user_locks
+
+    loop, t = _make_running_loop()
+    try:
+        lock = marzban_user_locks.get("orphan-timeout-test")
+
+        async def hold_then_release(seconds):
+            await lock.acquire()
+            await asyncio.sleep(seconds)
+            lock.release()
+
+        holder_fut = asyncio.run_coroutine_threadsafe(hold_then_release(0.6), loop)
+        time.sleep(0.1)  # ensure the holder has actually acquired first
+
+        import concurrent.futures as cf
+        orig_result = cf.Future.result
+
+        def result_that_times_out_at_the_real_10s_call(self, timeout=None):
+            if timeout == 10:
+                raise TimeoutError()
+            return orig_result(self, timeout)
+
+        cf.Future.result = result_that_times_out_at_the_real_10s_call
+        try:
+            ctx = internal_mod._CrossThreadLockCtx(lock, loop)
+            with pytest.raises(TimeoutError):
+                ctx.__enter__()
+        finally:
+            cf.Future.result = orig_result  # only this one artificial __enter__ should time out
+
+        holder_fut.result(timeout=5)  # let the original holder finish and release
+        time.sleep(0.3)  # give the abandoned acquire()/cancellation a chance to settle
+
+        assert asyncio.run_coroutine_threadsafe(_is_locked(lock), loop).result(2) is False
+
+        # A subsequent normal acquire/release must still work -- proves no
+        # orphaned holder is left blocking this username forever.
+        normal_ctx = internal_mod._CrossThreadLockCtx(lock, loop)
+        with normal_ctx:
+            assert asyncio.run_coroutine_threadsafe(_is_locked(lock), loop).result(2) is True
+        assert asyncio.run_coroutine_threadsafe(_is_locked(lock), loop).result(2) is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=2)
+
+
 def test_different_usernames_do_not_block_internal_renew_and_stars_worker(db, monkeypatch):
     """Two DIFFERENT usernames must not serialize against each other."""
     from src.routes import internal as internal_mod

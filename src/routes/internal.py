@@ -100,7 +100,21 @@ class _CrossThreadLockCtx:
         self._loop = loop
 
     def __enter__(self):
-        asyncio.run_coroutine_threadsafe(self._lock.acquire(), self._loop).result(timeout=10)
+        future = asyncio.run_coroutine_threadsafe(self._lock.acquire(), self._loop)
+        try:
+            future.result(timeout=10)
+        except Exception:
+            # future.cancel() is the documented way to stop a
+            # run_coroutine_threadsafe() call once result() has given up
+            # waiting (docs: "the coroutine won't be cancelled ... you have
+            # to call future.cancel() explicitly"). If it had *already*
+            # finished acquiring the instant before cancellation landed,
+            # cancel() returns False and we own an orphaned lock with
+            # nobody left to release it (see marzban_lock.py) — release it
+            # back on its own loop instead of leaking it forever.
+            if not future.cancel() and future.done() and not future.cancelled() and future.exception() is None:
+                self._loop.call_soon_threadsafe(self._lock.release)
+            raise
         return self
 
     def __exit__(self, *exc):
