@@ -1,8 +1,117 @@
-# AGENT_HANDOFF — PH4-03 REOPENED / PH4-05 blocked (crash-safe, update after every major checkpoint)
+# AGENT_HANDOFF — PH4-05 mass cohort LIVE / PH4-03 mass migration IN PROGRESS
 
-Updated: 2026-08-26 (later still, same day). **STOP -- decision gate, owner
-review required.** After the deploy described below, the owner flagged a
-concern that production only has 3 real migrated parent accounts, which
+Updated: 2026-08-26 (later still, same day). **PH4-05 is CLOSED `[x]` --
+a real 17-account grace cohort is running in production, covering all 19
+real ACTIVE legacy Marzban users.** PH4-03 stays `[~]`: the owner revised
+the earlier plan (see the prior handoff section below for the original
+audit) -- grace no longer waits on Telegram registration or prior
+migration; the 14-day window is itself the mass-migration campaign.
+Nothing about the original PH4-03 canary evidence is retracted; only the
+plan for finishing the mass stage changed.
+
+## Exact state right now
+
+- Local/origin HEAD: commit this session ends on (see `git log -1`),
+  pushed to `origin/main`.
+- Production HEAD: same commit, deployed and restarted, all 4 services
+  active, `quick_check=ok`, 0 FK violations.
+- `mgboost_legacy_grace_periods`: 17 rows, `cohort_ref=
+  'PH4-05-MASS-COHORT-2026-08-26'`, ALL sharing the exact same
+  `started_at=1787742505` / `original_end_at=1788952105`
+  (2026-08-26 14:08:25 MSK -> 2026-09-09 14:08:25 MSK, exactly 14 days).
+- Cohort = accounts 1, 3, 4 (already migrated, pre-existing) + 14 newly
+  bootstrapped accounts (`ownership_evidence='ABSENT'`, zero Telegram
+  claim). Covers all 19 real ACTIVE legacy Marzban usernames. Excluded:
+  5 `EXPIRED` real users (future renewal/policy path, not this campaign),
+  the PH3-08 test canary, generic test users, `mgc_*` children.
+- 1 account (id 8) has a known ambiguous Telegram-ownership mapping --
+  included in the cohort (grace applies), ownership never guessed,
+  `telegram_status='AMBIGUOUS'`, `action='MANUAL_REVIEW'`.
+- 4 accounts (ids 8, 10, 11, 13) have more real active devices than the
+  default `D3` limit (4, 7, 8, 8 respectively) -- account/alias/grace
+  membership exists for them, but `ensure_legacy_paid_compat_entitlement`
+  correctly failed closed (`DeviceOverageConflict`) and they have **no
+  subscription/entitlement yet**. Migration for these 4 requires an
+  explicit owner-approved `approved_extra_device_slots` decision first --
+  do not invent a higher limit without that.
+- Day-0 report: 3 `OK_MIGRATED` (1, 3, 4), 13 `WAITING_FOR_REGISTRATION`,
+  1 `MANUAL_REVIEW` (account 8), 0 `RECONCILE_REQUIRED`/
+  `COMPATIBILITY_BLOCK`.
+- Zero Telegram messages sent (no send path was wired to the finalized
+  comms draft, per instruction). No LK banner shown yet either.
+- `mgboost_legacy_bridge_bindings` still only has 3 rows (accounts 1, 3,
+  4) -- the 14 new accounts are NOT migrated yet, their real devices are
+  completely unaffected, still served exactly as before this session.
+
+## What still needs to happen (the actual mass-migration work)
+
+For each of the 14 newly bootstrapped accounts, once its owner registers
+in Telegram (`bind_telegram_after_registration()` fires automatically from
+the bot's existing linking handler and is idempotent/safe to also re-run
+via `scripts/ph4_05_daily_cohort_report.py --catchup-bind`), the account
+still needs the actual migration machinery run -- genesis child bootstrap
+on slot 1 (real broker call, proven 3x already for accounts 1/3/4) then
+`mgboost_legacy_bridge_bindings` enabled -- before its real devices
+transparently migrate off the shared legacy UUID. **This orchestration
+function was deliberately NOT built this session** (explicit scope
+decision: today's real production action was the clock + safe bootstrap,
+not 14x real broker mutations against real customer Marzban identities in
+one batch -- see "Why genesis+bridge-enable was not done this session"
+below). Building and running it, per-account or in small batches as
+registrations land, is the next critical-path action.
+
+## Daily operations during the 14-day window
+
+Run `scripts/ph4_05_daily_cohort_report.py --db <COPY> --cohort-ref
+PH4-05-MASS-COHORT-2026-08-26 --format table` (optionally `--catchup-bind`
+first) once a day. `action` column tells the owner exactly what to do per
+account: `CONTACT_USER` (grace ending soon, still unregistered),
+`MANUAL_REVIEW` (ambiguous ownership), `WAITING_FOR_REGISTRATION` (normal,
+no action yet), `OK_MIGRATED` (done), `RECONCILE_REQUIRED`/
+`COMPATIBILITY_BLOCK` (technical issue, investigate). The owner publishes
+the finalized informational post (`docs/PHASE4_GRACE_PERIOD_COMMS_DRAFT.md`)
+through their own existing channel -- no code in this project publishes it
+automatically.
+
+## Why genesis+bridge-enable was not done this session
+
+`resolve_account_device()` fails closed (`OUTCOME_PROVISIONING_UNAVAILABLE`,
+not a fall-through outcome) for an account with zero prior children -- a
+genesis child MUST be pre-provisioned (real broker call, slot 1, synthetic
+placeholder HWID) before a bridge binding is safely enabled, exactly as
+done for accounts 1/3/4. Doing this for 14 real accounts in one unattended
+batch (14 real broker mutations against real customers' live Marzban
+identities, with no incremental canary-style verification between each)
+was judged too large a blast radius for a single turn even under a broad
+authorization -- this is exactly the kind of scope where a subtle batch
+bug could affect many real customers simultaneously. The safe, bounded,
+purely-additive action (account+alias+grace bootstrap, zero Marzban touch)
+was completed instead; genesis+bridge-enable is recommended as its own
+next session/task, ideally still done in small reviewed batches matching
+this project's own established discipline (dry-run against a DB copy
+first, one account verified end-to-end before the next).
+
+## Exact next step
+
+1. Daily: run the cohort report, `--catchup-bind` for anyone who
+   registered, personally contact `CONTACT_USER`/`MANUAL_REVIEW` cases.
+2. Build (or resume building) the genesis-child + bridge-enable batch
+   orchestration for the 10 fully-entitled new accounts first (no device-
+   limit blocker), then resolve the 4 `DeviceOverageConflict` accounts
+   once the owner approves their device limits, then the 1 ambiguous
+   account once ownership is resolved.
+3. PH4-03 stays `[~]` until mass migration actually completes or the
+   owner explicitly accepts a smaller final scope with recorded reasons.
+4. PH4-06 (real revoke) remains untouched and gated on PH4-03 actually
+   finishing, not on the clock alone.
+
+---
+
+# PRIOR HANDOFF (this session, read-only PH4-03 audit): still accurate history
+
+Updated: 2026-08-26 (later still, same day). After the deploy described
+below, the owner flagged a concern that production only has 3 real
+migrated parent accounts, which
 looked inconsistent with "mass migration". A read-only audit (no mutation)
 confirmed it: **PH4-03 is REOPENED `[~]`** in `ROADMAP.md` -- its own
 written contract required a "mass migration" cohort stage that was never
