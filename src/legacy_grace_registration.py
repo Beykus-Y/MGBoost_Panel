@@ -160,6 +160,82 @@ def bind_telegram_after_registration(
     return "BOUND"
 
 
+# --- 2b. explicit, human, owner-approved ambiguity resolution ---------------
+
+def resolve_ambiguous_telegram_ownership(
+    db, *, capability, legacy_username: str, chosen_telegram_id: int, reason: str,
+    evidence_ref: str, now: int | None = None,
+) -> dict:
+    """The one deliberate exception to "ambiguous ownership is never
+    auto-resolved": an explicit, capability-gated, audited admin decision
+    that the owner has personally reviewed and confirmed out of band (e.g.
+    "these are two real people legitimately sharing one subscription, and
+    telegram_id X is the primary owner"). `chosen_telegram_id` MUST already
+    appear in the existing `tg_users` bot-linkage evidence for this
+    username -- this function never invents ownership evidence, it only
+    lets an admin pick among evidence that already exists. The *other*
+    distinct Telegram ID(s) for this username are left exactly as they are
+    in `tg_users` (never deleted -- history is preserved) and, because
+    `AccountStore.link_telegram_owner` allows only one active OWNER per
+    account, can never silently become owner later: a future
+    `bind_telegram_after_registration()` call for any of them returns
+    `CONFLICT`, never a silent rebind."""
+    actor = db.primary_admin_authority.require(capability)
+    timestamp = int(time.time()) if now is None else int(now)
+    reason = (reason or "").strip()
+    if not 8 <= len(reason) <= 1000:
+        raise GraceRegistrationError("a bounded reason is required")
+    evidence_ref = (evidence_ref or "").strip()
+    if not 1 <= len(evidence_ref) <= 256:
+        raise GraceRegistrationError("an evidence reference is required")
+
+    alias_row = db._conn.execute(
+        "SELECT account_id FROM mgboost_legacy_account_aliases WHERE legacy_username=?",
+        (legacy_username,),
+    ).fetchone()
+    if alias_row is None:
+        raise GraceRegistrationError("no bootstrapped account exists for this legacy username")
+    account_id = alias_row["account_id"]
+
+    evidenced_ids = {
+        int(row["telegram_id"]) for row in db._conn.execute(
+            "SELECT DISTINCT telegram_id FROM tg_users WHERE marzban_username=?", (legacy_username,),
+        ).fetchall()
+    }
+    if int(chosen_telegram_id) not in evidenced_ids:
+        raise GraceRegistrationError(
+            "chosen_telegram_id has no existing tg_users evidence for this username -- "
+            "this function only resolves among evidence that already exists, it never invents it"
+        )
+
+    already_owner = db._conn.execute(
+        "SELECT telegram_id FROM mgboost_telegram_identities "
+        "WHERE account_id=? AND role='OWNER' AND revoked_at IS NULL",
+        (account_id,),
+    ).fetchone()
+    if already_owner is not None:
+        if int(already_owner["telegram_id"]) == int(chosen_telegram_id):
+            return {"account_id": account_id, "outcome": "ALREADY_RESOLVED"}
+        raise TelegramBindConflict(
+            "account already has a different active owner -- use PH2-05 ownership_rebind "
+            "for a real rebind, this function is only for a first-time ambiguity resolution"
+        )
+
+    result = db.accounts.link_telegram_owner(
+        account_id, int(chosen_telegram_id), provenance="ADMIN_REBIND", actor=actor, now=timestamp,
+    )
+    db.provenance.record_mutation(
+        account_id, subscription_id=None,
+        operation="TELEGRAM_OWNERSHIP_AMBIGUITY_RESOLVED",
+        payment_channel="NOT_APPLICABLE", mutation_source="ADMIN",
+        actor_type="PRIMARY_ADMIN", actor_ref=actor, reason=reason,
+        external_reference=evidence_ref, before=None,
+        after={"chosen_telegram_id": int(chosen_telegram_id), "other_evidenced_ids_count": len(evidenced_ids) - 1},
+        idempotency_key=f"telegram-ambiguity-resolve-v1:{account_id}", now=timestamp,
+    )
+    return {"account_id": account_id, "outcome": "RESOLVED", "telegram_identity": result}
+
+
 # --- 3. shared-boundary cohort start ----------------------------------------
 
 def start_grace_cohort(

@@ -460,3 +460,91 @@ def test_end_to_end_reviewed_enrollment_to_migrated_child(db):
     )
     assert not is_fall_through_outcome(retry.outcome)
     assert retry.outcome == OUTCOME_OK  # already-ACTIVE child served from durable state, no remote call needed
+
+
+# --- PH4-03 mass-migration device-policy: device_limit_exempt --------------
+
+def test_device_limit_exempt_creates_unlimited_plan_and_bypasses_overage(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement
+
+    account, capability = _reviewed_account(
+        db, username="exempt-user-a", tg=920000101, observed_device_count=37,
+    )
+    result = ensure_legacy_paid_compat_entitlement(
+        db, capability=capability, account_id=account["account_id"],
+        device_limit_exempt=True, decision_ref="dl-legacy-compat-test",
+        evidence={"source": "owner decision -- family account, no meaningful device ceiling"},
+        now=200,
+    )
+    plan = db._conn.execute(
+        "SELECT * FROM mgboost_plan_versions WHERE id=?", (result["current_plan_version_id"],)
+    ).fetchone()
+    assert plan["plan_code"] == "LEGACY_PAID_COMPAT_V1_UNLIMITED"
+    assert plan["device_limit"] is None
+    assert plan["device_limit_mode"] == "UNLIMITED"
+    assert plan["wl_mode"] == "UNLIMITED"  # unchanged legacy WL semantics
+
+
+def test_device_limit_exempt_requires_evidence(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement, LegacyPaidCompatError
+
+    account, capability = _reviewed_account(db, username="exempt-user-b", tg=920000102)
+    with pytest.raises(LegacyPaidCompatError):
+        ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            device_limit_exempt=True, decision_ref="dl-legacy-compat-test", now=200,
+        )
+
+
+def test_device_limit_exempt_and_extra_slots_are_mutually_exclusive(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement, LegacyPaidCompatError
+
+    account, capability = _reviewed_account(db, username="exempt-user-c", tg=920000103)
+    with pytest.raises(LegacyPaidCompatError):
+        ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            device_limit_exempt=True, approved_extra_device_slots=3,
+            decision_ref="dl-legacy-compat-test", evidence={"source": "test"}, now=200,
+        )
+
+
+def test_device_limit_exempt_is_idempotent(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement
+
+    account, capability = _reviewed_account(db, username="exempt-user-d", tg=920000104)
+    first = ensure_legacy_paid_compat_entitlement(
+        db, capability=capability, account_id=account["account_id"],
+        device_limit_exempt=True, decision_ref="dl-legacy-compat-test",
+        evidence={"source": "test"}, now=200,
+    )
+    second = ensure_legacy_paid_compat_entitlement(
+        db, capability=capability, account_id=account["account_id"],
+        device_limit_exempt=True, decision_ref="dl-legacy-compat-test",
+        evidence={"source": "test"}, now=201,
+    )
+    assert first["id"] == second["id"]
+
+
+def test_d4_and_d8_baselines_work_end_to_end(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement
+
+    for limit, extra in ((4, 1), (8, 5)):
+        account, capability = _reviewed_account(
+            db, username=f"d{limit}-user", tg=920000200 + limit, observed_device_count=limit,
+        )
+        result = ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            approved_extra_device_slots=extra, decision_ref="dl-legacy-compat-test",
+            evidence={"source": "owner-approved device count review"}, now=200,
+        )
+        plan = db._conn.execute(
+            "SELECT device_limit FROM mgboost_plan_versions WHERE id=?",
+            (result["current_plan_version_id"],),
+        ).fetchone()
+        assert plan["device_limit"] == limit
+        # actually claim devices to prove device_slots.py accepts the new baseline
+        for i in range(limit):
+            claimed = db.device_slots.claim(
+                account["account_id"], f"d{limit}-device-{i}", HWID_KEY, now=201,
+            )
+            assert claimed["slot_kind"] == "BASE"

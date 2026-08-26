@@ -76,17 +76,32 @@ def plan_code_for(device_limit: int) -> str:
     return f"LEGACY_PAID_COMPAT_V1_D{int(device_limit)}"
 
 
-def _ensure_plan_version(db, *, device_limit: int, now: int) -> dict:
-    plan_code = plan_code_for(device_limit)
+# Owner decision (2026-08-26): a distinct, individually-reviewed exemption
+# for a real legacy account whose device count genuinely has no meaningful
+# ceiling (e.g. a family/household account) -- never inferred, never a
+# catalog tariff, never self-service. Reuses the exact same generic
+# `device_limit_mode='UNLIMITED'` concept `mgboost_plan_versions` already
+# defines for INTERNAL accounts; `DeviceSlotStore._entitlement_capacity`
+# is extended (see device_slots.py) to accept it for a DIRECT account too,
+# but ONLY ever via this capability-gated, audited, per-account assignment
+# path -- never a self-service or plan-default toggle.
+_UNLIMITED_PLAN_CODE = "LEGACY_PAID_COMPAT_V1_UNLIMITED"
+
+
+def _ensure_plan_version(db, *, device_limit: int | None, unlimited: bool, now: int) -> dict:
+    plan_code = _UNLIMITED_PLAN_CODE if unlimited else plan_code_for(device_limit)
     existing = db._conn.execute(
         "SELECT * FROM mgboost_plan_versions WHERE plan_code=? AND version=1", (plan_code,)
     ).fetchone()
     expected = {
-        "display_name": f"Legacy paid migration compatibility ({device_limit} devices)",
+        "display_name": (
+            "Legacy paid migration compatibility (device-limit exempt)" if unlimited
+            else f"Legacy paid migration compatibility ({device_limit} devices)"
+        ),
         "plan_kind": _PLAN_KIND,
         "billing_required": 0,
-        "device_limit_mode": "LIMITED",
-        "device_limit": int(device_limit),
+        "device_limit_mode": "UNLIMITED" if unlimited else "LIMITED",
+        "device_limit": None if unlimited else int(device_limit),
         "wl_mode": "UNLIMITED",
         "wl_quota_bytes": None,
         "wl_period_days": None,
@@ -108,12 +123,13 @@ def _ensure_plan_version(db, *, device_limit: int, now: int) -> dict:
         {
             "plan_code": plan_code, "version": 1, "display_name": expected["display_name"],
             "plan_kind": _PLAN_KIND, "billing_required": False,
-            "device_limit_mode": "LIMITED", "device_limit": int(device_limit),
+            "device_limit_mode": expected["device_limit_mode"], "device_limit": expected["device_limit"],
             "wl_mode": "UNLIMITED", "wl_quota_bytes": None, "wl_period_days": None,
             "terms": {
                 "schema": 1, "kind": "LEGACY_PAID_COMPAT",
                 "purpose": "PH4-03 migration compatibility, not a commercial catalog entry",
-                "device_limit": int(device_limit),
+                "device_limit": expected["device_limit"],
+                "device_limit_exempt": unlimited,
             },
         },
         now=now,
@@ -122,7 +138,8 @@ def _ensure_plan_version(db, *, device_limit: int, now: int) -> dict:
 
 def ensure_legacy_paid_compat_entitlement(
     db, *, capability, account_id: int, approved_extra_device_slots: int = 0,
-    decision_ref: str, evidence: dict | None = None, now: int | None = None,
+    device_limit_exempt: bool = False, decision_ref: str, evidence: dict | None = None,
+    now: int | None = None,
 ) -> dict:
     actor = _require_primary(db, capability)
     account_id = int(account_id)
@@ -135,9 +152,13 @@ def ensure_legacy_paid_compat_entitlement(
         or approved_extra_device_slots < 0
     ):
         raise LegacyPaidCompatError("approved extra device slots must be a nonnegative integer")
-    if approved_extra_device_slots > 0 and not evidence:
+    if device_limit_exempt and approved_extra_device_slots > 0:
         raise LegacyPaidCompatError(
-            "an increased device limit requires recorded evidence of the owner's approval"
+            "device_limit_exempt and approved_extra_device_slots are mutually exclusive"
+        )
+    if (approved_extra_device_slots > 0 or device_limit_exempt) and not evidence:
+        raise LegacyPaidCompatError(
+            "an increased/exempt device limit requires recorded evidence of the owner's approval"
         )
     evidence = evidence or {}
     if not isinstance(evidence, dict):
@@ -161,9 +182,9 @@ def ensure_legacy_paid_compat_entitlement(
     if attested is None:
         raise PrerequisiteMissing("owner-attested legacy external payment evidence is required")
 
-    device_limit = DEFAULT_LEGACY_PAID_DEVICE_LIMIT + approved_extra_device_slots
+    device_limit = None if device_limit_exempt else DEFAULT_LEGACY_PAID_DEVICE_LIMIT + approved_extra_device_slots
     observed = row["observed_device_count"]
-    if observed is not None and observed > device_limit:
+    if not device_limit_exempt and observed is not None and observed > device_limit:
         raise DeviceOverageConflict(
             f"observed device count {observed} exceeds the derived device limit "
             f"{device_limit} -- requires owner review before entitlement assignment"
@@ -177,7 +198,9 @@ def ensure_legacy_paid_compat_entitlement(
     if subscription_status == "ACTIVE" and legacy_expiry is not None and legacy_expiry <= timestamp:
         subscription_status = "EXPIRED"
 
-    plan = _ensure_plan_version(db, device_limit=device_limit, now=timestamp)
+    plan = _ensure_plan_version(
+        db, device_limit=device_limit, unlimited=device_limit_exempt, now=timestamp,
+    )
 
     with db._lock:
         try:

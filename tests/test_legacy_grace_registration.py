@@ -16,7 +16,7 @@ from src.legacy_grace_registration import (
 from src.legacy_grace_schema import GRACE_PERIOD_SECONDS
 from src.security import AdminSessionStore
 
-from tests.test_child_provisioning import PRIMARY, PRIMARY_LOGIN
+from tests.test_child_provisioning import HWID_KEY, PRIMARY, PRIMARY_LOGIN
 
 
 @pytest.fixture
@@ -282,3 +282,234 @@ def test_cohort_start_after_process_restart_keeps_same_boundary(monkeypatch):
     rows = [reopened.legacy_grace.find_by_account(i) for i in ids]
     assert {r["started_at"] for r in rows} == {40_000_000}
     reopened._conn.close()
+
+
+# --- explicit, human ambiguity resolution (account 8 -- account 8 pattern) --
+
+def test_resolve_ambiguous_ownership_requires_existing_tg_users_evidence(db):
+    from src.legacy_grace_registration import resolve_ambiguous_telegram_ownership, GraceRegistrationError
+
+    cap = _capability(db)
+    _bootstrap(db, cap, "client090")
+    with pytest.raises(GraceRegistrationError):
+        resolve_ambiguous_telegram_ownership(
+            db, capability=cap, legacy_username="client090", chosen_telegram_id=999999,
+            reason="owner confirmed this Telegram ID out of band", evidence_ref="owner-decision-2026-08-26",
+        )
+
+
+def test_resolve_ambiguous_ownership_picks_the_chosen_id_never_the_other(db):
+    from src.legacy_grace_registration import resolve_ambiguous_telegram_ownership
+
+    cap = _capability(db)
+    result = _bootstrap(db, cap, "client091")
+    account_id = result["account_id"]
+    _tg_link(db, 1130407008, "client091")
+    _tg_link(db, 2105984481, "client091")
+
+    outcome = resolve_ambiguous_telegram_ownership(
+        db, capability=cap, legacy_username="client091", chosen_telegram_id=2105984481,
+        reason="owner confirmed 2105984481 is the primary account owner",
+        evidence_ref="owner-decision-2026-08-26",
+    )
+    assert outcome["outcome"] == "RESOLVED"
+
+    owner_row = db._conn.execute(
+        "SELECT telegram_id, provenance FROM mgboost_telegram_identities "
+        "WHERE account_id=? AND role='OWNER' AND revoked_at IS NULL", (account_id,),
+    ).fetchone()
+    assert owner_row["telegram_id"] == 2105984481
+    assert owner_row["provenance"] == "ADMIN_REBIND"
+
+    # historical tg_users evidence for BOTH ids is preserved, not deleted
+    remaining = {
+        row["telegram_id"] for row in db._conn.execute(
+            "SELECT telegram_id FROM tg_users WHERE marzban_username='client091'"
+        ).fetchall()
+    }
+    assert remaining == {1130407008, 2105984481}
+
+
+def test_non_owner_cannot_later_hijack_the_account(db):
+    """The exact account-8 safety requirement: after explicit resolution,
+    the non-chosen Telegram ID can never become owner through the ordinary
+    automatic bind path."""
+    from src.legacy_grace_registration import (
+        bind_telegram_after_registration, resolve_ambiguous_telegram_ownership,
+    )
+
+    cap = _capability(db)
+    _bootstrap(db, cap, "client092")
+    _tg_link(db, 1130407008, "client092")
+    _tg_link(db, 2105984481, "client092")
+    resolve_ambiguous_telegram_ownership(
+        db, capability=cap, legacy_username="client092", chosen_telegram_id=2105984481,
+        reason="owner confirmed 2105984481 is the primary account owner",
+        evidence_ref="owner-decision-2026-08-26",
+    )
+
+    # the non-owner using the app normally (re-registering) never becomes owner
+    outcome = bind_telegram_after_registration(
+        db, legacy_username="client092", telegram_id=1130407008, actor="bot",
+    )
+    assert outcome == "CONFLICT"
+
+    owner_row = db._conn.execute(
+        "SELECT telegram_id FROM mgboost_telegram_identities "
+        "WHERE account_id=(SELECT account_id FROM mgboost_legacy_account_aliases "
+        "WHERE legacy_username='client092') AND role='OWNER' AND revoked_at IS NULL",
+    ).fetchone()
+    assert owner_row["telegram_id"] == 2105984481
+
+
+def test_resolve_ambiguous_ownership_is_idempotent(db):
+    from src.legacy_grace_registration import resolve_ambiguous_telegram_ownership
+
+    cap = _capability(db)
+    _bootstrap(db, cap, "client093")
+    _tg_link(db, 1130407008, "client093")
+    _tg_link(db, 2105984481, "client093")
+    first = resolve_ambiguous_telegram_ownership(
+        db, capability=cap, legacy_username="client093", chosen_telegram_id=2105984481,
+        reason="owner confirmed 2105984481 is the primary account owner",
+        evidence_ref="owner-decision-2026-08-26",
+    )
+    second = resolve_ambiguous_telegram_ownership(
+        db, capability=cap, legacy_username="client093", chosen_telegram_id=2105984481,
+        reason="owner confirmed 2105984481 is the primary account owner",
+        evidence_ref="owner-decision-2026-08-26",
+    )
+    assert first["outcome"] == "RESOLVED"
+    assert second["outcome"] == "ALREADY_RESOLVED"
+
+
+def test_resolve_ambiguous_ownership_requires_primary_capability(db):
+    from src.legacy_grace_registration import resolve_ambiguous_telegram_ownership
+
+    cap = _capability(db)
+    _bootstrap(db, cap, "client094")
+    _tg_link(db, 1130407008, "client094")
+    _tg_link(db, 2105984481, "client094")
+    from src.admin_authority import PrimaryAdminAuthorizationError
+    with pytest.raises(PrimaryAdminAuthorizationError):
+        resolve_ambiguous_telegram_ownership(
+            db, capability=None, legacy_username="client094", chosen_telegram_id=2105984481,
+            reason="owner confirmed 2105984481 is the primary account owner",
+            evidence_ref="owner-decision-2026-08-26",
+        )
+
+
+def test_second_person_device_usage_unaffected_by_missing_owner_role(db):
+    """The non-owner in a shared-subscription account must still be able
+    to use VPN devices normally -- ownership role never gates device
+    slot/child provisioning, only Telegram-facing admin actions do."""
+    cap = _capability(db)
+    result = _bootstrap(db, cap, "client095")
+    account_id = result["account_id"]
+    # non-owner's device claim works exactly like any other DIRECT account's
+    claimed = db.device_slots.claim(account_id, "second-person-device", HWID_KEY, now=1000)
+    assert claimed["slot_kind"] == "BASE"
+
+
+# --- Telegram bind AFTER migration already happened (mass-migration flow) --
+
+def test_telegram_bind_after_migration_preserves_everything(db):
+    """Item 5 of the mass-migration decision: an ordinary Telegram bind
+    that happens AFTER migration must never create a second parent, and
+    must leave migration lineage, child, opaque credential, device slots,
+    grace boundary and payment provenance completely untouched."""
+    from src.legacy_grace_schema import GRACE_PERIOD_SECONDS
+    from src.migration_lifecycle import process_migration_bridge_request
+    from src.opaque_resolver import OUTCOME_OK
+    from tests.test_migration_lifecycle import _seed_bridged_account_with_first_child, _hv
+    from tests.test_opaque_resolver import _known_hwid_meta
+
+    cap = _capability(db)
+    account, alias_id, slot, remote, ensure_fn, subscription_fn = _seed_bridged_account_with_first_child(
+        db, mapping="POST_MIGRATION_BIND_MAPPING", tg=940001,
+    )
+    account_id = account["account_id"]
+
+    # migrate a real device BEFORE any Telegram identity exists
+    hwid = "post-migration-bind-hwid"
+    result = process_migration_bridge_request(
+        db, "alice", _known_hwid_meta(hwid),
+        hmac_key=HWID_KEY, ensure_fn=ensure_fn, subscription_fn=subscription_fn,
+        worker_id="post-migration-bind-worker", now=1000,
+    )
+    assert result.outcome == OUTCOME_OK
+    binding_before = db.migration_lifecycle.find_by_device(account_id, _hv(hwid))
+    assert binding_before["state"] == "MIGRATED"
+    device_slots_before = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_device_slot_generations WHERE account_id=? AND status='ACTIVE'",
+        (account_id,),
+    ).fetchone()[0]
+    child_intent_before = db._conn.execute(
+        "SELECT child_username FROM mgboost_child_user_intents WHERE slot_generation_id=?",
+        (binding_before["slot_generation_id"],),
+    ).fetchone()["child_username"]
+    accounts_before = db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts").fetchone()[0]
+
+    # start grace, issue an opaque credential -- both before the bind too
+    started = db.legacy_grace.start(
+        account_id=account_id, cohort_ref="PH4-05-POST-MIGRATION-BIND", capability=cap,
+        reason="mass grace campaign", idempotency_key="grace-start-post-migration-bind", now=2000,
+    )
+    cred = db.subscription_credentials.prepare(
+        account_id=account_id, actor_ref="test", reason="pre-bind opaque issuance",
+        idempotency_key="post-migration-bind-cred-key-0001", now=2000,
+    )
+    db.subscription_credentials.activate(
+        credential_id=cred["id"], account_id=account_id, expected_generation=cred["generation"],
+        actor_ref="test", idempotency_key="post-migration-bind-cred-key-0001:activate", now=2000,
+    )
+    payment_before = dict(db._conn.execute(
+        "SELECT * FROM mgboost_owner_attested_legacy_payments WHERE account_id=?", (account_id,),
+    ).fetchone() or {})
+
+    # THEN the Telegram bind happens (this fixture's account already has an
+    # owner from creation -- re-registering the same id must be a safe
+    # no-op, never a second/duplicate bind or a rebind)
+    _tg_link(db, 940001, "alice")
+    outcome = bind_telegram_after_registration(db, legacy_username="alice", telegram_id=940001, actor="bot", now=3000)
+    assert outcome == "ALREADY_BOUND"
+
+    # everything else is byte-for-byte unchanged
+    binding_after = db.migration_lifecycle.find_by_device(account_id, _hv(hwid))
+    assert binding_after["state"] == "MIGRATED"
+    assert binding_after["child_intent_id"] == binding_before["child_intent_id"]
+    assert binding_after["slot_generation_id"] == binding_before["slot_generation_id"]
+    child_intent_after = db._conn.execute(
+        "SELECT child_username FROM mgboost_child_user_intents WHERE slot_generation_id=?",
+        (binding_before["slot_generation_id"],),
+    ).fetchone()["child_username"]
+    assert child_intent_after == child_intent_before
+    device_slots_after = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_device_slot_generations WHERE account_id=? AND status='ACTIVE'",
+        (account_id,),
+    ).fetchone()[0]
+    assert device_slots_after == device_slots_before
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts").fetchone()[0] == accounts_before
+
+    grace_after = db.legacy_grace.find_by_account(account_id)
+    assert grace_after["started_at"] == started["started_at"]
+    assert grace_after["current_end_at"] == started["started_at"] + GRACE_PERIOD_SECONDS
+    assert grace_after["revision"] == started["revision"]
+
+    cred_after = db._conn.execute(
+        "SELECT id, generation, status FROM mgboost_subscription_credentials "
+        "WHERE account_id=? AND status='ACTIVE'", (account_id,),
+    ).fetchone()
+    assert cred_after["id"] == cred["id"]
+    assert cred_after["generation"] == cred["generation"]
+
+    payment_after = dict(db._conn.execute(
+        "SELECT * FROM mgboost_owner_attested_legacy_payments WHERE account_id=?", (account_id,),
+    ).fetchone() or {})
+    assert payment_after == payment_before
+
+    owner_id = db._conn.execute(
+        "SELECT telegram_id FROM mgboost_telegram_identities WHERE account_id=? AND role='OWNER'",
+        (account_id,),
+    ).fetchone()[0]
+    assert owner_id == 940001

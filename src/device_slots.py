@@ -14,7 +14,14 @@ import time
 
 
 TECHNICAL_SLOT_CAP = 99
-PAID_BASELINE_LIMITS = frozenset({3, 6, 12})
+# 3/6/12 are the catalog baseline (OPD-06). 4/8 are individually-reviewed
+# PH4-03 legacy-compat values (owner decision 2026-08-26, mass-migration
+# device-policy review) -- never inferred, only ever assigned per-account
+# through `legacy_paid_compat.ensure_legacy_paid_compat_entitlement()`'s
+# explicit, evidenced `approved_extra_device_slots` path. Extending this
+# set was anticipated when PH4-03's `LEGACY_PAID_COMPAT_V1_D{n}` naming
+# scheme was designed -- a plain code constant, not schema-locked.
+PAID_BASELINE_LIMITS = frozenset({3, 4, 6, 8, 12})
 
 
 class DeviceSlotError(RuntimeError):
@@ -112,7 +119,17 @@ class DeviceSlotStore:
         mode = row["device_limit_mode"]
         limit = row["device_limit"]
         if source == "DIRECT":
-            if mode != "LIMITED" or limit not in PAID_BASELINE_LIMITS:
+            # UNLIMITED is never a catalog/self-service option for a DIRECT
+            # plan -- every plan_version is immutable and only ever created
+            # through a capability-gated, audited path (e.g.
+            # `legacy_paid_compat.ensure_legacy_paid_compat_entitlement(
+            # device_limit_exempt=True)`), never chosen by the customer.
+            # Owner decision 2026-08-26: an individually-reviewed legacy
+            # account may be granted this exact exemption.
+            if mode == "UNLIMITED":
+                if limit is not None:
+                    raise EntitlementUnavailable("commercial unlimited plan must not carry a limit")
+            elif mode != "LIMITED" or limit not in PAID_BASELINE_LIMITS:
                 raise EntitlementUnavailable("commercial device baseline is not approved")
         elif mode == "LIMITED":
             if limit is None or not 1 <= int(limit) <= TECHNICAL_SLOT_CAP:

@@ -137,18 +137,47 @@ def test_paid_baseline_limits_are_exact(db, limit):
         db.device_slots.claim(account["id"], f"paid-{limit}-overflow", HWID_KEY, now=100)
 
 
-def test_direct_plan_cannot_smuggle_unapproved_or_unlimited_capacity(db):
+def test_direct_plan_cannot_smuggle_an_unapproved_numeric_limit(db):
     from src.device_slots import EntitlementUnavailable
 
     account, _ = _account_with_plan(db, limit=99)
     with pytest.raises(EntitlementUnavailable, match="baseline"):
         db.device_slots.claim(account["id"], "commercial-99", HWID_KEY, now=100)
 
+
+def test_direct_plan_unlimited_is_allowed_only_via_a_reviewed_plan_and_uses_technical_cap(db):
+    """PH4-03 mass-migration device-policy decision (2026-08-26): a DIRECT
+    plan MAY carry `device_limit_mode='UNLIMITED'` -- but only ever via an
+    immutable, capability-gated plan_version an admin explicitly created
+    (e.g. `legacy_paid_compat.ensure_legacy_paid_compat_entitlement(
+    device_limit_exempt=True)`), never a self-service/arbitrary value. This
+    is a deliberate change from the prior blanket DIRECT-can-never-be-
+    UNLIMITED behavior; a DIRECT plan carrying a non-null `device_limit`
+    alongside `UNLIMITED` mode still fails closed (tested below)."""
+    from src.device_slots import EntitlementUnavailable
+
     unlimited, _ = _account_with_plan(
         db, limit=None, limit_mode="UNLIMITED", code="COMMERCIAL_UNLIMITED"
     )
-    with pytest.raises(EntitlementUnavailable, match="baseline"):
-        db.device_slots.claim(unlimited["id"], "commercial-unlimited", HWID_KEY, now=100)
+    result = db.device_slots.claim(unlimited["id"], "commercial-unlimited", HWID_KEY, now=100)
+    assert result["slot_kind"] == "BASE"
+    capacity = db.device_slots.get_capacity_state(unlimited["id"], now=100)
+    assert capacity["effective_limit"] == 99
+    assert capacity["limit_mode"] == "UNLIMITED"
+
+
+
+
+def test_direct_plan_d4_and_d8_are_approved_baselines(db):
+    """PH4-03 mass-migration device-policy decision (2026-08-26): 4 and 8
+    join the catalog baseline 3/6/12 as individually-reviewed PH4-03
+    legacy-compat values (never a self-service/catalog change)."""
+    for limit in (4, 8):
+        account, _ = _account_with_plan(db, limit=limit, code=f"DIRECT_D{limit}")
+        result = db.device_slots.claim(account["id"], f"direct-d{limit}-device", HWID_KEY, now=100)
+        assert result["slot_kind"] == "BASE"
+        capacity = db.device_slots.get_capacity_state(account["id"], now=100)
+        assert capacity["effective_limit"] == limit
 
 
 def test_internal_configurable_and_unlimited_use_technical_cap(db):
