@@ -496,3 +496,36 @@ into per-domain ES modules and an authenticated production walkthrough of the
 new/legacy screens remains. The browser CSP/XSS/Technical-visibility/480px
 responsive gate and the production rollout/invariant gates have passed.
 Canonical progress/evidence lives in `ROADMAP.md` `PH7-12`.
+
+### 8.1 Corrective UX slice (2026-08-26) — two canonical semantics clarified
+
+An owner manual walkthrough of the slice above led to a follow-up slice that
+clarified two points not fully specified in the sections above; both are now
+canonical for any future Wave:
+
+- **The Marzban per-user `note` is presentation-only human identity, never
+  linkage/ownership authority.** It is the name an owner actually
+  recognizes an account by, fetched read-only with the admin's own session
+  JWT and shown as the account's display label (falling back to the
+  primary legacy alias, then the public ID) with the alias always shown
+  secondarily. It is never written back to any table, never joins to an
+  account by string match, and never substitutes for `ownership_evidence`/
+  `alias_role`/`ownership_provenance`. A Marzban-fetch failure must fail
+  open to the canonical alias/public-ID label with a visible notice, never
+  fail the page.
+- **Genesis/bootstrap proof must be exact and keyed, never inferred from
+  an absent lineage.** A slot with no `mgboost_migration_bindings` row is
+  not automatically a genesis placeholder — it could simply be an
+  unmigrated real device not yet resolved. Only an exact
+  `hmac.compare_digest` match against the canonical
+  `_genesis_hwid(account_id)` HMAC (`is_genesis_hwid_verifier()`) may
+  label a slot as a proven service bootstrap in Devices/Dashboard/
+  Migration-Grace presentation.
+
+Technical-account filtering also settled on one concrete rule, reusable by
+any future admin surface: hide only an account that is simultaneously
+`account_source=INTERNAL`, has **no** grace-cohort row, and has a reviewed
+`mgboost_internal_account_reviews` record with `ownership_evidence=ABSENT`
+and a structured `evidence_json.purpose`. No username/account-id text or
+fuzzy match may ever participate in this classification, and any real
+grace-cohort member is always shown regardless of `account_source`.

@@ -1,7 +1,90 @@
-# AGENT_HANDOFF — Wave A account-centric admin slice production-deployed / modularization continues / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — Wave A corrective UX slice production-deployed / authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
-Updated: 2026-08-26. **This top section supersedes the older design-only
-handoff below.**
+Updated: 2026-08-26 (later, same day; corrective-slice session, continuing a
+prior Codex session that ran out of quota after implementation but before
+final regression/deploy/docs/commit). **This top section supersedes
+everything below, including the immediately-prior Wave A handoff section
+(kept further down for continuity).**
+
+## This session: finished and deployed the corrective UX slice
+
+The prior session (Codex) implemented, in a dirty worktree, a follow-up
+slice addressing an owner manual walkthrough of the first Wave A deploy
+(English labels, no visible Marzban note, no technical-account filter,
+inconsistent migration/Telegram denominators, unlabeled Technical tab) and
+found/fixed one real bug (`metadataWarning()` returning a raw `''` instead
+of `` html`` ``, a SafeMarkup violation caught by the browser gate) — but
+ran out of quota before finishing regression/deploy/docs/commit. This
+session reviewed the full dirty diff line-by-line (no code was rewritten;
+it was accepted as-is after review — see `ROADMAP.md` `PH7-12`'s
+"Corrective UX slice" entry and `docs/ADMIN_PANEL_REDESIGN.md` §8.1 for the
+exact content), ran the full regression suite (reusing the already-built
+`/tmp/mgboost-wave-a-browser-venv` Playwright/Chromium environment —
+**`1029 passed, 0 skipped`**, up from `1026 passed, 3 skipped`), committed
+(`76daec6`), pushed, and deployed to production.
+
+**Production deploy:** fresh encrypted backup create/restore PASS
+immediately before deploy; preflight invariants (`quick_check=ok`, 0 FK
+violations, accounts=18, grace rows=17 unchanged
+`PH4-05-MASS-COHORT-2026-08-26` same start/end, `LEGACY_REVOKED=0`, all 4
+services active) recorded before any mutation. Fast-forward pull
+`955f255` -> `76daec6`, `mgboost-panel` restart only (no schema change).
+Post-deploy: same DB invariants unchanged, static ES modules/CSS return
+`200` with correct MIME (`admin/core.js`, `admin/accounts.js`,
+`admin.css`), new/existing API routes (`/admin/accounts`,
+`/admin/dashboard`, `/admin/migration-grace`) still `401` unauthenticated,
+all 4 services active.
+
+**What was NOT done this session, and is the concrete next step:** an
+interactive authenticated production click-through (Dashboard / Accounts /
+search-by-note / account-with-note / account-without-note /
+owner-unlimited account / device-limit-exempt account / Devices with real
+lineage / Devices with proven genesis / Telegram-Ownership / Migration-
+Grace / Technical / narrow-viewport). This session had no Marzban admin
+login credentials and deliberately did not attempt to obtain, guess, or
+reuse any existing session/cookie to get them — logging in as the owner is
+the owner's own step. Everything else that can be verified without a real
+authenticated browser session was verified: unauthenticated API/static
+checks, DB-level invariants pre/post deploy, and the dedicated
+CSP/XSS/search/technical-visibility browser E2E gate (`tests/
+test_admin_browser_e2e.py`), which runs against realistic fixtures that
+match the exact new response shapes (`display_identity`, `note`,
+`proven_genesis_bootstrap`, `technical_hidden_count`,
+`presentation_metadata_available`, the restructured `technical` field
+list). **Next agent/owner: do the authenticated click-through above, then
+close this one remaining Wave A corrective item.**
+
+`ROADMAP.md` `PH7-12` stays `[~]` — not auto-closed. Two items remain
+before it can close: (1) the authenticated walkthrough above, (2) splitting
+the legacy monolithic screen code out of `admin.js` into per-domain ES
+modules (unchanged from the prior handoff, not started this session, not
+in scope this session per the corrective-slice instruction). Do not start
+PH7-12's remaining implementation, Wave B, PH7-01/05/08, PH5, PH6 or
+PH4-06 without a fresh explicit instruction — this session's scope was
+strictly "finish and safely deploy the already-written corrective slice."
+
+## Unchanged this session (verify before relying on any of these)
+
+- Production HEAD: `76daec6` (local/origin/production all match).
+- `mgboost_legacy_grace_periods`: still 17 rows, `cohort_ref=
+  'PH4-05-MASS-COHORT-2026-08-26'`, `started_at`/`current_end_at` min/max
+  unchanged from before this session's deploy (2026-08-26 14:08:25 MSK ->
+  2026-09-09 14:08:25 MSK). Absolute real-lineage/active-slot/Telegram
+  counts were not re-pulled this session (the corrective slice only
+  changes how they are *presented*, not the underlying canonical
+  `legacy_grace_observability` computation) — they continue to change
+  organically from real client reconnects during the live campaign; pull
+  a fresh `scripts/ph4_05_daily_cohort_report.py` run before quoting them.
+- PH4-06: **NOT STARTED**. `LEGACY_REVOKED=0`. No shared legacy credential
+  was touched this session.
+- No schema migration in this slice — pure application/frontend code.
+
+---
+
+# PRIOR HANDOFF (this session's starting point) — Wave A account-centric admin slice production-deployed / modularization continues / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-26. **This section is preserved for continuity; the new
+top section above supersedes it.**
 
 ## Current Wave A state
 

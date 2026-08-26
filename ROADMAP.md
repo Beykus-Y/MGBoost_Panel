@@ -1058,11 +1058,88 @@ accounts/grace rows unchanged at 18/17, `LEGACY_REVOKED=0`. The first localhost
 curl landed in the short restart window (`connection refused`); the immediate
 repeat and every later public/localhost gate passed after the listener was up.
 
-**Remaining before Wave A `[x]`:** finish splitting the legacy monolithic
-screen code out of `admin.js` into per-domain ES modules, then perform an
-authenticated production account/detail/Migration walkthrough and equivalent-
-functionality review of the preserved legacy screens. This is a completed,
-production-deployed slice, not a claim that all of Wave A is finished.
+**Corrective UX slice (2026-08-26, owner manual walkthrough follow-up):**
+after the first Wave A deploy above, an owner manual walkthrough found
+several remaining rough edges: English labels leaking into an otherwise
+Russian UI, the Marzban per-user `note` (the human-readable name owners
+actually recognize) not shown anywhere, no way to filter internal/service
+test accounts out of the Accounts list, the Telegram/real-device migration
+summary using an inconsistent denominator, "active devices" not
+distinguishing a proven genesis/bootstrap placeholder from a real customer
+device, and the Technical tab rendering raw identifiers as one unlabeled
+string. This slice fixed all of these read-only/presentation issues:
+- `humanLabel()` (`frontend/assets/admin/core.js`) is a single reusable
+  enum->Russian-label map; all remaining account-centric English labels
+  (tabs, navigation, badges, Stars status) now render through it or a
+  direct Russian string.
+- The Marzban `note` field is fetched read-only with the admin's own
+  session JWT and surfaced as `display_identity`
+  (`src/admin_read_models.py::_display_identity`) — explicitly
+  **presentation-only**: it is never written back, never used for
+  account/alias/ownership linkage, and Accounts search matches note,
+  every alias, and public ID. A `presentation_metadata_available` flag
+  and a visible amber notice make a Marzban-fetch failure fail open to
+  the canonical alias/public-ID label instead of failing the page.
+- `_is_technical_account()` hides only accounts that are simultaneously
+  `account_source=INTERNAL`, have **no** grace-cohort row, and have a
+  reviewed-account evidence record with `ownership_evidence=ABSENT` and a
+  structured `purpose` field — no username/account-id text ever
+  participates, and any real grace-cohort member is always shown
+  regardless of source. An explicit "Показывать служебные аккаунты"
+  toggle overrides the default hide, both in Accounts and Migration/Grace.
+- `Migration/Grace` and the Dashboard now report `parent_ready`, the
+  Telegram cohort breakdown (denominator = the actual grace cohort size,
+  not `classify_action()`'s output), `accounts_with_real_lineage` /
+  `accounts_without_real_lineage`, an absolute `total_real_lineages`
+  count, and `active_slots` as clearly separate numbers — `active_slots`
+  is explicitly labeled as possibly including genesis/bootstrap.
+- `src/legacy_grace_migration.py::is_genesis_hwid_verifier()` is exact,
+  keyed (`hmac.compare_digest` over the same `privacy_safe_hwid()` HMAC
+  every real device verifier uses) proof that a slot's HWID verifier is
+  the canonical synthetic genesis value — never inferred from an absent
+  migration lineage. Devices now shows a "Служебный bootstrap" badge only
+  for a slot that passes this exact check.
+- Grace progress gained a fixed-boundary Day X/14, elapsed/remaining
+  percent and exact end timestamp (`_grace_progress()`), shown as a
+  progress bar in both the account detail and the Dashboard.
+- The Technical tab now renders each raw identifier
+  (`slot_generation_id`, `child_intent_id`, HWID/credential verifier,
+  outbox id/operation/state, generation state) as its own labeled,
+  individually-copyable field, with historical (non-`ACTIVE`) generations
+  collapsed behind `<details>` and only the current generation open by
+  default.
+- Fixed one real bug the browser gate caught: `metadataWarning()`
+  returned a raw `''` instead of `` html`` `` when no warning applied,
+  violating this project's own SafeMarkup discipline — corrected before
+  any production deploy.
+
+Evidence: full regression `1029 passed, 0 skipped` (was `1026 passed, 3
+skipped` — the 3 prior skips were only the browser suites, unavailable
+until Playwright/Chromium was installed into a temporary venv). Production
+preflight immediately before this deploy: `quick_check=ok`, 0 FK
+violations, accounts=18, grace rows=17 (`PH4-05-MASS-COHORT-2026-08-26`,
+unchanged start/end), `LEGACY_REVOKED=0`, all 4 services active. Fresh
+encrypted backup create/restore PASS taken immediately before deploy.
+Deployed `955f255` -> `76daec6`, fast-forward pull + `mgboost-panel`
+restart only; post-deploy re-verification: same DB invariants unchanged,
+static ES modules/CSS `200` with correct MIME, new API routes still `401`
+unauthenticated. Verified via unauthenticated API/static checks, DB-level
+invariants and the dedicated CSP/XSS/search/technical-visibility browser
+gate (against realistic fixtures matching the exact new response shapes)
+— **not** yet via an interactive authenticated click-through, since this
+session had no Marzban admin login credentials and did not attempt to
+obtain or guess any; that specific check is the owner's own next step (see
+`AGENT_HANDOFF.md`).
+
+**Remaining before Wave A `[x]`:** (1) an owner-performed (or
+owner-authorized, credentialed) interactive authenticated
+Dashboard/Accounts/Devices/Migration/Technical/mobile-viewport
+click-through, confirming the semantics read the same live as they do in
+the fixture-driven browser gate; (2) finish splitting the legacy
+monolithic screen code out of `admin.js` into per-domain ES modules, then
+an equivalent-functionality review of the preserved legacy screens. This
+is a completed, production-deployed slice, not a claim that all of Wave A
+is finished.
 
 # Phase 8 — Hardening and scale
 
