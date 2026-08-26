@@ -60,6 +60,29 @@ def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     assert change_actions <= handled_actions
 
 
+def test_account_human_surfaces_use_reusable_russian_labels_and_separated_technical_fields():
+    html_source = ADMIN_HTML.read_text(encoding="utf-8")
+    core_source = (ADMIN_MODULES / "core.js").read_text(encoding="utf-8")
+    account_source = (ADMIN_MODULES / "accounts.js").read_text(encoding="utf-8")
+    for english_tab in (">Overview<", ">Subscription<", ">Devices<", ">Technical<"):
+        assert english_tab not in html_source
+    for raw, label in (
+        ("ACTIVE:'Активен'", "Активен"),
+        ("UNLIMITED:'Безлимит'", "Безлимит"),
+        ("BOUND:'Привязан'", "Привязан"),
+        ("UNREGISTERED:'Не привязан'", "Не привязан"),
+        ("PARENT_READY:'Готов'", "Готов"),
+        ("NO_LINEAGE:'Нет миграции'", "Нет миграции"),
+    ):
+        assert raw in core_source, label
+    assert "humanLabel(value" in core_source
+    assert "slot_generation_id=" not in account_source
+    assert "technicalField('Slot generation ID'" in account_source
+    assert "technicalField('Child intent ID'" in account_source
+    assert "<details class=\"technical-generation\"" in account_source
+    assert "Лимит устройств" in account_source
+
+
 def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
     handler = FakeHandler()
     handle_panel(handler)

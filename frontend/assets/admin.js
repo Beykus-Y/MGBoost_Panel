@@ -1505,6 +1505,12 @@ const _STARS_STATUS_COLORS={
   manual_review:'#fa4',apply_failed_user_missing:'#f66',
   apply_retry_exhausted:'#f66',refund_pending:'#fa4',refund_unknown:'#f66',refunded:'#a4f',
 };
+const _STARS_STATUS_LABELS={
+  created:'Создан',paid:'Оплачен',plan_committed:'Тариф зафиксирован',applied:'Применён',
+  manual_review:'Ручная проверка',apply_failed_user_missing:'Пользователь не найден',
+  apply_retry_exhausted:'Повторы исчерпаны',refund_pending:'Возврат ожидается',
+  refund_unknown:'Возврат не подтверждён',refunded:'Возвращён',
+};
 const _STARS_ACTIONABLE=new Set(['manual_review','apply_retry_exhausted']);
 const _STARS_REFUNDABLE=new Set(['applied','manual_review','apply_retry_exhausted','apply_failed_user_missing']);
 
@@ -1535,7 +1541,7 @@ async function loadStarsPayments(status){
         <td>#${p.id}</td>
         <td>${p.marzban_username}</td>
         <td>${p.tariff_name} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
-        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
+        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
         <td>${p.created_by_telegram_id}</td>
         <td>${p.payer_telegram_id??'—'}</td>
         <td>${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
@@ -1574,7 +1580,7 @@ async function loadStarsOrphans(){
         <td>#${p.id}</td><td>${p.payer_telegram_id}</td>
         <td>${p.total_amount} ${p.currency}</td><td>${p.invoice_payload}</td>
         <td>${p.telegram_payment_charge_id}</td><td>${p.reason}</td>
-        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${p.status}</span></td>
+        <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
         <td style="white-space:nowrap">${actions}</td>
       </tr>`;
     })}`);

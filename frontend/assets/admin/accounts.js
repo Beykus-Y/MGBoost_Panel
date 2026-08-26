@@ -1,183 +1,55 @@
-import {badgeClass,formatDuration,formatTimestamp,maskTelegram} from './core.js';
+import {badgeClass,formatDuration,formatPercent,formatTimestamp,humanLabel,maskTelegram} from './core.js';
 
 export function createAccountUi({adminFetch,html,renderHtml,showPage,toast}){
-  let accounts=[];
-  let detail=null;
-
-  const badge=value=>html`<span class="badge ${badgeClass(value)}">${value||'—'}</span>`;
-
-  async function getJson(path,opts){
-    const response=await adminFetch(path,opts);
-    const data=await response.json();
-    if(!response.ok)throw new Error(data.error||'request failed');
-    return data;
-  }
+  let accounts=[],detail=null,showTechnical=false,migrationShowTechnical=false;
+  const badge=value=>html`<span class="badge ${badgeClass(value)}">${humanLabel(value)}</span>`;
+  async function getJson(path,opts){const response=await adminFetch(path,opts);const data=await response.json();if(!response.ok)throw new Error(data.error||'request failed');return data;}
+  function identityTitle(row){return row.display_note||row.primary_alias||row.public_id||`Аккаунт #${row.id||row.account_id}`;}
+  function identityMarkup(row){const bits=[row.primary_alias,row.id?`#${row.id}`:`#${row.account_id}`].filter(Boolean);return html`<strong>${identityTitle(row)}</strong>${row.display_note?html`<div class="cell-sub">${bits.join(' · ')}</div>`:html`<div class="cell-sub">${bits.slice(1).join(' · ')||row.public_id||''}</div>`}`;}
+  const metadataWarning=available=>available===false?html`<div class="notice notice-amber">Заметки Marzban временно недоступны; показаны canonical aliases.</div>`:html``;
 
   function renderAccounts(rows=accounts){
-    const tbody=document.getElementById('accounts-tbody');
-    document.getElementById('accounts-count').textContent=`(${rows.length})`;
-    if(!rows.length){
-      renderHtml(tbody,html`<tr><td colspan="8" class="empty-state">Аккаунты не найдены</td></tr>`);
-      return;
-    }
+    const tbody=document.getElementById('accounts-tbody');document.getElementById('accounts-count').textContent=`(${rows.length})`;
+    if(!rows.length){renderHtml(tbody,html`<tr><td colspan="8" class="empty-state">Аккаунты не найдены</td></tr>`);return;}
     renderHtml(tbody,html`${rows.map(row=>html`<tr class="clickable" data-action="open-account" data-account-id="${row.id}">
-      <td><strong>${row.primary_alias||`Account #${row.id}`}</strong><div class="cell-sub">#${row.id} · ${row.account_source} · aliases ${row.alias_count}</div></td>
-      <td>${badge(row.status)}</td>
-      <td>${row.subscription?badge(row.subscription.status):badge('NO_SUBSCRIPTION')}<div class="cell-sub">${row.subscription?.display_name||'Нет entitlement'}</div></td>
-      <td>${badge(row.telegram_status)}</td>
-      <td><strong>${row.active_devices}</strong><div class="cell-sub">активных slot</div></td>
-      <td><strong>${row.migrated_devices}</strong><div class="cell-sub">реальных lineage</div></td>
-      <td>${row.parent_ready?badge('PARENT_READY'):badge('NOT_READY')}</td>
-      <td>${badge(row.migration_action)}</td>
+      <td>${identityMarkup(row)}<div class="cell-sub">${humanLabel(row.account_source)} · псевдонимов: ${row.alias_count}${row.technical_account?' · служебный':''}</div></td>
+      <td>${badge(row.status)}</td><td>${row.subscription?badge(row.subscription.status):badge('NO_SUBSCRIPTION')}<div class="cell-sub">${row.subscription?.display_name||'Нет entitlement'}</div></td>
+      <td>${badge(row.telegram_status)}</td><td><strong>${row.active_devices}</strong><div class="cell-sub">активных слотов</div></td><td><strong>${row.migrated_devices}</strong><div class="cell-sub">реальных устройств</div></td><td>${badge(row.parent_ready?'PARENT_READY':'NOT_READY')}</td><td>${badge(row.migration_action)}</td>
     </tr>`)}`);
   }
-
   async function loadAccounts(){
     const tbody=document.getElementById('accounts-tbody');
-    try{
-      const data=await getJson('/admin/accounts');
-      accounts=data.accounts||[];
-      renderAccounts();
-    }catch(error){
-      renderHtml(tbody,html`<tr><td colspan="8" class="error-state">Не удалось загрузить аккаунты</td></tr>`);
-      throw error;
-    }
+    try{const data=await getJson(`/admin/accounts${showTechnical?'?include_technical=1':''}`);accounts=data.accounts||[];document.getElementById('show-technical-accounts').checked=showTechnical;renderHtml(document.getElementById('accounts-metadata-warning'),metadataWarning(data.presentation_metadata_available));document.getElementById('technical-hidden-count').textContent=!showTechnical&&data.technical_hidden_count?`Скрыто служебных: ${data.technical_hidden_count}`:'';filterAccounts();}
+    catch(error){renderHtml(tbody,html`<tr><td colspan="8" class="error-state">Не удалось загрузить аккаунты</td></tr>`);throw error;}
   }
+  function filterAccounts(){const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();renderAccounts(accounts.filter(row=>!query||[row.display_note,row.primary_alias,row.public_id,String(row.id),...(row.aliases||[])].some(value=>String(value||'').toLowerCase().includes(query))));}
 
-  function filterAccounts(){
-    const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();
-    renderAccounts(accounts.filter(row=>!query||String(row.id).includes(query)||(row.primary_alias||'').toLowerCase().includes(query)));
-  }
+  function entitlementValue(sub){if(!sub)return 'Нет подписки';if(sub.effective?.device_limit_mode==='UNLIMITED'||sub.status==='UNLIMITED')return 'Безлимит';return sub.display_name||humanLabel(sub.status);}
+  function overviewTab(){const account=detail.account,sub=detail.subscription;return html`<div class="detail-grid"><div class="detail-item"><div class="detail-label">Аккаунт</div><div class="detail-value">#${account.id}</div></div><div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${badge(account.status)}</div></div><div class="detail-item"><div class="detail-label">Источник</div><div class="detail-value">${humanLabel(account.account_source)}</div></div><div class="detail-item"><div class="detail-label">Создан</div><div class="detail-value">${formatTimestamp(account.created_at)}</div></div></div>
+    <div class="card"><div class="card-title">Подписка / право доступа</div><div class="large-readable-value">${entitlementValue(sub)}</div></div>
+    <div class="card spaced-card"><div class="card-title">Legacy aliases</div>${detail.aliases.length?detail.aliases.map(alias=>html`<div class="list-row"><div><strong>${alias.legacy_username}</strong>${alias.note?html`<div class="alias-note">${alias.note}</div>`:''}<div class="cell-sub">${humanLabel(alias.alias_role)} · ${humanLabel(alias.ownership_provenance)}</div></div>${badge(alias.legacy_status)}</div>`):html`<div class="empty-state">Aliases отсутствуют</div>`}</div>`;}
+  function deviceLimitText(sub){if(!sub)return '—';if(sub.effective?.device_limit_mode==='UNLIMITED')return 'Без ограничений';const limit=sub.effective?.device_limit;return Number.isFinite(Number(limit))?String(limit):'—';}
+  function subscriptionTab(){const sub=detail.subscription,credential=detail.credential;return html`<div class="detail-grid"><div class="detail-item"><div class="detail-label">Подписка</div><div class="detail-value">${sub?badge(sub.status):'Нет'}</div></div><div class="detail-item"><div class="detail-label">Тариф</div><div class="detail-value">${sub?.display_name||'—'}</div></div><div class="detail-item"><div class="detail-label">Действует до</div><div class="detail-value">${sub?.current_expiry?formatTimestamp(sub.current_expiry):'Без ограничения срока'}</div></div><div class="detail-item"><div class="detail-label">Лимит устройств</div><div class="detail-value">${deviceLimitText(sub)}</div></div></div>
+    <div class="card"><div class="card-title">Opaque subscription credential</div><div class="list-row"><div><strong>${credential?humanLabel(credential.status):'Не выпущен'}</strong><div class="cell-sub">${credential?`generation ${credential.generation} · последнее использование ${formatTimestamp(credential.last_used_at)}`:'Токен показывается только один раз после выпуска'}</div></div><button class="primary" data-action="issue-account-credential" data-account-id="${detail.account.id}">${credential?.status==='ACTIVE'?'Перевыпустить':'Выпустить'}</button></div><div id="credential-delivery"></div></div>`;}
 
-  function overviewTab(){
-    const account=detail.account;
-    return html`<div class="detail-grid">
-      <div class="detail-item"><div class="detail-label">Account</div><div class="detail-value">#${account.id}</div></div>
-      <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${badge(account.status)}</div></div>
-      <div class="detail-item"><div class="detail-label">Источник</div><div class="detail-value">${account.account_source}</div></div>
-      <div class="detail-item"><div class="detail-label">Создан</div><div class="detail-value">${formatTimestamp(account.created_at)}</div></div>
-    </div>
-    <div class="card"><div class="card-title">Legacy aliases</div>${detail.aliases.map(alias=>html`<div class="list-row"><div><strong>${alias.legacy_username}</strong><div class="cell-sub">${alias.alias_role} · ${alias.ownership_provenance}</div></div>${badge(alias.legacy_status)}</div>`)}</div>`;
-  }
+  function devicesTab(){if(!detail.devices.length)return html`<div class="card empty-state">Слоты ещё не созданы</div>`;return html`<div class="device-grid">${detail.devices.map(device=>html`<div class="card device-card"><div class="list-row"><div><strong>Слот ${device.slot_number}</strong>${device.proven_genesis_bootstrap?html`<div class="bootstrap-title">Служебный bootstrap</div>`:''}</div>${badge(device.desired_state)}</div>${device.proven_genesis_bootstrap?html`<div class="notice notice-amber">Это не подтверждённое устройство клиента.</div>`:html`<div class="cell-sub">${device.real_migration_lineage?'Подтверждённая миграция реального устройства':'Тип устройства пока не подтверждён'}</div>`}<div class="detail-line"><span>Дочерняя конфигурация</span><strong>${humanLabel(device.child_observed_state,'Не создана')}</strong></div><div class="detail-line"><span>Реальное устройство</span><strong>${device.real_migration_lineage?'Есть':'Нет'}</strong></div><div class="detail-line"><span>Миграция</span>${badge(device.migration_state||'NO_LINEAGE')}</div>${device.hwid_masked?html`<div class="detail-line secondary-field"><span>Masked HWID</span><code>${device.hwid_masked}</code></div>`:''}${device.migration_updated_at?html`<div class="cell-sub">Последняя активность: ${formatTimestamp(device.migration_updated_at)}</div>`:''}</div>`)}</div>`;}
+  function telegramTab(){return html`<div class="card"><div class="list-row"><div><div class="card-title">Владелец Telegram</div>${badge(detail.telegram.status)}</div></div>${detail.telegram.identities.length?detail.telegram.identities.map(identity=>html`<div class="list-row"><div><strong>Telegram ${maskTelegram(identity.telegram_id)}</strong><div class="cell-sub">${humanLabel(identity.role)} · ${humanLabel(identity.provenance)} · привязан ${formatTimestamp(identity.linked_at)}</div></div>${badge(identity.revoked_at?'REVOKED':'ACTIVE')}</div>`):html`<div class="empty-state">Активный владелец ещё не привязан</div>`}</div>`;}
+  function graceBlock(grace){if(!grace)return html`<div class="empty-state">Переходный период не запускался</div>`;return html`<div class="grace-progress"><div class="list-row"><div><strong>${grace.active?`День ${grace.day_of_14} из 14`:'Переходный период завершён'}</strong><div class="cell-sub">До: ${formatTimestamp(grace.current_end_at)}</div></div>${badge(grace.active?'ACTIVE':'ENDED')}</div><div class="progress-track"><span style="width:${grace.elapsed_percent}%"></span></div><div class="progress-legend"><span>Прошло: ${formatPercent(grace.elapsed_percent)}</span><span>Осталось: ${formatPercent(grace.remaining_percent)}</span></div><div class="detail-line"><span>Осталось времени</span><strong>${formatDuration(grace.seconds_remaining)}</strong></div></div>`;}
+  function migrationTab(){const row=detail.migration_grace;return html`<div class="detail-grid"><div class="detail-item"><div class="detail-label">Статус / действие</div><div class="detail-value">${badge(row.action)}</div></div><div class="detail-item"><div class="detail-label">Готовность аккаунта</div><div class="detail-value">${row.bridge_enabled&&row.active_devices>0?'Готов':'Не готов'}</div></div><div class="detail-item"><div class="detail-label">Активные слоты</div><div class="detail-value">${row.active_devices}</div></div><div class="detail-item"><div class="detail-label">Миграции реальных устройств</div><div class="detail-value">${Object.values(row.migration_state).reduce((a,b)=>a+b,0)}</div></div></div><div class="card"><div class="card-title">Переходный период</div>${graceBlock(row.grace)}</div>`;}
 
-  function subscriptionTab(){
-    const sub=detail.subscription;
-    const credential=detail.credential;
-    return html`<div class="detail-grid">
-      <div class="detail-item"><div class="detail-label">Subscription</div><div class="detail-value">${sub?badge(sub.status):'Нет'}</div></div>
-      <div class="detail-item"><div class="detail-label">Plan</div><div class="detail-value">${sub?.display_name||'—'}</div></div>
-      <div class="detail-item"><div class="detail-label">Expiry</div><div class="detail-value">${sub?.current_expiry?formatTimestamp(sub.current_expiry):'∞'}</div></div>
-      <div class="detail-item"><div class="detail-label">Devices</div><div class="detail-value">${sub?.effective?.device_limit_mode==='UNLIMITED'?'UNLIMITED':sub?.effective?.device_limit??'—'}</div></div>
-    </div>
-    <div class="card"><div class="card-title">Opaque subscription credential</div>
-      <div class="list-row"><div><strong>${credential?.status||'Не выпущен'}</strong><div class="cell-sub">${credential?`generation ${credential.generation} · last used ${formatTimestamp(credential.last_used_at)}`:'Токен показывается только один раз после выпуска'}</div></div>
-      <button class="primary" data-action="issue-account-credential" data-account-id="${detail.account.id}">${credential?.status==='ACTIVE'?'Перевыпустить':'Выпустить'}</button></div>
-      <div id="credential-delivery"></div>
-    </div>`;
-  }
-
-  function devicesTab(){
-    if(!detail.devices.length)return html`<div class="card empty-state">Slots ещё не созданы</div>`;
-    return html`<div class="device-grid">${detail.devices.map(device=>html`<div class="card device-card">
-      <div class="list-row"><strong>Slot ${device.slot_number}</strong>${badge(device.desired_state)}</div>
-      <div class="cell-sub">${device.slot_kind} · observed ${device.observed_state}</div>
-      <div class="detail-line"><span>HWID</span><strong>${device.hwid_masked||'—'}</strong></div>
-      <div class="detail-line"><span>Child</span><strong>${device.child_observed_state||'не создан'}</strong></div>
-      <div class="detail-line"><span>Migration</span>${badge(device.migration_state||'NO_LINEAGE')}</div>
-      ${device.child_observed_state==='ACTIVE'&&!device.real_migration_lineage?html`<div class="notice notice-amber">У active child нет real migration lineage. Его нельзя считать migrated customer device; в grace cohort это может быть genesis placeholder.</div>`:''}
-    </div>`)}</div>`;
-  }
-
-  function telegramTab(){
-    return html`<div class="card"><div class="list-row"><div><div class="card-title">Ownership state</div>${badge(detail.telegram.status)}</div></div>
-      ${detail.telegram.identities.length?detail.telegram.identities.map(identity=>html`<div class="list-row"><div><strong>Telegram ${maskTelegram(identity.telegram_id)}</strong><div class="cell-sub">${identity.role} · ${identity.provenance} · linked ${formatTimestamp(identity.linked_at)}</div></div>${identity.revoked_at?badge('REVOKED'):badge('ACTIVE')}</div>`):html`<div class="empty-state">Активный OWNER ещё не связан</div>`}
-    </div>`;
-  }
-
-  function migrationTab(){
-    const row=detail.migration_grace;
-    const grace=row.grace;
-    return html`<div class="detail-grid">
-      <div class="detail-item"><div class="detail-label">Action</div><div class="detail-value">${badge(row.action)}</div></div>
-      <div class="detail-item"><div class="detail-label">Parent ready</div><div class="detail-value">${row.bridge_enabled&&row.active_devices>0?'Да':'Нет'}</div></div>
-      <div class="detail-item"><div class="detail-label">Active slots</div><div class="detail-value">${row.active_devices}</div></div>
-      <div class="detail-item"><div class="detail-label">Real migrated lineages</div><div class="detail-value">${row.migrated_devices}</div></div>
-    </div>
-    <div class="card"><div class="card-title">Grace</div>${grace?html`<div class="list-row"><div><strong>День ${grace.day_of_14}/14</strong><div class="cell-sub">До ${formatTimestamp(grace.current_end_at)} · осталось ${formatDuration(grace.seconds_remaining)}</div></div>${badge(grace.active?'ACTIVE':'ENDED')}</div>`:html`<div class="empty-state">Grace period не запускался</div>`}</div>`;
-  }
-
-  function technicalTab(){
-    return html`<div class="notice">Технические идентификаторы доступны только на этой вкладке.</div>
-      <div class="card"><div class="card-title">Account public ID</div><code class="code-wrap">${detail.technical.account_public_id}</code></div>
-      <div class="card"><div class="card-title">Device lineage</div>${detail.technical.device_lineage.length?detail.technical.device_lineage.map(row=>html`<div class="technical-row"><strong>Slot ${row.slot_number} / generation ${row.generation}</strong><code>slot_generation_id=${row.slot_generation_id||'—'}</code><code>child_intent_id=${row.child_intent_id||'—'}</code><code>${row.child_username||'child не создан'}</code><code>${row.hwid_verifier||'HWID verifier отсутствует'}</code><code>${row.uuid_verifier||'UUID verifier отсутствует'}</code><code>outbox_id=${row.outbox_id||'—'} · ${row.operation_id||'—'}</code></div>`):html`<div class="empty-state">Lineage отсутствует</div>`}</div>`;
-  }
-
+  function technicalField(label,value,id){return html`<div class="technical-field"><span>${label}</span><code id="${id}">${value??'—'}</code>${value?html`<button class="copy-small" data-action="copy-technical" data-copy-target="${id}">Копировать</button>`:''}</div>`;}
+  function technicalTab(){return html`<div class="notice">Raw technical identifiers доступны только здесь. Verifier/hash не является credential.</div><div class="card"><div class="card-title">Public ID аккаунта</div>${technicalField('Account public ID',detail.technical.account_public_id,'tech-account-public-id')}</div><div class="card spaced-card"><div class="card-title">Поколения устройств</div>${detail.technical.device_lineage.length?detail.technical.device_lineage.map(row=>{const prefix=`tech-${row.slot_number}-${row.generation||0}`,current=row.generation_status==='ACTIVE';return html`<details class="technical-generation" ${current?'open':''}><summary>Слот ${row.slot_number} · Generation ${row.generation||'—'} ${current?'· текущее':'· историческое'}</summary><div class="technical-fields">${technicalField('Slot generation ID',row.slot_generation_id,`${prefix}-slot-generation`)}${technicalField('Child intent ID',row.child_intent_id,`${prefix}-child-intent`)}${technicalField('Child',row.child_username,`${prefix}-child`)}${technicalField('HWID verifier',row.hwid_verifier,`${prefix}-hwid`)}${technicalField('Credential verifier',row.uuid_verifier,`${prefix}-credential`)}${technicalField('Outbox ID',row.outbox_id,`${prefix}-outbox`)}${technicalField('Operation',row.operation_id,`${prefix}-operation`)}${technicalField('Generation state',row.generation_status,`${prefix}-generation-state`)}${technicalField('Child desired / observed',`${row.child_desired_state||'—'} / ${row.child_observed_state||'—'}`,`${prefix}-child-state`)}${technicalField('Outbox state',row.outbox_state,`${prefix}-outbox-state`)}</div></details>`;}):html`<div class="empty-state">Lineage отсутствует</div>`}</div>`;}
   const tabRenderers={overview:overviewTab,subscription:subscriptionTab,devices:devicesTab,telegram:telegramTab,migration:migrationTab,technical:technicalTab};
+  function showAccountTab(name){document.querySelectorAll('#account-tabs .tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.accountTab===name));renderHtml(document.getElementById('account-tab-content'),tabRenderers[name]?.()||overviewTab());}
+  async function openAccount(accountId){detail=await getJson(`/admin/accounts/${accountId}`);document.getElementById('account-detail-title').textContent=identityTitle(detail.display_identity);document.getElementById('account-detail-subtitle').textContent=detail.display_identity.display_note?`${detail.display_identity.primary_alias||detail.display_identity.public_id} · #${accountId}`:`#${accountId}`;renderHtml(document.getElementById('account-detail-metadata-warning'),metadataWarning(detail.presentation_metadata_available));showPage('account-detail');showAccountTab('overview');}
+  async function issueCredential(accountId){const reason=prompt('Причина выпуска/перевыпуска credential (3–300 символов):');if(reason===null)return;if(reason.trim().length<3){toast('Укажите причину не короче 3 символов','err');return;}const rotating=detail?.credential?.status==='ACTIVE';if(rotating&&!confirm('Текущий opaque credential будет немедленно отозван. Продолжить?'))return;const response=await adminFetch(`/admin/accounts/${accountId}/subscription-credential/issue`,{method:'POST',body:JSON.stringify({reason:reason.trim(),confirm:rotating})});const data=await response.json();if(!response.ok)throw new Error(data.error||'issue failed');renderHtml(document.getElementById('credential-delivery'),html`<div class="notice notice-success"><strong>Сохраните URL сейчас — повторно он не показывается.</strong><div class="credential-row"><input id="issued-credential-url" readonly value="${data.canonical_url}"/><button data-action="copy-issued-credential">Копировать</button></div></div>`);detail.credential=data.credential;toast('Credential выпущен');}
 
-  function showAccountTab(name){
-    document.querySelectorAll('#account-tabs .tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.accountTab===name));
-    renderHtml(document.getElementById('account-tab-content'),tabRenderers[name]?.()||overviewTab());
-  }
+  function summaryRatio(label,value,total,sub=''){const percent=total?Math.round(value*100/total):0;return html`<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value} / ${total}</div><div class="stat-sub">${formatPercent(percent)}${sub?` · ${sub}`:''}</div></div>`;}
+  async function loadMigration(){const data=await getJson(`/admin/migration-grace${migrationShowTechnical?'?include_technical=1':''}`),s=data.summary;document.getElementById('show-technical-migration').checked=migrationShowTechnical;renderHtml(document.getElementById('migration-metadata-warning'),metadataWarning(data.presentation_metadata_available));renderHtml(document.getElementById('migration-summary'),html`<div class="stats-grid"><div class="stat-card"><div class="stat-label">Аккаунтов в Grace cohort</div><div class="stat-value">${s.cohort_accounts}</div></div>${summaryRatio('Аккаунты готовы',s.parent_ready,s.cohort_accounts)}${summaryRatio('Telegram привязан',s.telegram.BOUND,s.cohort_accounts,`не привязано ${s.telegram.UNREGISTERED+s.telegram.PENDING_LINK}, ручная проверка ${s.telegram.AMBIGUOUS}`)}${summaryRatio('Аккаунты с реальной миграцией',s.accounts_with_real_lineage,s.cohort_accounts,`без миграции ${s.accounts_without_real_lineage}`)}<div class="stat-card"><div class="stat-label">Миграции реальных устройств</div><div class="stat-value">${s.total_real_lineages}</div><div class="stat-sub">без служебных bootstrap/genesis</div></div><div class="stat-card"><div class="stat-label">Legacy-активность 72 ч</div><div class="stat-value">${s.legacy_active_accounts_72h}</div><div class="stat-sub">аккаунтов · запросов ${s.legacy_requests_72h}</div></div><div class="stat-card"><div class="stat-label">Проблемы</div><div class="stat-value">${s.error_reconcile+s.compatibility_blockers+s.manual_review}</div><div class="stat-sub">сверка ${s.error_reconcile} · совместимость ${s.compatibility_blockers} · ручная проверка ${s.manual_review}</div></div><div class="stat-card"><div class="stat-label">Активные слоты</div><div class="stat-value">${s.active_slots}</div><div class="stat-sub">могут включать служебные bootstrap/genesis</div></div></div>`);renderHtml(document.getElementById('migration-tbody'),html`${data.accounts.map(row=>html`<tr class="clickable" data-action="open-account" data-account-id="${row.account_id}"><td>${identityMarkup(row)}</td><td>${badge(row.telegram_status)}</td><td>${badge(row.bridge_enabled&&row.active_devices>0?'PARENT_READY':'NOT_READY')}</td><td>${Object.values(row.migration_state).reduce((a,b)=>a+b,0)}</td><td>${row.grace?`${row.grace.active?`День ${row.grace.day_of_14} из 14`:'Завершён'} · ${formatDuration(row.grace.seconds_remaining)}`:'—'}</td><td>${row.legacy_requests_72h}</td><td>${badge(row.action)}</td></tr>`)}`);}
+  async function loadDashboard(){const target=document.getElementById('account-dashboard');try{const data=await getJson('/admin/dashboard'),c=data.grace_campaign;renderHtml(target,html`${metadataWarning(data.presentation_metadata_available)}${c?html`<section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Переходный период</span><h2>${c.active?`День ${c.day_of_14} из 14 · осталось ${formatDuration(c.seconds_remaining)}`:'Переходный период завершён'}</h2></div><button data-action="show-page" data-page="migration">Открыть «Миграция / Grace»</button></div><div class="progress-track large-progress"><span style="width:${c.elapsed_percent}%"></span></div><div class="progress-legend"><span>Прошло: ${formatPercent(c.elapsed_percent)}</span><span>Осталось: ${formatPercent(c.remaining_percent)}</span><span>До: ${formatTimestamp(c.ends_at)}</span></div><div class="stats-grid">${summaryRatio('Аккаунты готовы',c.parent_ready,c.accounts_total)}${summaryRatio('Telegram',c.telegram.BOUND,c.accounts_total,`не привязано ${c.telegram.UNREGISTERED+c.telegram.PENDING_LINK}, проверка ${c.telegram.AMBIGUOUS}`)}${summaryRatio('Аккаунты с real-device migration',c.accounts_with_real_lineage,c.accounts_total,`без lineage ${c.accounts_without_real_lineage}`)}<div class="stat-card"><div class="stat-label">Реальных устройств мигрировало</div><div class="stat-value">${c.total_real_lineages}</div><div class="stat-sub">genesis/bootstrap слоты не входят</div></div></div></section>`:''}<section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Состояние</span><h2>${data.health.error_reconcile||data.health.slot_state_mismatches||data.health.child_state_mismatches?'Требует внимания':'Локальное состояние согласовано'}</h2></div></div><div class="stats-grid"><div class="stat-card"><div class="stat-label">Ошибки сверки</div><div class="stat-value">${data.health.error_reconcile}</div></div><div class="stat-card"><div class="stat-label">Ошибки resolver за 72 ч</div><div class="stat-value">${data.health.resolver_errors_72h}</div></div><div class="stat-card"><div class="stat-label">Расхождения desired / observed</div><div class="stat-value">${data.health.slot_state_mismatches+data.health.child_state_mismatches}</div><div class="stat-sub">slot + child</div></div><div class="stat-card clickable" data-action="show-page" data-page="tickets"><div class="stat-label">Тикеты</div><div class="stat-value">${data.tickets.open}</div><div class="stat-sub">без ответа ${data.tickets.unanswered}</div></div></div></section><section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Истекают скоро</span><h2>Ближайшие подписки</h2></div></div><div class="expiry-buckets"><span>Сегодня ${data.expiring.buckets.today}</span><span>≤3 дней ${data.expiring.buckets.three_days}</span><span>≤7 дней ${data.expiring.buckets.seven_days}</span><span>≤30 дней ${data.expiring.buckets.thirty_days}</span></div>${data.expiring.accounts.length?html`<div class="compact-list">${data.expiring.accounts.slice(0,6).map(row=>html`<button class="compact-row" data-action="open-account" data-account-id="${row.id}"><span><strong>${row.label}</strong>${row.label!==row.primary_alias&&row.primary_alias?html`<small>${row.primary_alias}</small>`:''}</span><strong>${formatDuration(row.seconds_remaining)}</strong></button>`)}</div>`:html`<div class="empty-state">Нет ближайших истечений</div>`}</section>`);}catch(error){renderHtml(target,html`<div class="notice notice-amber">Дашборд аккаунтов временно недоступен</div>`);throw error;}}
 
-  async function openAccount(accountId){
-    detail=await getJson(`/admin/accounts/${accountId}`);
-    document.getElementById('account-detail-title').textContent=detail.aliases[0]?.legacy_username||`Account #${accountId}`;
-    showPage('account-detail');
-    showAccountTab('overview');
-  }
-
-  async function issueCredential(accountId){
-    const reason=prompt('Причина выпуска/перевыпуска credential (3–300 символов):');
-    if(reason===null)return;
-    if(reason.trim().length<3){toast('Укажите причину не короче 3 символов','err');return;}
-    const rotating=detail?.credential?.status==='ACTIVE';
-    if(rotating&&!confirm('Текущий opaque credential будет немедленно отозван. Продолжить?'))return;
-    const response=await adminFetch(`/admin/accounts/${accountId}/subscription-credential/issue`,{method:'POST',body:JSON.stringify({reason:reason.trim(),confirm:rotating})});
-    const data=await response.json();
-    if(!response.ok)throw new Error(data.error||'issue failed');
-    const delivery=document.getElementById('credential-delivery');
-    renderHtml(delivery,html`<div class="notice notice-success"><strong>Сохраните URL сейчас — повторно он не показывается.</strong><div class="credential-row"><input id="issued-credential-url" readonly value="${data.canonical_url}"/><button data-action="copy-issued-credential">Копировать</button></div></div>`);
-    detail.credential=data.credential;
-    toast('Credential выпущен');
-  }
-
-  async function loadMigration(){
-    const tbody=document.getElementById('migration-tbody');
-    const data=await getJson('/admin/migration-grace');
-    renderHtml(tbody,html`${data.accounts.map(row=>html`<tr class="clickable" data-action="open-account" data-account-id="${row.account_id}">
-      <td><strong>${row.primary_alias||`Account #${row.account_id}`}</strong><div class="cell-sub">#${row.account_id}</div></td>
-      <td>${badge(row.action)}</td><td>${badge(row.telegram_status)}</td>
-      <td>${row.bridge_enabled&&row.active_devices>0?'Да':'Нет'}</td><td>${row.active_devices}</td><td>${row.migrated_devices}</td>
-      <td>${row.grace?`День ${row.grace.day_of_14}/14 · ${formatDuration(row.grace.seconds_remaining)}`:'—'}</td>
-      <td>${row.legacy_requests_72h}</td>
-    </tr>`)}`);
-  }
-
-  async function loadDashboard(){
-    const target=document.getElementById('account-dashboard');
-    try{
-      const data=await getJson('/admin/dashboard');
-      const campaign=data.grace_campaign;
-      renderHtml(target,html`
-        ${campaign?html`<section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Grace campaign</span><h2>День ${campaign.day_of_14}/14</h2></div><button data-action="show-page" data-page="migration">Открыть Migration / Grace</button></div>
-          <div class="stats-grid"><div class="stat-card"><div class="stat-label">Аккаунты</div><div class="stat-value">${campaign.accounts_total}</div><div class="stat-sub">parent-ready ${campaign.parent_ready}</div></div><div class="stat-card"><div class="stat-label">Telegram BOUND</div><div class="stat-value">${campaign.telegram_bound}</div><div class="stat-sub">waiting ${campaign.waiting_for_registration}</div></div><div class="stat-card"><div class="stat-label">Real device lineages</div><div class="stat-value">${campaign.real_devices_child_backed}/${campaign.real_device_lineages}</div><div class="stat-sub">child-backed / всего; active slots ${campaign.active_slots}</div></div><div class="stat-card"><div class="stat-label">Осталось</div><div class="stat-value small-value">${formatDuration(campaign.seconds_remaining)}</div><div class="stat-sub">до ${formatTimestamp(campaign.ends_at)}</div></div></div>
-          ${(campaign.reconcile_blockers||campaign.compatibility_blockers)?html`<div class="notice notice-amber">Blockers: reconcile ${campaign.reconcile_blockers}, compatibility ${campaign.compatibility_blockers}</div>`:''}</section>`:''}
-        <section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Operational health</span><h2>${data.health.error_reconcile||data.health.slot_state_mismatches||data.health.child_state_mismatches?'Требует внимания':'Локальное состояние согласовано'}</h2></div></div><div class="stats-grid"><div class="stat-card"><div class="stat-label">ERROR_RECONCILE</div><div class="stat-value">${data.health.error_reconcile}</div></div><div class="stat-card"><div class="stat-label">Resolver errors 72h</div><div class="stat-value">${data.health.resolver_errors_72h}</div></div><div class="stat-card"><div class="stat-label">Desired / observed</div><div class="stat-value">${data.health.slot_state_mismatches+data.health.child_state_mismatches}</div><div class="stat-sub">slot + child mismatches</div></div><div class="stat-card clickable" data-action="show-page" data-page="tickets"><div class="stat-label">Тикеты</div><div class="stat-value">${data.tickets.open}</div><div class="stat-sub">без ответа ${data.tickets.unanswered}</div></div></div></section>
-        <section class="dashboard-section"><div class="section-heading"><div><span class="eyebrow">Expiring soon</span><h2>Ближайшие подписки</h2></div></div><div class="expiry-buckets"><span>Сегодня ${data.expiring.buckets.today}</span><span>≤3 дней ${data.expiring.buckets.three_days}</span><span>≤7 дней ${data.expiring.buckets.seven_days}</span><span>≤30 дней ${data.expiring.buckets.thirty_days}</span></div>${data.expiring.accounts.length?html`<div class="compact-list">${data.expiring.accounts.slice(0,6).map(row=>html`<button class="compact-row" data-action="open-account" data-account-id="${row.id}"><span>${row.label}</span><strong>${formatDuration(row.seconds_remaining)}</strong></button>`)}</div>`:html`<div class="empty-state">Нет ближайших истечений</div>`}</section>`);
-    }catch(error){renderHtml(target,html`<div class="notice notice-amber">Account dashboard временно недоступен</div>`);throw error;}
-  }
-
-  document.addEventListener('click',event=>{
-    const element=event.target.closest('[data-action]');
-    if(!element)return;
-    let work;
-    if(element.dataset.action==='open-account')work=openAccount(Number(element.dataset.accountId));
-    if(element.dataset.action==='account-tab')showAccountTab(element.dataset.accountTab);
-    if(element.dataset.action==='issue-account-credential')work=issueCredential(Number(element.dataset.accountId));
-    if(element.dataset.action==='copy-issued-credential')work=navigator.clipboard.writeText(document.getElementById('issued-credential-url').value).then(()=>toast('Скопировано'));
-    if(work)Promise.resolve(work).catch(error=>{console.error(error);toast('Операция не выполнена','err');});
-  });
+  document.addEventListener('click',event=>{const element=event.target.closest('[data-action]');if(!element)return;let work;if(element.dataset.action==='open-account')work=openAccount(Number(element.dataset.accountId));if(element.dataset.action==='account-tab')showAccountTab(element.dataset.accountTab);if(element.dataset.action==='issue-account-credential')work=issueCredential(Number(element.dataset.accountId));if(element.dataset.action==='copy-issued-credential')work=navigator.clipboard.writeText(document.getElementById('issued-credential-url').value).then(()=>toast('Скопировано'));if(element.dataset.action==='copy-technical'){const node=document.getElementById(element.dataset.copyTarget);if(node)work=navigator.clipboard.writeText(node.textContent).then(()=>toast('Скопировано'));}if(work)Promise.resolve(work).catch(error=>{console.error(error);toast('Операция не выполнена','err');});});
   document.addEventListener('input',event=>{if(event.target.id==='account-search')filterAccounts();});
-
+  document.addEventListener('change',event=>{if(event.target.id==='show-technical-accounts'){showTechnical=event.target.checked;loadAccounts().catch(()=>toast('Не удалось обновить список','err'));}if(event.target.id==='show-technical-migration'){migrationShowTechnical=event.target.checked;loadMigration().catch(()=>toast('Не удалось обновить отчёт','err'));}});
   return {loadAccounts,loadDashboard,loadMigration,openAccount};
 }

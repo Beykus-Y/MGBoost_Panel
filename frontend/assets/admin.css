@@ -86,6 +86,29 @@ tr:hover td{background:var(--bg3)}
 .expiry-buckets span{background:var(--bg3);border:.5px solid var(--border);border-radius:999px;padding:5px 10px;font-size:12px;color:var(--text2)}
 .compact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
 .compact-row{display:flex;justify-content:space-between;text-align:left;background:var(--bg2)}
+.compact-row small{display:block;color:var(--text3);font-weight:400;margin-top:2px}
+.inline-toggle{display:flex;align-items:center;gap:7px;margin:0;color:var(--text2);white-space:nowrap}
+.inline-toggle input{width:auto;min-height:auto;accent-color:var(--accent)}
+.filter-caption{min-height:18px;color:var(--text3);font-size:11px;margin:-8px 0 10px}
+.account-subtitle{font-size:11px;color:var(--text3);margin:4px 0 0 116px}
+.large-readable-value{font-size:20px;font-weight:600}
+.spaced-card{margin-top:14px}
+.alias-note{font-size:13px;color:var(--text2);margin-top:3px}
+.bootstrap-title{font-size:12px;color:var(--amber);margin-top:3px}
+.secondary-field{opacity:.72}
+.secondary-field code{overflow-wrap:anywhere;text-align:right}
+.progress-track{height:8px;background:var(--bg4);border:0.5px solid var(--border);border-radius:999px;overflow:hidden;margin:14px 0 7px}
+.progress-track span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));border-radius:inherit}
+.large-progress{height:11px;margin:0 0 8px}
+.progress-legend{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--text2);font-size:11px}
+.technical-generation{border-bottom:.5px solid var(--border);padding:10px 0}
+.technical-generation:last-child{border-bottom:0}
+.technical-generation summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
+.technical-fields{display:grid;gap:1px;margin-top:10px;border:.5px solid var(--border);border-radius:8px;overflow:hidden}
+.technical-field{display:grid;grid-template-columns:minmax(145px,190px) minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--bg3);padding:8px 10px}
+.technical-field>span{color:var(--text2);font-size:11px}
+.technical-field code{overflow-wrap:anywhere;white-space:normal;color:var(--text);font-size:11px}
+.copy-small{padding:4px 7px;min-height:26px;font-size:10px}
 
 /* Node cards */
 .nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:1.5rem}
@@ -215,6 +238,7 @@ tbody tr{transition:background .12s}
   .page-header{align-items:flex-start;flex-direction:column}
   .account-tabs{overflow-x:auto;white-space:nowrap}
   .page-actions,.search-box{width:100%}
+  .inline-toggle{width:100%}
   .page-actions button{flex:1}
   .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   #page-dashboard>.page-header+div+div{grid-template-columns:1fr!important}
@@ -226,6 +250,9 @@ tbody tr{transition:background .12s}
   .stats-grid,.nodes-grid,.user-detail-grid,.form-row,.detail-grid,.device-grid{grid-template-columns:1fr}
   .section-heading{align-items:flex-start;flex-direction:column}
   .credential-row{flex-direction:column}
+  .account-subtitle{margin-left:0}
+  .technical-field{grid-template-columns:1fr}
+  .technical-field .copy-small{justify-self:start}
   .card{padding:1rem;border-radius:10px}
   .login-card{width:min(92vw,360px);padding:1.5rem}
   .modal{width:calc(100vw - 20px);max-width:none;padding:1rem;border-radius:12px}

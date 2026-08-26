@@ -72,9 +72,10 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                 "expire": None, "online_at": None,
             }]})
         elif path == "/sub-admin-api/admin/accounts":
-            self._send(200, {"accounts": [{
+            self._send(200, {"presentation_metadata_available": True, "technical_hidden_count": 1, "accounts": [{
                 "id": 1, "status": "ACTIVE", "account_source": "DIRECT",
-                "created_at": 100, "primary_alias": PAYLOAD, "alias_count": 1,
+                "created_at": 100, "primary_alias": "client_alias", "aliases": ["client_alias"],
+                "display_note": PAYLOAD, "public_id": "acct_fixture", "alias_count": 1,
                 "subscription": {"status": "ACTIVE", "display_name": PAYLOAD},
                 "telegram_status": "BOUND", "active_devices": 1,
                 "migrated_devices": 0, "parent_ready": True,
@@ -83,13 +84,15 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
         elif path == "/sub-admin-api/admin/accounts/1":
             self._send(200, {
                 "account": {"id": 1, "public_id": "acct_technical", "status": "ACTIVE", "account_source": "DIRECT", "created_at": 100},
-                "aliases": [{"legacy_username": PAYLOAD, "alias_role": "PRIMARY", "ownership_provenance": "EVIDENCE_PROVEN", "legacy_status": "ACTIVE"}],
+                "display_identity": {"display_note": PAYLOAD, "display_note_source_alias": "client_alias", "primary_alias": "client_alias", "public_id": "acct_technical"},
+                "aliases": [{"legacy_username": "client_alias", "note": PAYLOAD, "alias_role": "PRIMARY", "ownership_provenance": "EVIDENCE_PROVEN", "legacy_status": "ACTIVE"}],
                 "subscription": {"status": "ACTIVE", "display_name": PAYLOAD, "current_expiry": None, "effective": {"device_limit_mode": "LIMITED", "device_limit": 3}},
                 "credential": None,
-                "devices": [{"slot_number": 1, "slot_kind": "BASE", "desired_state": "ACTIVE", "observed_state": "ACTIVE", "hwid_masked": "hwid_fixture_mask", "child_observed_state": "ACTIVE", "migration_state": None, "real_migration_lineage": False}],
+                "devices": [{"slot_number": 1, "slot_kind": "BASE", "desired_state": "ACTIVE", "observed_state": "ACTIVE", "hwid_masked": "hwid_fixture_mask", "child_observed_state": "ACTIVE", "migration_state": None, "real_migration_lineage": False, "proven_genesis_bootstrap": True}],
                 "telegram": {"status": "BOUND", "identities": [{"telegram_id": 12345678, "role": "OWNER", "provenance": "MIGRATION", "linked_at": 100, "revoked_at": None}]},
-                "migration_grace": {"action": "WAITING_FOR_REGISTRATION", "bridge_enabled": True, "active_devices": 1, "migrated_devices": 0, "grace": None},
-                "technical": {"account_public_id": "acct_technical", "device_lineage": [{"slot_number": 1, "generation": 1, "slot_generation_id": 91, "child_intent_id": 92, "child_username": "mgc_technical_only", "hwid_verifier": "hmac-sha256:technical-only", "uuid_verifier": "sha256:technical-only", "outbox_id": 93, "operation_id": "op_technical_only"}]},
+                "migration_grace": {"action": "WAITING_FOR_REGISTRATION", "bridge_enabled": True, "active_devices": 1, "migrated_devices": 0, "migration_state": {"MIGRATING": 0, "MIGRATED": 0, "LEGACY_REVOKE_PENDING": 0, "LEGACY_REVOKED": 0, "ERROR_RECONCILE": 0}, "grace": None},
+                "technical": {"account_public_id": "acct_technical", "device_lineage": [{"slot_number": 1, "generation": 1, "generation_status": "ACTIVE", "slot_generation_id": 91, "child_intent_id": 92, "child_username": "mgc_technical_only", "hwid_verifier": "hmac-sha256:technical-only", "uuid_verifier": "sha256:technical-only", "outbox_id": 93, "operation_id": "op_technical_only", "outbox_state": "APPLIED", "child_desired_state": "ACTIVE", "child_observed_state": "ACTIVE"}]},
+                "presentation_metadata_available": True,
             })
         elif path == "/sub-admin-api/admin/dashboard":
             self._send(200, {"grace_campaign": None, "health": {"error_reconcile": 0, "resolver_errors_72h": 0, "slot_state_mismatches": 0, "child_state_mismatches": 0}, "expiring": {"buckets": {"today": 0, "three_days": 0, "seven_days": 0, "thirty_days": 0}, "accounts": []}, "tickets": {"open": 0, "unanswered": 0}})
@@ -141,9 +144,12 @@ def test_stored_xss_payload_is_text_under_production_csp():
             page.locator('.nav-item[data-page="accounts"]').click()
             page.wait_for_function("payload => document.querySelector('#accounts-tbody').innerText.includes(payload)", arg=PAYLOAD)
             assert page.locator("#accounts-tbody img").count() == 0
+            page.locator('#account-search').fill(PAYLOAD[:12])
+            assert page.locator('#accounts-tbody [data-action="open-account"]').count() == 1
             page.locator('#accounts-tbody [data-action="open-account"]').click()
             page.wait_for_selector("#page-account-detail.active")
             assert PAYLOAD in page.locator("#account-tab-content").inner_text()
+            assert "UNLIMITED" not in page.locator("#account-tab-content").inner_text()
             assert "mgc_technical_only" not in page.locator("#account-tab-content").inner_text()
             page.locator('[data-account-tab="technical"]').click()
             assert "mgc_technical_only" in page.locator("#account-tab-content").inner_text()

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
-<link rel="stylesheet" href="assets/admin.css?v=20260826-wave-a">
+<link rel="stylesheet" href="assets/admin.css?v=20260826-wave-a-ux">
 </head>
 <body>
 
@@ -34,7 +34,7 @@
       <span class="nav-icon">◎</span> Аккаунты
     </div>
     <div class="nav-item" data-action="show-page" data-page="migration">
-      <span class="nav-icon">↝</span> Migration / Grace
+      <span class="nav-icon">↝</span> Миграция / Grace
     </div>
     <div class="nav-item" data-action="show-page" data-page="tickets">
       <span class="nav-icon">🎫</span> Тикеты
@@ -43,14 +43,14 @@
       <span class="nav-icon">◈</span> Ноды
     </div>
     <div class="nav-item" data-action="show-page" data-page="configs">
-      <span class="nav-icon">⊕</span> Extra конфиги
+      <span class="nav-icon">⊕</span> Доп. конфиги
     </div>
     <div class="nav-item" data-action="show-page" data-page="stars">
       <span class="nav-icon">⭐️</span> Платежи / Stars
     </div>
-    <div class="nav-section">System / Technical</div>
+    <div class="nav-section">Система / Техническое</div>
     <div class="nav-item" data-action="show-page" data-page="users">
-      <span class="nav-icon">⌁</span> Marzban Raw Users
+      <span class="nav-icon">⌁</span> Пользователи Marzban
     </div>
     <div class="nav-item" data-action="show-page" data-page="settings">
       <span class="nav-icon">⚙</span> Настройки
@@ -83,8 +83,8 @@
           <button data-action="load-dashboard">Обновить</button>
         </div>
       </div>
-      <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка account state...</div></div>
-      <div class="section-heading legacy-health-heading"><div><span class="eyebrow">Marzban / Nodes</span><h2>Инфраструктура</h2></div></div>
+      <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка состояния аккаунтов...</div></div>
+      <div class="section-heading legacy-health-heading"><div><span class="eyebrow">Marzban / Ноды</span><h2>Инфраструктура</h2></div></div>
       <div class="stats-grid" id="sys-stats">
         <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
@@ -102,36 +102,36 @@
 
     <!-- ACCOUNTS -->
     <div class="page" id="page-accounts">
-      <div class="page-header"><span class="page-title">Аккаунты <span id="accounts-count" class="muted-count"></span></span><div class="page-actions"><input class="search-box" id="account-search" type="text" placeholder="Account ID или legacy alias"/><button data-action="show-page" data-page="accounts">Обновить</button></div></div>
-      <div class="notice">Основная customer-facing поверхность. Числа parent readiness и real migrated device lineages намеренно показаны отдельно.</div>
-      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Аккаунт</th><th>Статус</th><th>Subscription</th><th>Telegram</th><th>Slots</th><th>Real migrated</th><th>Parent</th><th>Action</th></tr></thead><tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+      <div class="page-header"><span class="page-title">Аккаунты <span id="accounts-count" class="muted-count"></span></span><div class="page-actions"><input class="search-box" id="account-search" type="text" placeholder="Имя, note, alias или public ID"/><label class="inline-toggle"><input id="show-technical-accounts" type="checkbox"/> Показывать служебные аккаунты</label><button data-action="show-page" data-page="accounts">Обновить</button></div></div>
+      <div id="accounts-metadata-warning"></div><div id="technical-hidden-count" class="filter-caption"></div>
+      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Клиент</th><th>Статус</th><th>Подписка</th><th>Telegram</th><th>Слоты</th><th>Реальные устройства</th><th>Готовность</th><th>Статус / действие</th></tr></thead><tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
     </div>
 
     <!-- ACCOUNT DETAIL -->
     <div class="page" id="page-account-detail">
-      <div class="page-header"><div><button class="back-button" data-action="show-page" data-page="accounts">← Аккаунты</button><span class="page-title" id="account-detail-title">Account</span></div></div>
+      <div class="page-header"><div><button class="back-button" data-action="show-page" data-page="accounts">← Аккаунты</button><span class="page-title" id="account-detail-title">Аккаунт</span><div id="account-detail-subtitle" class="account-subtitle"></div></div></div><div id="account-detail-metadata-warning"></div>
       <div class="tabs account-tabs" id="account-tabs">
-        <div class="tab active" data-action="account-tab" data-account-tab="overview">Overview</div>
-        <div class="tab" data-action="account-tab" data-account-tab="subscription">Subscription</div>
-        <div class="tab" data-action="account-tab" data-account-tab="devices">Devices</div>
-        <div class="tab" data-action="account-tab" data-account-tab="telegram">Telegram / Ownership</div>
-        <div class="tab" data-action="account-tab" data-account-tab="migration">Migration / Grace</div>
-        <div class="tab" data-action="account-tab" data-account-tab="technical">Technical</div>
+        <div class="tab active" data-action="account-tab" data-account-tab="overview">Обзор</div>
+        <div class="tab" data-action="account-tab" data-account-tab="subscription">Подписка</div>
+        <div class="tab" data-action="account-tab" data-account-tab="devices">Устройства</div>
+        <div class="tab" data-action="account-tab" data-account-tab="telegram">Telegram / Владелец</div>
+        <div class="tab" data-action="account-tab" data-account-tab="migration">Миграция / Grace</div>
+        <div class="tab" data-action="account-tab" data-account-tab="technical">Техническое</div>
       </div>
       <div id="account-tab-content"><div class="loading"><span class="spinner"></span></div></div>
     </div>
 
     <!-- MIGRATION / GRACE -->
     <div class="page" id="page-migration">
-      <div class="page-header"><span class="page-title">Migration / Grace</span><button data-action="show-page" data-page="migration">Обновить</button></div>
-      <div class="notice">Классификация action приходит из canonical `legacy_grace_observability`; frontend её не вычисляет. Active slots могут включать genesis placeholder.</div>
-      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Аккаунт</th><th>Action</th><th>Telegram</th><th>Parent ready</th><th>Active slots</th><th>Real migrated</th><th>Grace</th><th>Legacy req 72h</th></tr></thead><tbody id="migration-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+      <div class="page-header"><span class="page-title">Миграция / Grace</span><div class="page-actions"><label class="inline-toggle"><input id="show-technical-migration" type="checkbox"/> Показывать служебные аккаунты</label><button data-action="show-page" data-page="migration">Обновить</button></div></div>
+      <div id="migration-metadata-warning"></div><div id="migration-summary"></div>
+      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Клиент</th><th>Telegram</th><th>Готовность аккаунта</th><th>Реальные устройства</th><th>Grace</th><th>Legacy 72 ч</th><th>Статус / действие</th></tr></thead><tbody id="migration-tbody"><tr><td colspan="7" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
     </div>
 
     <!-- USERS -->
     <div class="page" id="page-users">
       <div class="page-header">
-        <span class="page-title">System / Technical / Marzban Raw Users <span id="users-count" style="font-size:13px;color:var(--text3)"></span></span>
+        <span class="page-title">Система / Техническое / Пользователи Marzban <span id="users-count" style="font-size:13px;color:var(--text3)"></span></span>
         <div class="page-actions">
           <input class="search-box" type="text" placeholder="Поиск..." id="user-search" data-input-action="filter-users" />
           <button class="primary" data-action="open-create-user">+ Создать</button>
@@ -174,7 +174,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Нода</th><th>Upload</th><th>Download</th><th>Итого</th><th>VPS / мес</th><th>Трафик</th><th></th></tr>
+              <tr><th>Нода</th><th>Исходящий</th><th>Входящий</th><th>Итого</th><th>VPS / мес</th><th>Трафик</th><th></th></tr>
             </thead>
             <tbody id="node-traffic-tbody">
               <tr><td colspan="7" class="loading"><span class="spinner"></span></td></tr>
@@ -187,12 +187,12 @@
     <!-- CONFIGS -->
     <div class="page" id="page-configs">
       <div class="page-header">
-        <span class="page-title">Extra конфиги</span>
+        <span class="page-title">Доп. конфиги</span>
       </div>
       <div class="tabs">
         <div class="tab active" data-action="switch-tab" data-target="tab-global">Глобальные</div>
         <div class="tab" data-action="switch-tab" data-target="tab-per-user">По пользователям</div>
-        <div class="tab" data-action="switch-tab" data-target="tab-inbound-extra">Client Extra (Inbounds)</div>
+        <div class="tab" data-action="switch-tab" data-target="tab-inbound-extra">Доп. параметры клиента (Inbounds)</div>
       </div>
       <div class="tab-content active" id="tab-global">
         <div class="card" style="margin-bottom:1rem">
@@ -236,7 +236,7 @@
       </div>
       <div class="tab-content" id="tab-inbound-extra">
         <div class="card">
-          <div class="card-title">Доп. параметры (Client Extra) для Inbound'ов</div>
+          <div class="card-title">Доп. параметры клиента для Inbound'ов</div>
           <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Здесь можно настроить параметры, которые будут автоматически добавляться к ссылкам (например, для xhttp обфускации) в подписке пользователей.<br/>Например: <code style="background:var(--bg4);padding:1px 5px;border-radius:4px">extra={"obfs":"123"}</code> или любые другие URL-параметры.</p>
           <div style="display:flex;gap:8px;margin-bottom:1rem">
             <input type="text" id="ie-inbound-select" list="ie-inbounds-list" placeholder="vless-xhttp-cdn (или любое совпадение, напр. type=xhttp)" style="flex:1" />
@@ -333,25 +333,25 @@
           <div class="page-actions" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
             <select id="stars-payments-filter" data-change-action="load-stars-payments" style="width:220px">
               <option value="">Все статусы</option>
-              <option value="created">created</option>
-              <option value="paid">paid</option>
-              <option value="plan_committed">plan_committed</option>
-              <option value="applied">applied</option>
-              <option value="manual_review">manual_review</option>
-              <option value="apply_failed_user_missing">apply_failed_user_missing</option>
-              <option value="apply_retry_exhausted">apply_retry_exhausted</option>
-              <option value="refund_pending">refund_pending</option>
-              <option value="refund_unknown">refund_unknown</option>
-              <option value="refunded">refunded</option>
+              <option value="created">Создан</option>
+              <option value="paid">Оплачен</option>
+              <option value="plan_committed">Тариф зафиксирован</option>
+              <option value="applied">Применён</option>
+              <option value="manual_review">Ручная проверка</option>
+              <option value="apply_failed_user_missing">Пользователь не найден</option>
+              <option value="apply_retry_exhausted">Повторы исчерпаны</option>
+              <option value="refund_pending">Возврат ожидается</option>
+              <option value="refund_unknown">Возврат не подтверждён</option>
+              <option value="refunded">Возвращён</option>
             </select>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>#</th><th>Username</th><th>Тариф</th><th>Статус</th>
-                  <th>created_by</th><th>payer</th>
-                  <th>base→target</th><th>applied</th><th>Причина</th><th></th>
+                  <th>#</th><th>Пользователь</th><th>Тариф</th><th>Статус</th>
+                  <th>Создал</th><th>Плательщик</th>
+                  <th>Было → цель</th><th>Применено</th><th>Причина</th><th></th>
                 </tr>
               </thead>
               <tbody id="stars-payments-tbody">

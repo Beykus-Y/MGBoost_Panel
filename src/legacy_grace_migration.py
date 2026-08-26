@@ -26,9 +26,11 @@ design (PH3-03), and `legacy_bridge.create_binding()` raising
 
 from __future__ import annotations
 
+import hmac
 import time
 
 from .child_contract import source_contract_hash
+from .device_slots import privacy_safe_hwid
 from .legacy_bridge import LegacyBridgeConflict
 
 
@@ -44,6 +46,20 @@ def _genesis_hwid(account_id: int) -> str:
     """Deterministic per-account placeholder -- never a real customer HWID,
     never reused across accounts, stable across retries."""
     return f"legacy-grace-genesis-slot1-{int(account_id)}"
+
+
+def is_genesis_hwid_verifier(
+    account_id: int, hwid_verifier: str | None, hmac_key: bytes | str,
+) -> bool:
+    """Read-only proof that a slot was claimed with the canonical genesis HWID.
+
+    Absence of a migration lineage is deliberately insufficient: only the
+    exact keyed verifier produced by ``migrate_bootstrapped_account`` counts.
+    """
+    if not hwid_verifier or not hmac_key:
+        return False
+    expected, _masked = privacy_safe_hwid(_genesis_hwid(int(account_id)), hmac_key)
+    return hmac.compare_digest(expected, hwid_verifier)
 
 
 def migrate_bootstrapped_account(
