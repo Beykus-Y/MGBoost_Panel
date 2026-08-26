@@ -138,9 +138,20 @@ def _ensure_plan_version(db, *, device_limit: int | None, unlimited: bool, now: 
 
 def ensure_legacy_paid_compat_entitlement(
     db, *, capability, account_id: int, approved_extra_device_slots: int = 0,
-    device_limit_exempt: bool = False, decision_ref: str, evidence: dict | None = None,
-    now: int | None = None,
+    device_limit_exempt: bool = False, acknowledge_observed_overage: bool = False,
+    decision_ref: str, evidence: dict | None = None, now: int | None = None,
 ) -> dict:
+    """`acknowledge_observed_overage=True` is a distinct, explicit owner
+    decision from `approved_extra_device_slots`/`device_limit_exempt`
+    themselves: it means the owner has personally reviewed the raw
+    `observed_device_count` (frozen, immutable evidence from enrollment
+    time) and knowingly confirmed the chosen limit is still correct even
+    though it is below that raw count -- typically because some of the raw
+    rows are understood to be the same physical device registered under
+    more than one client/app (never merged/deleted -- see
+    `docs/PHASE4_GRACE_PERIOD_RUNBOOK.md`). It never changes what limit is
+    assigned, only whether the safety check that exists for the *unreviewed*
+    case is allowed to be bypassed for this one, evidenced, human decision."""
     actor = _require_primary(db, capability)
     account_id = int(account_id)
     decision_ref = (decision_ref or "").strip()
@@ -156,9 +167,12 @@ def ensure_legacy_paid_compat_entitlement(
         raise LegacyPaidCompatError(
             "device_limit_exempt and approved_extra_device_slots are mutually exclusive"
         )
-    if (approved_extra_device_slots > 0 or device_limit_exempt) and not evidence:
+    if (
+        approved_extra_device_slots > 0 or device_limit_exempt or acknowledge_observed_overage
+    ) and not evidence:
         raise LegacyPaidCompatError(
-            "an increased/exempt device limit requires recorded evidence of the owner's approval"
+            "an increased/exempt device limit, or acknowledging an observed overage, requires "
+            "recorded evidence of the owner's approval"
         )
     evidence = evidence or {}
     if not isinstance(evidence, dict):
@@ -184,7 +198,10 @@ def ensure_legacy_paid_compat_entitlement(
 
     device_limit = None if device_limit_exempt else DEFAULT_LEGACY_PAID_DEVICE_LIMIT + approved_extra_device_slots
     observed = row["observed_device_count"]
-    if not device_limit_exempt and observed is not None and observed > device_limit:
+    if (
+        not device_limit_exempt and not acknowledge_observed_overage
+        and observed is not None and observed > device_limit
+    ):
         raise DeviceOverageConflict(
             f"observed device count {observed} exceeds the derived device limit "
             f"{device_limit} -- requires owner review before entitlement assignment"

@@ -548,3 +548,45 @@ def test_d4_and_d8_baselines_work_end_to_end(db):
                 account["account_id"], f"d{limit}-device-{i}", HWID_KEY, now=201,
             )
             assert claimed["slot_kind"] == "BASE"
+
+
+def test_acknowledge_observed_overage_allows_explicit_lower_limit(db):
+    """Owner decision 2026-08-26 (account 10/German pattern): raw observed
+    count can include duplicate registrations of one physical device under
+    two clients -- an explicit, evidenced owner acknowledgment allows the
+    chosen limit to stay below the raw count without silently dropping the
+    safety check for every other (unreviewed) case."""
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement, DeviceOverageConflict
+
+    account, capability = _reviewed_account(db, username="overage-ack-user", tg=920000300, observed_device_count=7)
+
+    with pytest.raises(DeviceOverageConflict):
+        ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            approved_extra_device_slots=3, decision_ref="dl-legacy-compat-test",
+            evidence={"source": "test"}, now=200,
+        )
+
+    result = ensure_legacy_paid_compat_entitlement(
+        db, capability=capability, account_id=account["account_id"],
+        approved_extra_device_slots=3, acknowledge_observed_overage=True,
+        decision_ref="dl-legacy-compat-test",
+        evidence={"source": "owner reviewed: 2 of 7 raw rows are one duplicate device"}, now=200,
+    )
+    plan = db._conn.execute(
+        "SELECT device_limit FROM mgboost_plan_versions WHERE id=?",
+        (result["current_plan_version_id"],),
+    ).fetchone()
+    assert plan["device_limit"] == 6
+
+
+def test_acknowledge_observed_overage_still_requires_evidence(db):
+    from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement, LegacyPaidCompatError
+
+    account, capability = _reviewed_account(db, username="overage-ack-user-2", tg=920000301, observed_device_count=7)
+    with pytest.raises(LegacyPaidCompatError):
+        ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            approved_extra_device_slots=3, acknowledge_observed_overage=True,
+            decision_ref="dl-legacy-compat-test", now=200,
+        )
