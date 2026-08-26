@@ -2678,6 +2678,41 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   rollover и refund, не меняя уже записанные product/payment snapshots.
 - **Связано:** PH5-03, OPD-13/32, DL-025–027, PH6-03/04/08.
 
+## DL-054 — Manual-payment external_reference uniqueness scope and retention after cancellation
+
+- **Дата:** 2026-08-27.
+- **Вопрос:** независимый review PH5-09/10 (`af1effe`) обнаружил, что
+  `mgboost_manual_payment_records.external_reference` сделан permanently
+  UNIQUE, включая CANCELLED записи, и что ни один существующий DL явно не
+  фиксировал (a) должен ли CANCELLED освобождать reference для повторного
+  использования и (b) в каком scope должна действовать эта уникальность.
+- **Варианты (retention):** CANCELLED освобождает reference; CANCELLED
+  резервирует reference навсегда.
+- **Варианты (scope):** глобально по всем manual payment methods; per
+  payment_method/provider namespace; per отдельная провайдерская identity
+  (например конкретный банк/SBP), которой в модели сейчас не существует.
+- **Выбрано пользователем:** external_reference — исторический идентификатор
+  денежного факта; после CANCELLED старый reference остаётся зарезервированным
+  навсегда (запись не воскрешается под тем же transfer id). Пока запись
+  находится в PENDING, ошибочно введённый reference исправляется в той же
+  записи через существующий audited edit flow (DL-039), а не
+  cancel+recreate. Проверка существующей модели подтвердила: единственный
+  установленный precedent уникальности внешней ссылки — `UNIQUE(payment_channel,
+  external_reference)` (`account_schema.py`/`provenance_schema.py`); внутри
+  этого модуля `payment_channel` всегда `EXTERNAL_PAYMENT`, поэтому текущий
+  table-wide `UNIQUE(external_reference)` эквивалентен этому precedent, а не
+  расширяет его. `payment_method` — свободный текст без фиксированного
+  provider-словаря (DL-030 не определяет provider identity), поэтому
+  scoping по нему был бы ненадёжен (регистр/опечатки молча сузили бы
+  anti-replay защиту) и никакой существующей provider-модели для этого нет.
+  Текущий `UNIQUE(external_reference)` подтверждён корректным, без
+  изменений кода.
+- **Кто:** пользователь.
+- **Почему:** сохранить воспроизводимость денежного факта и не изобретать
+  несуществующую provider-модель ради scoping, который ничего не отличал бы
+  внутри одного payment_channel.
+- **Связано:** DL-029/030/039, PH5-09/10.
+
 # Contradictions and migration hazards
 
 1. Current production Stars 199/349 совпадает по цене с будущим WL, но schema не содержит plan/WL/device semantics; старые invoices нельзя молча переинтерпретировать.
