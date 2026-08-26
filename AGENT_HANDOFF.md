@@ -1,4 +1,64 @@
-# AGENT_HANDOFF — F1 orphan-lock corrective fix + PH6-04 shared parent WL pool both production-deployed; PH5-03 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH5-03 versioned WL package catalog production-deployed; PH5-04 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-27. **This top section supersedes everything below.**
+
+## PH5-03 — `[x]`, production-deployed, catalog/accounting foundation only
+
+Owner closed the only missing package-bucket policy in **DL-053**: after
+current-period base quota, package consumption is FIFO by immutable
+`granted_at ASC, bucket_id ASC`; equal timestamps use the stable numeric
+bucket id. Period rollover and freeze/resume never alter that key. The
+implementation (`src/wl_package_schema.py`, `src/wl_package_catalog.py`,
+`src/wl_packages.py`) reuses PH5-01's existing channel catalog versions
+(`STARS-2026-08-26-v1` / `RUB-2026-08-23-v1`), PH3-09 immutable payment and
+mutation records, and **only** PH6-03's canonical parent-attributed samples
+on the exact WL nodes. It introduces no second usage/accounting path and no
+mutable consumed counter: `package_state()` derives each period's excess as
+`max(0, canonical_usage - base_quota)`, then allocates it FIFO across
+ACTIVE buckets. The real plan query requires current `ACTIVE`, unexpired,
+`wl_mode='LIMITED'`; Base and a hypothetical `FORCE_ENABLED` override are
+not eligible. Lapse/expiry/non-WL is a frozen read state, not a deletion;
+return to a real WL plan resumes the exact same bucket order/remainder.
+
+Additive schema migration `ph5_03_wl_package_catalog_v1` checksum-gates
+PH5-01/PH3-09/PH6-03 and adds immutable package products/prices, durable
+parent-owned grant snapshots and immutable refund evidence. Grant records
+snapshot SKU/product/catalog/price/bytes and link the exact existing payment
+and entitlement mutation. Payment/grant idempotency is durable, one payment
+cannot produce two buckets, and a stale callback on an ineligible account
+fails closed. Refund calculates the selected bucket's derived consumption in
+the same `BEGIN IMMEDIATE` transaction; only zero succeeds, appends the
+refund/revoke mutation/evidence, and terminally changes the bucket
+`ACTIVE -> REVOKED`. Partial/proportional refund is absent.
+
+**Tests:** new `tests/test_wl_packages.py` covers all 4 SKU × 2 channels,
+snapshots/immutability, Base plus FORCE override rejection, base-first/FIFO
+across two buckets, zero/partial refund, rollover, expiry/non-WL freeze,
+renewal resume, period reset, stale callback, duplicate grant/restart-style
+replay and concurrent refund. Full regression, including browser suites in
+five complete file groups because the runner has a 30s turn limit:
+**`1147 passed, 0 skipped`**.
+
+**Production deploy (2026-08-27):** fresh encrypted backup create/restore
+PASS; fast-forward `d5e94ad` -> `72c94ba`, only `mgboost-panel` restarted.
+Pre/post `quick_check=ok`, 0 FK violations; accounts=18, subscriptions=18,
+`mgboost_wl_periods`=0 unchanged. Explicit dormant seed created 4 package
+products + 8 channel prices; immediate re-run created 0. Package
+grants/refunds are both 0. All four services active; unauthenticated
+`/admin/accounts` stays 401 and bogus legacy `/sub` stays 404. No package
+sale route, Stars worker wiring, admin UI, scheduler, entitlement sync,
+enforcement, config/inbound/UUID/expiry change was made. Production retains
+its known untracked `extra_configs.json` drift, untouched.
+
+## Exact next step
+
+**PH5-04 — Deterministic entitlement engine is unblocked** by completed
+PH5-01/02/03. It may consume the new package state but must not start Stars
+sales (PH5-05), enforcement (PH6-05+), Wave B admin controls or PH4-06.
+
+---
+
+# PRIOR HANDOFF — F1 orphan-lock corrective fix + PH6-04 shared parent WL pool both production-deployed; PH5-03 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-27 (continuation of this same session, after the F1
 corrective slice below closed). **This top section supersedes everything

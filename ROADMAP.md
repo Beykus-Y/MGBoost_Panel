@@ -966,7 +966,7 @@ PH5-03 despite its `Depends` line not naming it explicitly. No further PH5
 slice was judged safely startable this session without either skipping this
 dependency or starting Phase 6, both explicitly out of scope.
 
-## [~] PH5-03 — Versioned WL package catalog
+## [x] PH5-03 — Versioned WL package catalog
 
 **Depends:** PH5-01/02 and entitlement ledger. **Fixed policy:** OPD-02/03/04/12/13/32 and DL-025–027 — rollover/freeze, Base rejection, base-first consumption and unused-only refund. **Approved Stars:** +50/79, +100/149, +250/349, +500/599. **Approved RUB v1:** +50/139, +100/249, +250/579, +500/999. Purchase/use only on WL-enabled plans.
 **Accept:** invoice snapshot, eligibility, rollover bucket, adjustment/audit durable; period reset не удаляет remainder; expiry/Base transition freezes bucket; unused-only refund atomically revokes it.
@@ -980,7 +980,7 @@ exists. No longer blocked by missing Phase 6 infrastructure; still needs its
 own fresh scoping session (package purchase/refund/rollover ledger design,
 package logic is explicitly out of PH6-04's own scope).
 
-**Implemented, pending production deployment (2026-08-27):** additive
+**Implemented and production-deployed (2026-08-27):** additive
 `ph5_03_wl_package_catalog_v1` reuses PH5-01's immutable channel catalog
 versions and PH3-09 payment/mutation provenance. It adds immutable versioned
 package products/prices and parent-account package grants/refund evidence;
@@ -990,6 +990,13 @@ base quota first, then allocates excess to active package buckets by DL-053
 FIFO. Expiry/lapse/Base reads as frozen; no bucket order or remainder is
 rewritten. A zero-derived-consumption refund appends durable evidence and
 atomically changes the bucket only from `ACTIVE` to `REVOKED`.
+Production gate: encrypted backup create/restore PASS; pre/post
+`quick_check=ok`, 0 FK violations, accounts/subscriptions/periods unchanged
+at 18/18/0. Explicit dormant catalog seed created exactly 4 products and 8
+prices, then re-run created 0; grants/refunds remain 0. Only `mgboost-panel`
+restarted; all four services active, unauthenticated admin remains `401` and
+legacy bogus `/sub` remains `404`. No route/UI/worker invokes grant/refund,
+and no enforcement/config/inbound/UUID/expiry behavior changed.
 
 ## [ ] PH5-04 — Deterministic entitlement engine
 
