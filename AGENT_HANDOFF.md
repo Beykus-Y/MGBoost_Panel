@@ -1,4 +1,81 @@
-# AGENT_HANDOFF — PH4-05 mass cohort LIVE / PH4-03 mass migration IN PROGRESS
+# AGENT_HANDOFF — PH4-03 CLOSED (mass migration complete) / PH4-05 LIVE campaign / PH4-06 not started
+
+Updated: 2026-08-26 (later still, same day). **PH4-03 is now CLOSED `[x]`:
+mass migration is complete.** All 17 real ACTIVE parent accounts (covering
+all 19 real ACTIVE legacy Marzban usernames) are technically migrated
+(genesis child `ACTIVE` + `mgboost_legacy_bridge_bindings.enabled=1`).
+PH4-05's grace campaign keeps running unchanged (`cohort_start_at=
+1787742505`, ends 2026-09-09 14:08:25 MSK). PH4-06 (real revoke) was NOT
+touched and remains its own separate, unstarted, gated phase.
+
+## Exact state right now
+
+- 17/17 real ACTIVE parent accounts have `mgboost_legacy_bridge_bindings.
+  enabled=1` and an `ACTIVE` genesis child intent.
+- `mgboost_migration_bindings`: `MIGRATED=9`, `MIGRATING=0`,
+  `ERROR_RECONCILE=0` -- unchanged for accounts 1/3/4's own real customer
+  devices. The other 14 accounts' real customer devices have NOT been
+  simulated/forced -- they will get their own real `MIGRATED` binding
+  organically the next time each customer's own client hits the unchanged
+  legacy `/sub/{token}` URL, exactly as designed. **Do not read `active_
+  devices=1` for these 14 in the daily report as "1 real device migrated"
+  -- that 1 is the synthetic genesis-child placeholder on slot 1 (never a
+  real customer device, has no `mgboost_migration_bindings` row), the
+  exact same pattern accounts 1/3/4 used.**
+- Owner device-policy/ownership decisions applied for the 4 previously-
+  flagged accounts: account 8 (`client_buy_1`) Telegram owner is now
+  `2105984481` (`ADMIN_REBIND` provenance, `1130407008` remains a
+  legitimate non-owner VPN user, both historical `tg_users` rows intact);
+  device limits D8 (account 8), D6 (account 10/`German`, via the new
+  `acknowledge_observed_overage=True`), device-limit-exempt (account 11/
+  `Pensioner`, the owner's parents, via the new generic `UNLIMITED`-for-
+  `DIRECT` path), D4 (account 13/`client_buy_7`).
+- Telegram-`BOUND`: 4 accounts (1, 3, 4 pre-existing + 8 newly resolved).
+  13 accounts still `UNREGISTERED` -- this is expected and NOT a blocker;
+  it's PH4-05's own ongoing campaign metric.
+- Zero Telegram messages were sent this session either (still just the
+  finalized draft in `docs/PHASE4_GRACE_PERIOD_COMMS_DRAFT.md`).
+
+## New code this session (all tested, all deployed)
+
+- `src/legacy_grace_migration.py::migrate_bootstrapped_account()` -- the
+  reusable genesis-child+bridge-enable batch primitive. Safe to re-run per
+  account (idempotent); fails closed (`PrerequisiteMissing`) if an account
+  has no entitlement yet.
+- `src/legacy_grace_registration.py::resolve_ambiguous_telegram_ownership()`
+  -- the one deliberate, capability-gated, audited exception to "ambiguous
+  ownership is never auto-resolved." Use ONLY with the owner's own explicit
+  per-account decision, never inferred.
+- `src/legacy_paid_compat.py`: `device_limit_exempt=True` (generic
+  DIRECT-account device-limit exemption, reuses `UNLIMITED` plan mode) and
+  `acknowledge_observed_overage=True` (explicit admin acknowledgment that a
+  reviewed limit is correct despite the frozen raw observed-device count
+  being higher -- never edits that raw evidence).
+- `src/device_slots.py`: `PAID_BASELINE_LIMITS` now `{3,4,6,8,12}`;
+  `UNLIMITED` mode allowed for a `DIRECT` account, but ONLY ever via a
+  capability-gated plan_version an admin explicitly created (see
+  `test_direct_plan_unlimited_is_allowed_only_via_a_reviewed_plan_and_uses_
+  technical_cap` for the exact contract).
+
+## Exact next step / ongoing operations
+
+1. **Daily during the grace window** (until 2026-09-09 14:08:25 MSK): run
+   `scripts/ph4_05_daily_cohort_report.py --db <COPY> --cohort-ref
+   PH4-05-MASS-COHORT-2026-08-26 --catchup-bind` and personally follow up
+   with `CONTACT_USER`/`MANUAL_REVIEW` rows. The owner publishes/maintains
+   the informational post through their own channel.
+2. **PH4-06 is the next distinct future phase**, not started, not
+   scoped this session -- it requires its own explicit owner authorization
+   and must show (per the owner's own stated safety bar): who is really
+   migrated with real customer usage, who is still on legacy, who is
+   unresolved, before any revoke.
+3. If quota runs out: this file plus `git log`/`ROADMAP.md`/`CHANGELOG.md`
+   is sufficient for a fresh session to resume exactly from "PH4-03 closed,
+   PH4-05 campaign ongoing, watch the daily report, PH4-06 not started."
+
+---
+
+# PRIOR HANDOFF (this session, PH4-05 mass cohort launch): still accurate history
 
 Updated: 2026-08-26 (later still, same day). **PH4-05 is CLOSED `[x]` --
 a real 17-account grace cohort is running in production, covering all 19
