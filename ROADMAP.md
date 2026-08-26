@@ -1040,19 +1040,29 @@ top-level customer navigation to `System / Technical / Marzban Raw Users`;
 Tickets/Nodes/Extra configs/Stars/Settings remain reachable and responsive.
 
 **Evidence:** focused account/read-route/frontend/security regression
-`24 passed, 1 skipped`; full project regression `1020 passed, 3 skipped`.
+`24 passed, 1 skipped` before the temporary browser runtime was installed;
+the real headless-Chromium CSP/XSS/Technical-visibility/480px-responsive gate
+then passed, and the final full project regression with all browser suites is
+`1023 passed` (zero skips).
 Fresh production DB-copy compatibility gate assembled and JSON-serialized all
 18 accounts/details, reported active grace, `quick_check=ok`, 0 FK failures
 and unchanged account cardinality. Fresh read-only cohort report: 17 members,
 actions `OK_MIGRATED=8`/`WAITING_FOR_REGISTRATION=9`, Telegram
 `BOUND=4`/`UNREGISTERED=13`, active slots 27, real migrated lineages 15.
 
+**Production deployed:** encrypted backup create/restore PASS; production
+fast-forwarded `8b73843` -> `e5e2e21`, only `mgboost-panel` restarted. All four
+services active; new page/modules/CSS return `200` with correct MIME; new API
+routes return `401` without a session; `quick_check=ok`, 0 FK failures,
+accounts/grace rows unchanged at 18/17, `LEGACY_REVOKED=0`. The first localhost
+curl landed in the short restart window (`connection refused`); the immediate
+repeat and every later public/localhost gate passed after the listener was up.
+
 **Remaining before Wave A `[x]`:** finish splitting the legacy monolithic
-screen code out of `admin.js` into per-domain ES modules, run the real browser
-visual/responsive/CSP gate (local Chromium is currently unavailable), then
-complete the production deploy/canary and equivalent-functionality review of
-the preserved legacy screens. This is a complete deployable slice, not a
-claim that all of Wave A is finished.
+screen code out of `admin.js` into per-domain ES modules, then perform an
+authenticated production account/detail/Migration walkthrough and equivalent-
+functionality review of the preserved legacy screens. This is a completed,
+production-deployed slice, not a claim that all of Wave A is finished.
 
 # Phase 8 — Hardening and scale
 

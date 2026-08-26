@@ -1,4 +1,4 @@
-# AGENT_HANDOFF — Wave A account-centric admin slice implemented/tested locally / production gate next / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — Wave A account-centric admin slice production-deployed / modularization continues / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-26. **This top section supersedes the older design-only
 handoff below.**
@@ -21,20 +21,24 @@ handoff below.**
   Vanilla-JS modularization started with `frontend/assets/admin/core.js` and
   `admin/accounts.js`; the remaining monolithic legacy screen code is the main
   unfinished Wave A item (`ROADMAP.md` `PH7-12 [~]`).
-- Safety/evidence: focused `24 passed, 1 skipped`; full regression
-  `1020 passed, 3 skipped`. Fresh production DB-copy gate assembled all 18
+- Safety/evidence: focused synthetic tests passed; a real headless-Chromium
+  CSP/XSS/Technical-visibility/480px responsive gate passed; final full
+  regression with all browser suites is `1023 passed` (zero skips). Fresh
+  production DB-copy gate assembled all 18
   account details and dashboard JSON with `quick_check=ok`, 0 FK failures and
   unchanged account count. No schema or migration is added by Wave A.
 - Fresh read-only production cohort report (same day): 17 members;
   `OK_MIGRATED=8`, `WAITING_FOR_REGISTRATION=9`; Telegram `BOUND=4`,
   `UNREGISTERED=13`; active slots 27; real migrated device lineages 15.
   These counts change organically and must be refreshed before future use.
-- Production deploy has not happened at the moment this section is written.
-  Next safe step: commit/push, fast-forward production, restart only
-  `mgboost-panel`, then admin login/Accounts/detail/Migration/Dashboard plus
-  legacy Users/Tickets/Nodes/configs smoke and DB/service invariants. Local
-  Chromium is unavailable, so the real browser visual/responsive/CSP gate is
-  still explicitly pending rather than silently claimed.
+- Production deployed to `e5e2e21` after encrypted backup create/restore PASS;
+  only `mgboost-panel` restarted. All four services active, static ES modules
+  and CSS load publicly with correct MIME, new API routes deny unauthenticated
+  requests, `quick_check=ok`, 0 FK violations, accounts/grace 18/17 and
+  `LEGACY_REVOKED=0`. The first curl hit the short restart window; immediate
+  repeat passed once port 8001 was listening. Remaining safe work: split the
+  legacy monolith into per-domain modules and perform the authenticated
+  production Accounts/detail/Migration + preserved legacy screens walkthrough.
 
 ## Unchanged hard boundaries
 

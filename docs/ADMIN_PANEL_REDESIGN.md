@@ -1,7 +1,8 @@
 # ADMIN_PANEL_REDESIGN — account-centric admin panel: audit + owner-approved plan
 
 Status: **approved design plus active Wave A implementation record.** The first
-account-centric read-only UI/API slice is implemented locally; `ROADMAP.md`
+account-centric read-only UI/API slice is implemented and production-deployed;
+`ROADMAP.md`
 `PH7-12` tracks its evidence and remaining work. This document remains the
 canonical UX/architecture contract for redesigning the MGBoost admin panel
 around `mgboost_account` instead of raw Marzban users.
@@ -491,5 +492,7 @@ ADMIN-UX-03, Dashboard follows ADMIN-UX-04, and the UI explicitly distinguishes
 parent readiness/active slots from real migration lineages.
 
 This is not full Wave A closure: legacy screen code still needs to be split
-into per-domain ES modules and the browser/production rollout gates remain.
+into per-domain ES modules and an authenticated production walkthrough of the
+new/legacy screens remains. The browser CSP/XSS/Technical-visibility/480px
+responsive gate and the production rollout/invariant gates have passed.
 Canonical progress/evidence lives in `ROADMAP.md` `PH7-12`.
