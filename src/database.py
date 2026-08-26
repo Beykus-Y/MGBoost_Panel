@@ -40,6 +40,8 @@ from .internal_entitlement_schema import apply_internal_entitlement_schema
 from .internal_entitlements import InternalEntitlementStore
 from .plan_catalog_schema import apply_plan_catalog_schema
 from .plan_catalog import PlanCatalogStore
+from .wl_period_lifecycle_schema import apply_wl_period_lifecycle_schema
+from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
 from .provenance_schema import apply_provenance_schema
 from .migration_lifecycle_schema import apply_migration_lifecycle_schema
@@ -121,6 +123,9 @@ class Database:
             self._conn, self._lock, self.primary_admin_authority
         )
         self.plan_catalog = PlanCatalogStore(self._conn, self._lock, self.accounts)
+        self.subscription_renewal = SubscriptionRenewalStore(
+            self._conn, self._lock, self.accounts, self.plan_catalog
+        )
         self.provenance = ProvenanceStore(self._conn, self._lock)
         self.child_provisioning = ChildProvisioningStore(self._conn, self._lock)
         self.child_workflow = ChildWorkflowStore(self._conn, self._lock)
@@ -390,6 +395,7 @@ class Database:
         apply_device_slot_schema(self._conn)
         apply_internal_entitlement_schema(self._conn)
         apply_plan_catalog_schema(self._conn)
+        apply_wl_period_lifecycle_schema(self._conn)
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
         apply_child_workflow_schema(self._conn)
