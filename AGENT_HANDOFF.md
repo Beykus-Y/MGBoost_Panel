@@ -1,4 +1,104 @@
-# AGENT_HANDOFF — PH4-03 CLOSED (mass migration complete) / PH4-05 LIVE campaign / PH4-06 not started
+# AGENT_HANDOFF — admin panel redesign approved (design-only), Wave A next / PH4-05 grace campaign still live / PH4-06 not started
+
+Updated: 2026-08-26 (later still, same day; read-only design/audit session,
+next agent is expected to be Codex). **This is the current top-of-file
+handoff — read this section first.**
+
+## Exact current state (verify against `git log`/`ROADMAP.md` before acting)
+
+- Local/origin HEAD at the end of this session: `8b73843` (unchanged by this
+  session — this was a **docs-only** session: `docs/ADMIN_PANEL_REDESIGN.md`
+  added, `ROADMAP.md`/`CHANGELOG.md`/this file updated, then committed).
+  Confirm the actual current HEAD with `git rev-parse HEAD` before trusting
+  this number — a doc commit was made after this paragraph was written; see
+  `git log -3 --oneline` for the exact commit.
+- Production: `ssh root@178.250.186.127`, project at
+  `/opt/MGBoost_Panel`. **This session made no production changes** — no
+  deploy, no restart, no mutation. A docs-only commit does not require a
+  production deploy.
+- PH4-03: `[x]` closed. PH4-05: `[x]` closed, grace campaign live
+  (`cohort_ref='PH4-05-MASS-COHORT-2026-08-26'`, `started_at`=2026-08-26
+  14:08:25 MSK, `current_end_at`=2026-09-09 14:08:25 MSK). PH4-06: **NOT
+  STARTED**, not scoped, gated on its own explicit owner authorization.
+- 17/17 real ACTIVE parent accounts are technically parent-ready
+  (genesis child `ACTIVE` + legacy bridge `enabled=1`), covering all 19 real
+  ACTIVE legacy Marzban usernames. Telegram `BOUND`: 4. `WAITING_FOR_
+  REGISTRATION`: 13. `MANUAL_REVIEW`: 0. **17/17 parent-ready is NOT the same
+  as 17/17 real customer devices migrated** — see
+  `docs/ADMIN_PANEL_REDESIGN.md` §5 for the exact nuance (genesis
+  placeholder vs. real per-device migration lineage, which appears
+  organically on next client reconnect). Re-verify these counts against a
+  fresh run of `scripts/ph4_05_daily_cohort_report.py` before relying on
+  them — they change daily during the grace window.
+
+## What this session did (design-only, no implementation)
+
+A read-only audit of the current admin frontend (`frontend/index.html`/
+`assets/admin.js`) and backend (`src/routes/admin*.py`) found it is still
+100% Marzban-username-centric with **zero UI** for the parent-account/
+migration/grace/opaque-credential/device-slot domain that has been fully
+implemented and live since PH2–PH4. Full findings, target navigation,
+read-model plan and implementation waves are now the canonical document
+**`docs/ADMIN_PANEL_REDESIGN.md`** — read it before doing anything admin-UI
+related. Five owner decisions from this session are recorded as `ROADMAP.md`
+Decision Log `DL-048`..`DL-052`:
+
+- **DL-048**: internal technical identifiers (raw `mgc_*` child id,
+  generation id, outbox id, full UUID/HWID) hidden by default, shown only
+  under `Account → Technical`.
+- **DL-049**: PH7-05 Wave B ships four distinct operations — Disable/Enable
+  (reversible), Revoke (terminal), Free (separate step after Revoke),
+  Rebind (compromise/replacement, strictest confirm) — never one generic
+  "delete device" button.
+- **DL-050**: legacy Marzban-username `Users` screen moves immediately under
+  `System/Technical` (not deleted); `Accounts` becomes the primary
+  top-level customer-facing surface.
+- **DL-051**: Dashboard priority is Grace campaign (conditional block,
+  collapses after grace ends) → operational health → expiring soon; Tickets
+  stays a compact counter, not an analytics block.
+- **DL-052**: frontend stays vanilla JS, split into ES modules
+  (`frontend/assets/admin/core.js` + per-domain modules) — no
+  React/Vue/Svelte rewrite.
+
+`ROADMAP.md` Phase 7 (`PH7-01`..`PH7-11`) statuses are **unchanged**
+(`[ ]`) — this session only documented the design, it did not start
+implementation and must not be read as having closed or partially closed
+any PH7 item.
+
+## NEXT AGENT: start Wave A of the account-centric admin redesign
+
+Read `docs/ADMIN_PANEL_REDESIGN.md` in full first (target navigation,
+existing reusable backend read-models like
+`legacy_grace_observability.account_grace_snapshot()`/`classify_action()`,
+the five DL-048..052 decisions, and the exact Wave A scope in §6) before
+writing any code.
+
+Wave A scope (read-only except the already-existing, already-safe opaque
+credential issue/reissue flow): modularize `admin.js` into ES modules;
+new top-level navigation; `Accounts` list (`AccountSummary` read-model,
+new); `Account` detail page (Overview/Subscription/Devices/Telegram-
+Ownership/Migration-Grace tabs); standalone Migration/Grace dashboard
+wrapping the existing `legacy_grace_observability` module (do not re-derive
+its classification logic); new Dashboard home per DL-051; move legacy
+`Users` under `System/Technical` per DL-050; re-integrate existing Tickets/
+Nodes/Extra configs/System screens without functional loss; responsive
+layout.
+
+**Explicit boundaries — do NOT do these:**
+
+- Do **NOT** start PH4-06 (no real legacy credential revoke).
+- Do **NOT** revoke the shared legacy credential for any account.
+- Do **NOT** wait for the PH4-05 grace period to finish before starting
+  Wave A — admin redesign work proceeds in parallel with the grace
+  campaign, they are independent workstreams.
+- Do not re-litigate DL-048..052 — they are owner-approved; only the owner
+  can revise them.
+- Do not build Wave C/D (PH5/PH6-backed) capabilities against invented
+  catalog/tariff/WL data — those phases do not exist yet.
+
+---
+
+# PRIOR HANDOFF (still accurate history) — PH4-03 CLOSED (mass migration complete) / PH4-05 LIVE campaign / PH4-06 not started
 
 Updated: 2026-08-26 (later still, same day). **PH4-03 is now CLOSED `[x]`:
 mass migration is complete.** All 17 real ACTIVE parent accounts (covering

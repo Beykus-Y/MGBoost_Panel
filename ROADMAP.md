@@ -997,6 +997,24 @@ user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 **Scope:** manual create/link, renew, plan, package, expiry, refund/correction and failed/denied attempts.
 **Accept/tests:** every mutation/reconciliation emits correlated append-only events; raw security credentials excluded; audit editable only through compensating event, never reseller API.
 
+## Admin panel redesign — owner-approved architecture/UX decisions (design-only, PH7 statuses unchanged)
+
+A read-only audit (2026-08-26, HEAD `8b73843`) of the current admin
+frontend/backend found it is still entirely Marzban-username-centric with
+zero UI for the parent-account/migration/grace/opaque-credential/device-slot
+domain, even though that backend is fully implemented and live. The full
+audit findings, target navigation, read-model plan and implementation waves
+are recorded in `docs/ADMIN_PANEL_REDESIGN.md`. Five owner decisions from
+that session are recorded as `DL-048`..`DL-052` (technical-identifier depth,
+PH7-05 Wave B mutation granularity, legacy Users cutover, Dashboard
+priority, frontend technology direction). **This subsection and
+`docs/ADMIN_PANEL_REDESIGN.md` are design/architecture only — no PH7-01..11
+status above changes to `[~]`/`[x]`, and no implementation has started.**
+The approved implementation order is Wave A (foundation + current-state
+read-only UI, can start immediately) → Wave B (PH7-01/05/08 safe mutations)
+→ Wave C (PH5-backed) → Wave D (PH6-backed); see
+`docs/ADMIN_PANEL_REDESIGN.md` §6 for exact scope per wave.
+
 # Phase 8 — Hardening and scale
 
 ## [ ] PH8-01 — Production-safe bounded HTTP concurrency — P2
@@ -1813,6 +1831,56 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Кто:** пользователь (ограничение по срокам), реализация — исполнитель.
 - **Почему:** нужен реальный прогресс к PH3-04 без ожидания multi-day soak, но без ослабления security bar — только exact-evidence allowlist, никакого fuzzy match, никакого "unknown значит поддерживается".
 - **Связано:** PH3-04/07, `src/compat_registry.py`, `src/hwid_gate.py`, `docs/PHASE3_HWID_GATE.md`.
+
+## DL-048 — Admin panel technical-identifier depth
+
+- **Дата:** 2026-08-26.
+- **Вопрос:** насколько глубоко внутренние technical identifiers (raw `mgc_*` child id, child intent id, generation id, outbox id, UUID, full/internal HWID) должны быть видны в новой account-centric admin panel по умолчанию.
+- **Варианты:** (a) только под отдельной вкладкой Technical; (b) показывать частично прямо в Devices; (c) полный технический режим по умолчанию, как сейчас.
+- **Выбрано:** (a). Все внутренние technical identifiers скрыты по умолчанию и доступны только на вкладке `Account → Technical`. Обычные `Overview`/`Devices` показывают только operational concepts (`Slot 2`, `ACTIVE`, `REVOKED`, `MIGRATED`, `Child ACTIVE`, `desired/observed`). Masked HWID/UUID разрешены вне Technical там, где реально полезны для troubleshooting; полная/raw identity — только Technical. Будущий global Developer/Advanced mode возможен, но не входит в initial rollout.
+- **Кто:** пользователь.
+- **Почему:** текущий backend полностью account-centric, но UI не должен заставлять обычного администратора думать в терминах internal implementation id ради ежедневной операционной работы.
+- **Связано:** PH7-05/08, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-01).
+
+## DL-049 — PH7-05 Wave B device mutation granularity
+
+- **Дата:** 2026-08-26.
+- **Вопрос:** какие device-mutation операции (Disable/Enable, Revoke/Free, Rebind) должны появиться в первой волне мутаций новой admin panel (Wave B), и как их группировать в UI.
+- **Варианты:** (a) все три группы сразу, как четыре различимые операции; (b) только Disable/Enable в Wave B, Revoke/Free/Rebind отложить; (c) одна универсальная "Delete device" операция вместо отдельных.
+- **Выбрано:** (a). Wave B включает все три группы как **четыре отдельные** операции: Disable/Enable (обратимая пауза, без обязательного reason), Revoke (terminal revoke текущей credential generation, старый UUID/credential никогда не воскресает), Free (отдельная последующая операция, освобождает slot после Revoke), Rebind (compromise/replacement flow: старая generation terminal revoked, создаётся новая generation, повышенный риск). Revoke/Free/Rebind обязательно требуют preview, reason, explicit confirmation и immutable/auditable event; confirmation для Rebind — самый жёсткий из всех. Не объединять в одну абстрактную кнопку Delete.
+- **Кто:** пользователь.
+- **Почему:** разные операции имеют разную обратимость и разный blast radius; единая кнопка скрывает от администратора реальные последствия действия.
+- **Связано:** PH7-05, `src/device_slots.py`, `src/ownership_rebind.py`, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-02).
+
+## DL-050 — Legacy Marzban-username Users screen cutover
+
+- **Дата:** 2026-08-26.
+- **Вопрос:** как поступить с текущим top-level Marzban-username-centric экраном Users при вводе новой account-centric навигации.
+- **Варианты:** (a) держать рядом с новым Accounts до полного покрытия функционала, затем убрать; (b) сразу убрать с top-level навигации в System/Technical, не удаляя функционал; (c) удалить совсем.
+- **Выбрано:** (b). Legacy Users сразу перемещается под `System / Technical → Marzban → Raw Users` (точное имя может быть адаптировано), не остаётся на top-level рядом с Accounts. Ничего не удаляется — это compatibility/debug escape hatch до тех пор, пока Accounts не доказанно покрывает эквивалентный функционал. `Accounts` становится primary top-level поверхностью для работы с клиентом; прямая работа с внутренностями Marzban — через System/Technical.
+- **Кто:** пользователь.
+- **Почему:** параллельное сосуществование двух "списков пользователей" на top-level вводит администратора в заблуждение о том, какая модель актуальна; разделение по смыслу действия ("работа с клиентом" vs "работа с Marzban напрямую") понятнее, чем сосуществование.
+- **Связано:** PH7-05/09, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-03).
+
+## DL-051 — Admin Dashboard widget priority during and after PH4 grace
+
+- **Дата:** 2026-08-26.
+- **Вопрос:** какие агрегаты приоритетны на главном Dashboard новой admin panel, учитывая, что PH4-05 grace campaign сейчас активна.
+- **Варианты:** (a) приоритет grace campaign, затем operational health, затем expiring soon, tickets компактно; (b) равнозначные виджеты без явного приоритета; (c) большой support/tickets analytics блок.
+- **Выбрано:** (a), в порядке: 1) Grace campaign progress (Day N/14, Telegram BOUND/WAITING, real devices observed vs. child-backed vs. still legacy, reconcile/compatibility blockers) — построен как условный блок, который естественно исчезает/сворачивается после завершения grace, Dashboard не должен архитектурно зависеть от миграционной кампании; явно не показывать вводящий в заблуждение "17/17 MIGRATED", если речь о parent/genesis readiness, а не о реальных customer-устройствах (см. `docs/ADMIN_PANEL_REDESIGN.md` §5). 2) Operational health (MGBoost/broker/Marzban/child worker/nodes/resolver errors/`ERROR_RECONCILE`/compatibility) — компактно при отсутствии проблем, визуально приоритизируется при наличии. 3) Expiring soon (today/≤3/≤7/≤30 дней). Tickets — компактный счётчик `N open / N unanswered` со ссылкой на экран, без большого analytics-блока.
+- **Кто:** пользователь.
+- **Почему:** во время активной grace-кампании это самая operationally значимая информация; после её окончания освободившееся место естественно займут billing/WL/operational alerts (Wave C/D), без переделки layout.
+- **Связано:** PH4-05/06, PH7, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-04).
+
+## DL-052 — Admin frontend technology direction (no framework rewrite)
+
+- **Дата:** 2026-08-26.
+- **Вопрос:** остаться ли на текущем vanilla JS approach для новой admin panel, или перейти на SPA-framework (React/Vue/Svelte).
+- **Варианты:** (a) vanilla JS, модуляризовать текущий монолитный `admin.js` на ES modules; (b) server-rendered/Jinja + JS; (c) SPA framework с build chain.
+- **Выбрано:** (a). Текущий vanilla JS уже безопасен (safe rendering helpers, event delegation, отсутствие inline handlers, совместимость с текущим strict CSP без `'unsafe-inline'`/`'unsafe-eval'`) и не требует build chain. Framework добавил бы build chain, CSP-риски и deploy-сложность без реальной выгоды на масштабе одного small-team deployment. `admin.js` разбивается на ES-модули (`core.js` с общими safe primitives — `html`/`esc`, `adminFetch`, CSRF, common dialogs — плюс по модулю на домен: `accounts.js`, `devices.js`, `migration.js` и т.д.). Точная декомпозиция может быть скорректирована реализующим агентом после анализа code boundaries.
+- **Кто:** пользователь.
+- **Почему:** масштаб проекта не оправдывает SPA-framework; текущий подход уже соответствует security-требованиям проекта (PH1-01 CSP/no-inline conventions), а миграция на framework не даёт архитектурной выгоды, соразмерной cost/risk.
+- **Связано:** PH1-01, PH7, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-05).
 
 # Contradictions and migration hazards
 
