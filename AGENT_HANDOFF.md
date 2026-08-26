@@ -1,4 +1,159 @@
-# AGENT_HANDOFF — Phase 6 started: PH0-05/PH6-01/PH6-02 closed and production-deployed; PH6-03/04 not started / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH6-03 closed and production-deployed (real observe-only collection verified); PH6-04 next / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+
+Updated: 2026-08-27 (new session). **This top section supersedes everything
+below.** The owner explicitly authorized building PH6-03 (durable monotonic
+WL usage ledger/collector) end-to-end this session, gap-audit-first per the
+immediately-prior handoff's own instruction, and reusing PH0-05/PH6-01/02
+without duplicating them.
+
+## PH6-03 — Durable monotonic WL usage ledger/collector: `[x]`, production-deployed and real-verified
+
+Before writing any schema, this session read the *actual* live production
+Marzban 0.8.4 source over SSH (`docker exec marzban-marzban-1 cat
+/code/app/{jobs/record_usages.py,db/crud.py,db/models.py}`) rather than
+assuming usage semantics. Findings that shaped the whole design:
+
+- Marzban's own scheduler job reads each node's xray-core stats with
+  `reset=True` (the in-process counter is atomically zeroed on every read)
+  and *adds* the delta into a durable per-(user,node,UTC-hour)
+  `NodeUserUsage.used_traffic` row plus the user's own cumulative
+  `used_traffic` column. `GET /api/user/{username}/usage?start=&end=`
+  (`crud.get_user_usages`) is therefore always a non-negative *interval
+  sum* -- a node restart causes only bounded under-counting (missed polls
+  during the outage), never a visible decrease.
+- The one real decrease vector is an admin-triggered
+  `POST /api/user/{username}/reset` (or `next_plan` activation):
+  `crud.reset_user_data_usage` calls `dbuser.node_usages.clear()`, and
+  `User.node_usages` is `cascade="all, delete-orphan"` -- a reset
+  cascade-*deletes* every historical `NodeUserUsage` row for that user, not
+  just zeroes a counter. A query spanning through a reset can genuinely
+  report less than an already-ledgered window -- a real, documented,
+  irreducible Marzban limitation (bounded by poll interval), not a bug in
+  this ledger. Children never have `data_limit_reset_strategy` set to
+  anything but `no_reset` (`child_contract.build_child_payload` always
+  sends `data_limit=None`), so there is no *automatic* Marzban-side reset
+  vector, only the admin-triggered one.
+- Attribution needed zero new broker surface: a "child" is a currently-live
+  `mgboost_child_user_intents` row (`observed_state='ACTIVE'`); its
+  already-stored `child_username` (PH3-03) is used only transiently to
+  call the read-only usage endpoint. The existing `legacy.user.usage`
+  broker operation's `validate_username()`
+  (`[A-Za-z0-9_.@-]{1,128}`) already accepts every real `mgc_*` child
+  username, so `ServiceMarzbanClient.get_user_usage()` -- the same
+  read-only broker path every other usage caller already uses -- worked
+  unmodified.
+
+**Design** (`src/wl_usage_ledger_schema.py`, migration
+`ph6_03_wl_usage_ledger_v1`, requires the exact PH3-01/PH3-03-prerequisite/
+PH5-02 checksums, same three-parent pattern `parent_sync_schema.py`/PH3-08
+already used): `mgboost_wl_usage_cursors` (last observed cumulative total
+per child+node, mutable by design -- a decrease is the reset signal);
+`mgboost_wl_usage_samples`, a per-(child,node,UTC-hour) ledger whose
+`bytes_delta` a DB trigger refuses to ever decrease (mirrors the exact
+`mgboost_legacy_grace_periods.current_end_at` extension-only precedent --
+"never rewrites consumed" holds at the schema layer); `mgboost_wl_usage_
+sample_events`, fully immutable/append-only, `UNIQUE(child_intent_id,
+node_id, cursor_before)` -- the idempotency key: a crash-retry, a
+duplicate/racing collector, or simply "no new traffic since last poll" all
+resolve through the exact same no-op path, no double counting possible;
+`mgboost_wl_usage_collector_lease`, a single-row (`id=1`) CAS lease
+mirroring the PH3-03 `mgboost_outbox` lease shape -- any number of
+processes/hosts may race to claim it, only one wins per window.
+`src/wl_usage_ledger.py::run_collection_cycle()` reuses PH6-01's
+`require_topology_ok()` (fails closed if the WL node/tag allowlist isn't
+freshly confirmed) and PH6-02/PH5-02's `align_to_utc_hour()` instead of
+duplicating either; every WL-period boundary is exactly UTC-hour aligned so
+a sample bucket can never straddle two periods, making the nullable
+`wl_period_id` attribution unambiguous whenever a period exists (none do
+yet in production -- no purchase flow calls `apply_same_plan_purchase`
+live). Per-child/per-node Marzban read failures are isolated (counted,
+never abort the whole cycle). Plain integer decimal bytes throughout, no
+unit conversion in the ledger. No raw username/UUID/HWID/token in any
+table or in `scripts/run_wl_usage_collector.py`'s aggregate JSON output.
+Fully observe/accounting-only: never mutates Marzban, never touches
+`mgboost_wl_periods`/subscriptions/entitlements/inbounds, never disables or
+resets anyone, not wired to any scheduler -- dormant/on-demand, matching
+the PH6-01/02 "build the contract before its consumer exists" precedent.
+
+34 new focused tests (`tests/test_wl_usage_ledger_schema.py` 11,
+`tests/test_wl_usage_ledger.py` 23) covering every scenario the roadmap's
+own Tests line names: duplicate/two-collectors idempotency (a simulated
+stale-cursor race), out-of-order/clock-skew delayed samples, node reset
+detection and the never-decrease guarantee, collector-lease exclusivity/
+expiry/release, `wl_period_id` attribution, and a full `run_collection_
+cycle` (topology fail-closed, live-children-only, delta-only second cycle,
+lease contention, per-child error isolation, no username/HWID leakage into
+any table). Full regression via `/tmp/mgboost-wave-a-browser-venv`:
+**`1115 passed, 0 skipped`** (up from `1081 passed`, all browser suites
+included, zero regressions) -- note this session first had to clear
+~7000 stale `tempfile.mkdtemp()` directories that had filled the sandbox's
+`/tmp` user quota from prior sessions' test runs (owner-approved cleanup,
+unrelated to any repo/production content; this was blocking even the
+pre-existing baseline suite, confirmed by re-running with the new PH6-03
+test files deselected before touching `/tmp`).
+
+**Production deploy (2026-08-27):** fresh encrypted backup create/restore
+PASS immediately before deploy; preflight (`quick_check=ok`, 0 FK
+violations, accounts=18, grace=17, subscriptions=18, `mgboost_wl_periods`=0,
+42 child intents/31 `observed_state='ACTIVE'`); fast-forward `d11005d` ->
+`ed77b11`, `mgboost-panel` restart only (additive schema self-applies on
+`Database()` construction, zero existing table touched); post-deploy
+invariants identical, all 4 services active, unauthenticated `/admin/
+accounts`/`/admin/dashboard` still `401`, legacy `/sub` bogus-token still
+`404`. **Real production observe-only verification, not a dry run:** a
+fresh live topology assertion (`fetch_live_topology_observation` +
+`wl_topology_guard.run_assertion`, read-only) confirmed `ok=True` against
+`2026-08-26-v1`; `python3 -m scripts.run_wl_usage_collector` then ran
+twice, 5 seconds apart, against the real production DB and real broker --
+first cycle: 31 live children, 62 samples (both WL nodes x 31 children), 0
+errors, 0 resets, real observed totals node 4 (RU ONLY WL) ~64.6MB / node 7
+(Selectel) ~5.35GB across 10 children with nonzero traffic; second cycle:
+same 31 children, same 62 sample rows (no new UTC-hour bucket needed), only
+the 10 children with genuine new traffic produced new idempotent event
+rows (62->72 events), byte totals increased by exactly the real observed
+deltas, the other 52 (child,node) pairs correctly no-op'd through the
+identical duplicate-detection path crash/retry safety also relies on.
+`quick_check=ok` and 0 FK violations held after both runs; collector lease
+released (`lease_owner=NULL`, `last_run_outcome='OK'`) after each run.
+
+## Confirmed unchanged this session
+
+- Enforcement/user-visible behavior: **untouched.** PH6-06/09 do not exist;
+  nothing in this session disables, resets, throttles, or otherwise changes
+  what any real customer's device or subscription can do. No inbound/UUID/
+  config/expiry/user mutation of any kind was made -- production mutations
+  this session were exactly: the new additive schema/tables (self-applied
+  by `Database()` construction) and the new ledger rows the two real
+  collector runs wrote (cursors/samples/events/topology-assertion rows).
+- PH4-06: **NOT STARTED**, no shared legacy credential touched.
+- `mgboost_legacy_grace_periods`: unaffected, not queried this session.
+- Production HEAD: `ed77b11` (local/origin/production all match, verified
+  via `git log -1` on all three before writing this section).
+
+## Exact next step
+
+PH6-04 (default shared parent WL pool) is the next Phase 6 item in
+dependency order -- it depends on PH6-02 (closed) and PH6-03 (closed this
+session, real per-child per-WL-node byte deltas now durably ledgered).
+Before starting it: re-read `ROADMAP.md`'s PH6-04 entry in full (`sum child
+usage on two WL nodes; at quota disable all children`) -- note that
+"disable all children" is an *enforcement* action PH6-04 itself doesn't
+own; re-check whether PH6-04's own scope is genuinely just the shared-pool
+*sum* (reading `mgboost_wl_usage_samples`/`mgboost_wl_usage_cursors`
+grouped by account+period across both WL nodes) versus where the actual
+disable action belongs (PH6-06, which doesn't exist yet and explicitly
+depends on PH6-01/children, not on PH6-04 by the roadmap's own `Depends`
+line) before writing anything, per this project's consistent "don't build
+a phase's enforcement action inside an earlier phase's own task" discipline
+already seen at PH6-01/02/03's own boundaries. Do not start PH6-06/09 or
+any enforcement/disable path without a fresh explicit owner decision --
+this session's ledger is deliberately observe/accounting-only and nothing
+about that boundary should be treated as already resolved by PH6-04's own
+future work.
+
+---
+
+
 
 Updated: 2026-08-26 (new session, continuing from the immediately-prior
 handoff below, which correctly identified PH5-03 as blocked on unbuilt
