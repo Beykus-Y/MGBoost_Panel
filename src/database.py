@@ -50,6 +50,8 @@ from .wl_usage_ledger import WLUsageLedgerStore
 from .wl_package_schema import apply_wl_package_schema
 from .wl_package_catalog import WLPackageCatalogStore
 from .wl_packages import WLPackageStore
+from .stars_purchase_schema import apply_stars_purchase_schema
+from .stars_purchase import StarsPurchaseStore
 from .entitlement_engine import EntitlementEngine
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
@@ -158,6 +160,10 @@ class Database:
         self.wl_package_catalog = WLPackageCatalogStore(self._conn, self._lock)
         self.wl_packages = WLPackageStore(self._conn, self._lock, self.wl_package_catalog)
         self.entitlements = EntitlementEngine(self)
+        self.stars_purchases = StarsPurchaseStore(
+            self._conn, self._lock, self.accounts, self.plan_catalog, self.subscription_renewal
+        )
+        self.stars_purchases.bind_database(self)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -423,6 +429,7 @@ class Database:
         apply_child_workflow_schema(self._conn)
         apply_child_lifecycle_schema(self._conn)
         apply_parent_sync_schema(self._conn)
+        apply_stars_purchase_schema(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)
         apply_ownership_rebind_schema(self._conn)
@@ -1991,6 +1998,7 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM stars_invoices WHERE status IN ('paid','plan_committed') "
+                "AND (invoice_kind IS NULL OR invoice_kind='LEGACY_EXPIRE') "
                 "ORDER BY marzban_username, id"
             ).fetchall()
         return [dict(r) for r in rows]

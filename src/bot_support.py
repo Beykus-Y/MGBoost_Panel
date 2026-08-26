@@ -357,8 +357,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     def kb_tariffs(tariffs: list):
         rows = [
             [InlineKeyboardButton(
-                text=f"{t['name']} — {t['duration_days']} дн. — {t['stars_price']} ⭐️",
-                callback_data=f"stars_buy:{t['id']}",
+                text=f"{t['display_name']} — {t['duration_days']} дн. — {t['amount']} ⭐️",
+                callback_data=f"stars_buy:{t['plan_code']}:{t['duration_days']}",
             )]
             for t in tariffs
         ]
@@ -401,6 +401,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         # Payable interval is explicitly created_at <= now < expires_at.
         if int(time.time()) >= row["expires_at"]:
             await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
+            return
+        if row.get("invoice_kind") == "CANONICAL_PLAN":
+            try:
+                db.stars_purchases.validate_invoice_for_checkout(
+                    invoice_id, query.from_user.id, now=int(time.time())
+                )
+            except Exception:
+                await query.answer(ok=False, error_message="Счёт больше недействителен. Обратитесь в поддержку.")
+                return
+            await query.answer(ok=True)
             return
         # Telegram charges after this acknowledgement.  Re-read the exact
         # target user through the authenticated service boundary immediately
@@ -476,6 +486,31 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await capture_orphan_payment(
                 message, f"invoice_not_payable:{row['status']}"
             )
+            return
+
+        if row.get("invoice_kind") == "CANONICAL_PLAN":
+            try:
+                outcome = db.stars_purchases.capture_paid(
+                    invoice_id, charge_id=sp.telegram_payment_charge_id,
+                    provider_charge_id=sp.provider_payment_charge_id,
+                    payer_telegram_id=payer_telegram_id, currency=sp.currency,
+                    amount=sp.total_amount,
+                )
+            except Exception as exc:
+                logger.critical("Could not durably capture canonical Stars payment", exc_info=True)
+                raise PaymentDurabilityError("Stars payment was not durably captured") from exc
+            if outcome == "paid":
+                db.log_audit_event(
+                    "payment_successful", telegram_id=payer_telegram_id,
+                    marzban_username=row["marzban_username"],
+                    metadata={"invoice_id": invoice_id, "total_amount": sp.total_amount,
+                              "charge_id": sp.telegram_payment_charge_id, "canonical": True},
+                )
+                await message.answer("Оплата получена! Применяем подписку…")
+                if stars_trigger is not None:
+                    stars_trigger.set()
+            elif outcome == "manual_review":
+                await notify_admin_stuck_payment(message.bot, db, db.get_invoice(invoice_id))
             return
 
         mismatch_reason = None
@@ -856,7 +891,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     @dp.message(SupportStates.in_dialog, F.text == "⭐️ Продлить подписку")
     async def msg_stars_menu(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
-        if not tg_user:
+        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+        if not tg_user and not account:
             await state.set_state(SupportStates.waiting_link)
             await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
             return
@@ -865,34 +901,33 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
             return
 
-        tariffs = db.get_active_stars_tariffs()
+        tariffs = db.stars_purchases.catalog()
         if not tariffs:
             await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
             return
-
-        try:
-            admin_token = await _run_sync(marzban.get_admin_token_from_env)
-            user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
-        except Exception as e:
-            logger.error(f"Ошибка получения подписки для Stars-меню: {e}")
-            await message.answer("Не удалось получить информацию о подписке. Попробуйте позже.")
+        if not account:
+            await message.answer("Для покупки через Stars нужна подтверждённая учётная запись. Обратитесь к оператору.")
             return
-
-        ok, reason = _check_stars_eligibility(user_info)
-        if not ok:
-            if reason == "unlimited":
+        current = db._conn.execute(
+            "SELECT pv.plan_code,s.status FROM mgboost_subscriptions s JOIN mgboost_plan_versions pv "
+            "ON pv.id=s.current_plan_version_id WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
+            (account["id"],),
+        ).fetchone()
+        if current:
+            if current["status"] == "UNLIMITED":
                 await message.answer("У вас безлимитный тариф — покупка через Stars недоступна.")
-            else:
-                await message.answer("Ваша подписка приостановлена — обратитесь в поддержку.")
+                return
+            tariffs = [item for item in tariffs if item["plan_code"] == current["plan_code"]]
+        if not tariffs:
+            await message.answer("Смена тарифа оформляется через поддержку. Продление через Stars сейчас недоступно.")
             return
-
-        await message.answer("Выберите тариф:", reply_markup=kb_tariffs(tariffs))
+        await message.answer("Выберите срок продления:", reply_markup=kb_tariffs(tariffs))
 
     @dp.callback_query(F.data.startswith("stars_buy:"))
     async def cb_stars_buy(call: CallbackQuery, state: FSMContext):
         await call.answer()
         tg_user = db.get_tg_user(call.from_user.id)
-        if not tg_user:
+        if not tg_user and not db.accounts.get_active_account_by_telegram_id(call.from_user.id):
             await call.message.answer("Нужно сначала привязать подписку.")
             return
 
@@ -901,54 +936,30 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return
 
         try:
-            tariff_id = int(call.data.split(":", 1)[1])
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
         except (IndexError, ValueError):
             await call.message.answer("Неверный тариф.")
             return
-
-        tariff = db.get_stars_tariff(tariff_id)
-        if not tariff or not tariff.get("active"):
-            await call.message.answer("Тариф больше не доступен.")
-            return
-
-        username = tg_user["marzban_username"]
-
-        # Defense-in-depth re-check: a stale button tap after the account's
-        # state changed between menu render and tap (§8 step 4).
         try:
-            admin_token = await _run_sync(marzban.get_admin_token_from_env)
-            user_info = await _run_sync(marzban.get_user, username, admin_token)
-        except Exception as e:
-            logger.error(f"Ошибка проверки перед созданием счёта: {e}")
-            await call.message.answer("Не удалось создать счёт. Попробуйте позже.")
+            invoice = db.stars_purchases.create_invoice(
+                telegram_id=call.from_user.id, plan_code=plan_code, duration_days=duration_days,
+                ttl_seconds=3600,
+            )
+        except Exception as exc:
+            logger.info("Canonical Stars invoice rejected: %s", type(exc).__name__)
+            await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
             return
-
-        ok, reason = _check_stars_eligibility(user_info)
-        if not ok:
-            if reason == "unlimited":
-                await call.message.answer("У вас безлимитный тариф — покупка через Stars недоступна.")
-            else:
-                await call.message.answer("Ваша подписка приостановлена — обратитесь в поддержку.")
-            return
-
-        invoice = db.create_stars_invoice(
-            created_by_telegram_id=tg_user["telegram_id"],
-            marzban_username=username,
-            tariff_id=tariff["id"],
-            tariff_name=tariff["name"],
-            duration_days=tariff["duration_days"],
-            stars_price=tariff["stars_price"],
-        )
 
         try:
             await call.message.bot.send_invoice(
                 chat_id=call.from_user.id,
-                title=f"Продление подписки ({username})",
-                description=f"{tariff['name']} — {tariff['duration_days']} дней",
+                title="Продление подписки",
+                description=f"{invoice['tariff_name']} — {invoice['duration_days']} дней",
                 payload=str(invoice["id"]),
                 provider_token="",
                 currency="XTR",
-                prices=[LabeledPrice(label=tariff["name"], amount=tariff["stars_price"])],
+                prices=[LabeledPrice(label=invoice["tariff_name"], amount=invoice["stars_price"])],
                 # Official single-chat invoice mode: a forwarded copy gets
                 # a deep-link button, never another Pay button. This is not
                 # a gift-payment mechanism in Phase 2 MVP.

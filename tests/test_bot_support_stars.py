@@ -36,6 +36,16 @@ def _get_handler(dp_observer, name):
     raise AssertionError(f"handler {name} not registered")
 
 
+def _canonical_owner(db, telegram_id=111):
+    from src.plan_catalog import seed_plan_catalog
+    seed_plan_catalog(db.plan_catalog, now=1)
+    account = db.accounts.create_account("DIRECT", now=1)
+    db.accounts.link_telegram_owner(
+        account["id"], telegram_id, provenance="MIGRATION", actor="test", now=1,
+    )
+    return account
+
+
 @pytest.fixture
 def handlers(db):
     from aiogram import Dispatcher
@@ -624,11 +634,8 @@ def test_send_invoice_uses_unique_single_chat_start_parameter(db):
     })
     dp = Dispatcher()
     setup_support_handlers(dp, db, marzban=marzban)
-    db.save_tg_user(111, "alice")
+    _canonical_owner(db)
     db.set_setting("stars:enabled", "1")
-    tariff = db.save_stars_tariff({
-        "name": "month", "duration_days": 30, "stars_price": 320
-    })
 
     class InvoiceBot:
         def __init__(self):
@@ -647,7 +654,7 @@ def test_send_invoice_uses_unique_single_chat_start_parameter(db):
 
     class Call:
         from_user = FakeFromUser(111)
-        data = f"stars_buy:{tariff['id']}"
+        data = "stars_buy:BASIC:30"
         message = Msg()
 
         async def answer(self):
@@ -658,6 +665,7 @@ def test_send_invoice_uses_unique_single_chat_start_parameter(db):
     kwargs = invoice_bot.calls[0]
     invoice = db.list_stars_invoices()[0]
     assert kwargs["payload"] == str(invoice["id"])
+    assert invoice["invoice_kind"] == "CANONICAL_PLAN"
     assert kwargs["start_parameter"] == f"stars_invoice_{invoice['id']}"
     assert kwargs["start_parameter"]
     assert len(kwargs["start_parameter"]) <= 64
@@ -749,9 +757,8 @@ def test_stars_menu_offers_tariffs_when_eligible(db):
     dp = Dispatcher()
     marzban = FakeMarzbanForMenu({"username": "alice", "expire": int(time.time()) + 1000, "status": "active"})
     setup_support_handlers(dp, db, marzban=marzban)
-    db.save_tg_user(111, "alice")
+    _canonical_owner(db)
     db.set_setting("stars:enabled", "1")
-    db.save_stars_tariff({"name": "1 месяц", "duration_days": 30, "stars_price": 320})
 
     class FakeUser:
         id = 111
@@ -774,7 +781,7 @@ def test_stars_menu_offers_tariffs_when_eligible(db):
     asyncio.run(handler(msg, FakeState()))
     text, markup = msg.sent[0]
     assert markup is not None
-    assert "320" in markup.inline_keyboard[0][0].text
+    assert "99" in markup.inline_keyboard[0][0].text
 
 
 def test_stars_menu_blocks_unlimited_account(db):
@@ -784,9 +791,15 @@ def test_stars_menu_blocks_unlimited_account(db):
     dp = Dispatcher()
     marzban = FakeMarzbanForMenu({"username": "alice", "expire": 0, "status": "active"})
     setup_support_handlers(dp, db, marzban=marzban)
-    db.save_tg_user(111, "alice")
+    account = _canonical_owner(db)
     db.set_setting("stars:enabled", "1")
-    db.save_stars_tariff({"name": "1 месяц", "duration_days": 30, "stars_price": 320})
+    db.subscription_renewal.apply_same_plan_purchase(
+        account_id=account["id"], plan_code="BASIC", duration_days=30,
+        payment_channel="TELEGRAM_STARS", mutation_source="DIRECT_PURCHASE", actor_type="TEST",
+        idempotency_key="bot-stars-unlimited-setup", now=1,
+    )
+    db._conn.execute("UPDATE mgboost_subscriptions SET status='UNLIMITED',current_expiry=NULL WHERE account_id=?", (account["id"],))
+    db._conn.commit()
 
     class FakeUser:
         id = 111
@@ -821,9 +834,15 @@ def test_invoice_creation_callback_defense_in_depth_blocks_stale_unlimited(db):
     dp = Dispatcher()
     marzban = FakeMarzbanForMenu({"username": "alice", "expire": 0, "status": "active"})
     setup_support_handlers(dp, db, marzban=marzban)
-    db.save_tg_user(111, "alice")
+    account = _canonical_owner(db)
     db.set_setting("stars:enabled", "1")
-    tariff = db.save_stars_tariff({"name": "1 месяц", "duration_days": 30, "stars_price": 320})
+    db.subscription_renewal.apply_same_plan_purchase(
+        account_id=account["id"], plan_code="BASIC", duration_days=30,
+        payment_channel="TELEGRAM_STARS", mutation_source="DIRECT_PURCHASE", actor_type="TEST",
+        idempotency_key="bot-stars-stale-unlimited", now=1,
+    )
+    db._conn.execute("UPDATE mgboost_subscriptions SET status='UNLIMITED',current_expiry=NULL WHERE account_id=?", (account["id"],))
+    db._conn.commit()
 
     class FakeUser:
         id = 111
@@ -842,7 +861,7 @@ def test_invoice_creation_callback_defense_in_depth_blocks_stale_unlimited(db):
 
     class FakeCall:
         from_user = FakeUser()
-        data = f"stars_buy:{tariff['id']}"
+        data = "stars_buy:BASIC:30"
         message = FakeMsg()
 
         async def answer(self):
@@ -855,7 +874,7 @@ def test_invoice_creation_callback_defense_in_depth_blocks_stale_unlimited(db):
     call = FakeCall()
     asyncio.run(handler(call, FakeState()))
     assert db.list_stars_invoices() == []
-    assert "безлимит" in call.message.sent[-1]
+    assert "нельзя оформить" in call.message.sent[-1]
 
 
 def test_stars_menu_shows_unavailable_when_no_tariffs_even_if_enabled(db):

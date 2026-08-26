@@ -12,6 +12,8 @@ import time
 from urllib.error import HTTPError
 
 from .marzban_lock import marzban_user_locks
+from .parent_sync import run_account_sync_cycle
+from .stars_purchase import StarsPurchaseError
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +242,65 @@ async def process_invoice_row(bot, db, marzban, admin_token, row: dict):
             await notify_user_extended(bot, notification_row)
 
 
+async def process_canonical_invoice_row(bot, db, row: dict):
+    """Apply a paid PH5-05 invoice through the canonical renewal store.
+
+    No live Marzban parent is inspected or mutated here.  The durable payment
+    evidence has already passed payer/currency/amount/product checks; PH5-02
+    supplies the invoice-scoped idempotent local grant.
+    """
+    try:
+        result = await _run_sync(db.stars_purchases.apply_paid_invoice, row["id"])
+    except StarsPurchaseError:
+        fresh = db.get_invoice(row["id"])
+        if fresh and fresh.get("status") == "manual_review":
+            await notify_admin_stuck_payment(bot, db, fresh)
+        return
+    except Exception as exc:
+        logger.error("canonical Stars apply failed for invoice %s: %s", row["id"], exc)
+        return
+    if not result.get("already_applied"):
+        fresh = db.get_invoice(row["id"])
+        db.log_audit_event(
+            "subscription_extended", telegram_id=fresh.get("payer_telegram_id"),
+            marzban_username=fresh.get("marzban_username"),
+            metadata={"invoice_id": row["id"], "new_expire": result["new_expiry"],
+                      "via": "canonical_ph5_05", "mutation_id": result["mutation_id"]},
+        )
+        await notify_user_extended(bot, fresh)
+
+
+async def _sync_canonical_purchase_children(db, marzban):
+    """Drive PH3-08's existing durable child-sync outbox for paid grants."""
+    for job in db.stars_purchases.pending_sync_jobs():
+        try:
+            result = await _run_sync(lambda: run_account_sync_cycle(
+                db, job["account_id"], sync_fn=marzban.sync_child_user_state,
+                worker_id="stars-ph5-05", now=int(time.time()),
+            ))
+            # Only PH3-08's terminal aggregate state proves convergence.  A
+            # PENDING/PARTIAL cycle can represent a leased or backoff-bound
+            # retry, so it must remain recoverable rather than falsely mark
+            # the paid Stars hand-off complete.
+            state = (
+                "SYNCED" if result["aggregate_state"] == "IN_SYNC" else
+                "MANUAL_REVIEW" if result["aggregate_state"] == "MANUAL_REVIEW" or result["errored"] else
+                "PENDING"
+            )
+            await _run_sync(lambda: db.stars_purchases.record_sync_result(job["invoice_id"], state=state))
+        except Exception as exc:
+            logger.warning("canonical Stars child sync retry for invoice %s: %s", job["invoice_id"], exc)
+            await _run_sync(lambda: db.stars_purchases.record_sync_result(
+                job["invoice_id"], state="PENDING", error_class=type(exc).__name__,
+            ))
+
+
 async def _tick(bot, db, marzban, admin_token):
+    for row in db.stars_purchases.pending_invoices():
+        await process_canonical_invoice_row(bot, db, row)
+    await _sync_canonical_purchase_children(db, marzban)
+    if not admin_token:
+        return
     processed_usernames: set = set()
     for row in db.get_pending_apply_invoices():
         username = row["marzban_username"]
@@ -269,11 +329,10 @@ async def apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_even
             logger.warning(f"stars apply-worker: could not obtain Marzban admin token: {e}")
             admin_token = None
 
-        if admin_token:
-            try:
-                await _tick(bot, db, marzban, admin_token)
-            except Exception as e:
-                logger.error(f"stars apply-worker: tick failed: {e}")
+        try:
+            await _tick(bot, db, marzban, admin_token)
+        except Exception as e:
+            logger.error(f"stars apply-worker: tick failed: {e}")
 
         trigger_event.clear()
         if stop_event.is_set():

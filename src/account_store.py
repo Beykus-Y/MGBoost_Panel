@@ -31,6 +31,22 @@ class AccountStore:
         self._conn = connection
         self._lock = lock
 
+    def get_active_account_by_telegram_id(self, telegram_id: int) -> dict | None:
+        """Resolve only the canonical, non-revoked owner identity.
+
+        Legacy ``tg_users``/Marzban username links are deliberately not a
+        substitute for this proof: Stars PH5-05 sells a parent-account
+        product, never an inferred username entitlement.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT a.*,i.id AS telegram_identity_id,i.telegram_id,i.provenance "
+                "FROM mgboost_telegram_identities i JOIN mgboost_accounts a ON a.id=i.account_id "
+                "WHERE i.telegram_id=? AND i.role='OWNER' AND i.revoked_at IS NULL AND a.status='ACTIVE'",
+                (int(telegram_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
     def create_account(self, account_source: str, *, now: int | None = None) -> dict:
         if account_source not in self.ACCOUNT_SOURCES:
             raise AccountSchemaError("unsupported account source")

@@ -115,16 +115,17 @@ class ParentSyncStore:
                 if current is None:
                     self._conn.execute(
                         "INSERT INTO mgboost_entitlement_state "
-                        "(account_id,subscription_id,desired_status,revision,updated_at) "
-                        "VALUES (?,?,?,1,?)",
-                        (account_id, subscription["id"], desired_status, timestamp),
+                        "(account_id,subscription_id,desired_status,revision,updated_at,desired_expire) "
+                        "VALUES (?,?,?,1,?,?)",
+                        (account_id, subscription["id"], desired_status, timestamp, subscription["current_expiry"]),
                     )
                 elif (current["desired_status"] != desired_status
-                        or current["subscription_id"] != subscription["id"]):
+                        or current["subscription_id"] != subscription["id"]
+                        or current["desired_expire"] != subscription["current_expiry"]):
                     self._conn.execute(
                         "UPDATE mgboost_entitlement_state SET subscription_id=?,desired_status=?,"
-                        "revision=revision+1,updated_at=? WHERE account_id=?",
-                        (subscription["id"], desired_status, timestamp, account_id),
+                        "desired_expire=?,revision=revision+1,updated_at=? WHERE account_id=?",
+                        (subscription["id"], desired_status, subscription["current_expiry"], timestamp, account_id),
                     )
                 row = self._conn.execute(
                     "SELECT *,? AS current_expiry FROM mgboost_entitlement_state WHERE account_id=?",
