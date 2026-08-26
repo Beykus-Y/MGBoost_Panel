@@ -36,6 +36,7 @@ from ..service_marzban import ServiceMarzbanClient
 from ..subscription import process_subscription
 from .sub import (
     _invalid_subscription_response,
+    _observe_grace_activity_fail_open,
     check_subscription_rate_limit,
     is_browser_request,
     send_browser_landing,
@@ -107,6 +108,13 @@ def handle_opaque_sub(handler, token):
     if result.outcome != OUTCOME_OK:
         _invalid_subscription_response(handler, started_at)
         return
+
+    try:
+        credential = db.subscription_credentials.resolve(token)
+    except Exception:
+        credential = None
+    if credential is not None:
+        _observe_grace_activity_fail_open(db, credential.get("account_id"), "OPAQUE")
 
     body = base64.b64decode(result.body_b64)
     new_body, out_headers = process_subscription(body, result.headers, token, result.child_username, db)

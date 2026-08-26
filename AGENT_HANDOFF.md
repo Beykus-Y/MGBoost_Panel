@@ -1,4 +1,143 @@
-# AGENT_HANDOFF — PH2-06 / PH4-04 (crash-safe, update after every major checkpoint)
+# AGENT_HANDOFF — PH4-05 (crash-safe, update after every major checkpoint)
+
+Updated: 2026-08-26 (later same day). **PH4-05 is `[~]`: reversible/dormant
+part only.** The owner explicitly authorized starting PH4-05 work "до
+границы реального запуска grace clock" (up to, but not including, actually
+starting any real account's 14-day clock). This session built and tested
+the full durable grace-period schema/store, explicit-audited extension
+path, privacy-safe grace telemetry (wired fail-open into the live legacy
+route and the dormant opaque route), a read-only observability module, a
+dry-run eligibility-report CLI, draft (unsent) communications and a
+runbook. **Nothing was started for any real account, no communication was
+sent, and nothing was deployed to production this session** -- deploying
+the dormant schema/code, and running the dry-run report against a real
+production DB copy, both require production (SSH) access that this
+session's sandbox explicitly blocked pending the owner's separate
+confirmation (see "Exact next step" below). PH2-06/PH4-04 remain CLOSED
+`[x]` (unaffected, unchanged this session) -- their own handoff detail is
+preserved unmodified further below.
+
+## THIS SESSION: PH4-05 reversible/dormant part
+
+### New durable schema/store (`src/legacy_grace_schema.py`, `src/legacy_grace.py`)
+
+- `mgboost_legacy_grace_periods`: one row per account, ever
+  (`UNIQUE(account_id)`). `original_end_at = started_at + 1209600` (exactly
+  14 days, OPD-09/DL-023) is enforced by a schema `CHECK`, not just
+  application code. `current_end_at` starts equal to `original_end_at` and
+  is guarded by a DB trigger that rejects any decrease -- extension-only,
+  matching DL-023's own Rollback clause. Identity columns and the full
+  `mgboost_legacy_grace_events` audit log are immutable (no-update/
+  no-delete triggers), mirroring PH4-02's `LEGACY_REVOKED`-terminal
+  precedent.
+- `LegacyGraceStore` (`db.legacy_grace`): `start()`/`extend()` both require
+  the same sealed `PrimaryAdminAuthority` capability every other
+  PH3-06/PH4-01..04 consequential action already requires.
+  - `start()` is idempotent per account (same idempotency key -> same row
+    returned, no duplicate); a genuinely new start attempt for an account
+    that already has one fails closed (`GraceAlreadyStarted`) -- there is
+    no "restart the clock" operation anywhere in this code.
+  - `extend()` requires a strictly later `new_end_at` (`GraceTransitionError`
+    on a no-op/shrink attempt) plus a CAS `expected_revision`
+    (`GraceStaleRevision` on a stale write), and always writes an
+    immutable, reason+evidence-ref audited `EXTENDED` event.
+  - Pure helpers `grace_active()`/`seconds_remaining()`/`day_index()`
+    implement the exact tested boundary: `now < current_end_at` is still
+    within grace; `now == current_end_at` (and later) is already expired.
+
+### New privacy-safe grace telemetry (`src/legacy_grace_activity*.py`)
+
+- `mgboost_legacy_grace_activity_daily`: daily per-account/per-channel
+  (`LEGACY`/`OPAQUE`) request counters only -- never a raw token, full
+  subscription URL, UUID, full HWID, cookie/auth value or bearer path.
+  Mirrors PH3-07's own isolated-short-timeout-connection write discipline.
+  60-day retention; cleanup script
+  (`scripts/cleanup_ph4_05_grace_activity_telemetry.py`) exists but is
+  **not yet on a systemd timer** (follow-up, to be installed together with
+  the eventual production deploy).
+- **Wired into the already-live `routes/sub.py::handle_sub` legacy path**
+  (once `legacy_bridge.resolve_account_for_legacy_username` resolves a real
+  account) **and** the dormant `routes/opaque_sub.py::handle_opaque_sub`
+  real-resolve path, as a fail-open, response-blind observation hook
+  (`_observe_grace_activity_fail_open`, same exception-swallowing pattern
+  as the already-deployed PH3-07 `_observe_compatibility_fail_open`).
+  Proven by `tests/test_legacy_grace_route_hooks.py` that an observer
+  failure never changes status/body. **This is the one piece of this
+  session's change that touches the already-live legacy `/sub` request
+  path** (one extra read + a fire-and-forget write per real request) --
+  flagged here explicitly because it is not purely dormant like everything
+  else in this session, and deserves its own explicit mention in the
+  owner's deploy sign-off even though it cannot start any clock or change
+  any response.
+
+### New read-only observability + dry-run report
+
+- `src/legacy_grace_observability.py::account_grace_snapshot()` assembles
+  grace day/remaining time, PH4-02 migration state counts, active vs.
+  migrated device counts, last legacy/opaque activity, 24h/72h request
+  counts, resolver/reconciliation/revoke-rebind event counts (from PH4-02's
+  own existing `mgboost_migration_binding_events`, not a new error log) and
+  `inactive_since_grace_start` -- composed from already-existing tables
+  wherever one exists, zero mutation anywhere in this module.
+- `scripts/ph4_05_grace_eligibility_report.py`: read-only CLI
+  (table/json/csv), one row per account with a legacy alias:
+  `account / migration_state / active_devices / last_legacy_activity /
+  last_opaque_activity / compatibility / blockers /
+  START_GRACE|HOLD`. Validated end-to-end against a synthetic local DB
+  (real production data was never touched or read this session -- see
+  "Exact next step").
+- `docs/PHASE4_GRACE_PERIOD_RUNBOOK.md`: status/extend/support procedures,
+  metrics mapping, exceptions handling, "what becomes hard to walk back."
+- `docs/PHASE4_GRACE_PERIOD_COMMS_DRAFT.md`: draft Telegram/LK/support-
+  ticket copy, explicitly marked not sent, no send path wired to it.
+
+### Tests / regression
+
+38 new focused tests across `tests/test_legacy_grace_schema.py`,
+`tests/test_legacy_grace.py`, `tests/test_legacy_grace_activity.py`,
+`tests/test_legacy_grace_observability.py`,
+`tests/test_legacy_grace_route_hooks.py`. Full regression: `969 passed, 3
+skipped` (was `931 passed, 3 skipped` before this session -- zero
+regressions).
+
+## Why production access was not used this session
+
+The sandbox's auto-mode classifier blocked an SSH connection attempt to the
+production VPS (the same `selara_vps` key/host prior sessions used) as a
+risky action requiring the owner's explicit confirmation. Given the owner's
+own instruction to stop "до границы реального запуска grace clock" and to
+NOT perform any production mutation this session, no attempt was made to
+work around that block. As a direct consequence:
+
+- The dry-run eligibility report was **not** run against real production
+  accounts -- only validated against synthetic local test data.
+- The dormant schema/code (which the owner asked to be deployed "если это
+  не запускает clock и не меняет user-visible behavior") was **not**
+  deployed to production -- it exists only in this git history/branch.
+
+## Exact next step (decision gate)
+
+1. Owner decides whether to authorize SSH access to production for (a)
+   downloading a DB copy to run the real dry-run eligibility report, and
+   (b) deploying this session's dormant schema/code (additive migration +
+   the two new fail-open route hooks described above -- explicitly call
+   out the live-route hook change during that sign-off, separate from the
+   purely-dormant pieces).
+2. Once the real dry-run report is in hand, the owner picks the first real
+   cohort (account ids) to actually `start()` -- this remains a separate,
+   explicit decision this session did not make and was told not to make.
+3. Only after that: a short-lived root-only script (same pattern as every
+   PH4-03/04 real production canary) calls `db.legacy_grace.start()` for
+   the chosen accounts, and the drafted communications
+   (`docs/PHASE4_GRACE_PERIOD_COMMS_DRAFT.md`) get reviewed/approved and
+   sent through their own real channel (not built this session).
+4. PH4-06 (the actual legacy URL/UUID revoke) remains its own separate,
+   unbuilt future phase, gated on PH4-05's real grace periods actually
+   expiring for the chosen cohort.
+
+---
+
+# PRIOR HANDOFF (PH2-06 / PH4-04, still accurate, unaffected by this session)
 
 Updated: 2026-08-26, PH2-06 remains CLOSED `[x]` (unaffected). PH4-04 was
 briefly REOPENED `[~]` for a post-closure correction and is now CLOSED

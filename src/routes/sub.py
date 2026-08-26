@@ -128,6 +128,25 @@ def _observe_compatibility_fail_open(db, token, device_metadata):
             pass
 
 
+def _observe_grace_activity_fail_open(db, account_id, channel):
+    """PH4-05 grace-activity counters are strictly observational (like
+    PH3-07's own `_observe_compatibility_fail_open`) and must never affect
+    VPN delivery -- no legacy/opaque request is denied or altered because
+    this write failed, and nothing here changes any grace clock."""
+    observer = getattr(db, "observe_legacy_grace_activity", None)
+    if observer is None or account_id is None:
+        return
+    try:
+        observer(account_id, channel)
+    except Exception as exc:
+        try:
+            logger.warning(
+                "grace activity telemetry write skipped error_type=%s", type(exc).__name__,
+            )
+        except Exception:
+            pass
+
+
 def _bridge_ensure_fn(payload):
     return _bridge_client.ensure_child_user(payload)
 
@@ -255,6 +274,13 @@ def handle_sub(handler, token):
     username = _client.get_username_for_token(token)
     device_metadata = extract_device_metadata(handler.headers)
     _observe_compatibility_fail_open(db, token, device_metadata)
+    if username:
+        try:
+            account_id = db.legacy_bridge.resolve_account_for_legacy_username(username)
+        except Exception:
+            account_id = None
+        if account_id is not None:
+            _observe_grace_activity_fail_open(db, account_id, "LEGACY")
 
     request_key = device_metadata.get("request_key")
     if request_key and request_key.startswith("hwid:") and username:

@@ -45,6 +45,10 @@ from .migration_lifecycle import MigrationLifecycleStore
 from .direct_enrollment_schema import apply_direct_enrollment_schema
 from .direct_enrollment import DirectEnrollmentStore
 from .legacy_payment_attestation_schema import apply_legacy_payment_attestation_schema
+from .legacy_grace_schema import apply_legacy_grace_schema
+from .legacy_grace import LegacyGraceStore
+from .legacy_grace_activity_schema import apply_legacy_grace_activity_schema
+from .legacy_grace_activity import record_activity as _record_grace_activity
 from .sensitive import is_subscription_token_ref, subscription_token_ref
 
 logger = logging.getLogger(__name__)
@@ -127,6 +131,7 @@ class Database:
         self.direct_enrollment = DirectEnrollmentStore(
             self._conn, self._lock, self.accounts, self.primary_admin_authority
         )
+        self.legacy_grace = LegacyGraceStore(self._conn, self._lock, self.primary_admin_authority)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -393,6 +398,8 @@ class Database:
         apply_migration_lifecycle_schema(self._conn)
         apply_direct_enrollment_schema(self._conn)
         apply_legacy_payment_attestation_schema(self._conn)
+        apply_legacy_grace_schema(self._conn)
+        apply_legacy_grace_activity_schema(self._conn)
         apply_compat_telemetry_schema(self._conn)
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
@@ -949,6 +956,25 @@ class Database:
             self._compat_telemetry_hmac_key,
             now=int(time.time()) if now is None else int(now),
         )
+
+    # --- observe-only PH4-05 grace-period activity counters ---
+
+    def observe_legacy_grace_activity(self, account_id, channel, *, now=None):
+        """Write through an isolated, short-timeout connection, same
+        discipline as `observe_hwid_compatibility`. Never called for an
+        unresolved account (callers only invoke this once a real
+        legacy/opaque account_id is already known). Raises on failure --
+        exactly like `observe_hwid_compatibility`, callers must always wrap
+        this fail-open (see `_observe_grace_activity_fail_open` in
+        `routes/sub.py`/`routes/opaque_sub.py`); never affects any
+        response."""
+        if account_id is None:
+            return None
+        _record_grace_activity(
+            DB_PATH, account_id, channel,
+            now=int(time.time()) if now is None else int(now),
+        )
+        return None
 
     @staticmethod
     def _device_select_columns():

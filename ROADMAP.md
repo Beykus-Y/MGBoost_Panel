@@ -645,11 +645,81 @@ Isolation evidence throughout: `account_id=1` was read-verified byte-identical a
 
 **Verdict: `[x]`.** The post-closure browser-landing and implied-consent-rotation regressions are fixed, tested (22 focused tests) and re-verified for real on production end-to-end, including the mandated controlled rotation of the owner's manually-exposed credential without ever re-exposing a raw secret. The original 2026-08-26 backend/resolver canary above remains valid and is not retracted.
 
-## [ ] PH4-05 — Approve and implement legacy grace period
+## [~] PH4-05 — Approve and implement legacy grace period
 
-**Depends:** telemetry. **Fixed policy:** OPD-09/DL-023 — grace period 14 дней.
+**Depends:** telemetry (PH3-07, closed). **Fixed policy:** OPD-09/DL-023 — grace period 14 дней.
 **Accept:** per-account/cohort start/end, communications, support and metrics. **Tests:** exact UTC boundary at 14 days, inactive clients.
 **Rollback:** extension только explicit/audited; revoked UUID не reopen.
+
+**Reversible/dormant part DONE (2026-08-26), real clock NOT started for any
+account — explicit owner decision gate, per instruction.** Additive durable
+schema `mgboost_legacy_grace_periods`/`_events`
+(`src/legacy_grace_schema.py`): one row per account ever
+(`UNIQUE(account_id)`), fixed-14-day window enforced by a schema `CHECK`
+tying `original_end_at = started_at + 1209600` (not just application code),
+`current_end_at` gated by a monotonic-forward-only DB trigger (never
+shrinks/resets), identity columns and the full event log immutable
+(no-update/no-delete triggers), mirroring PH4-02's own
+`LEGACY_REVOKED`-can-never-transition-again precedent. `LegacyGraceStore`
+(`db.legacy_grace`, `src/legacy_grace.py`): `start()`/`extend()` both
+require the same sealed `PrimaryAdminAuthority` capability every other
+PH3-06/PH4-01..04 consequential action already requires; `start()` is
+idempotent per account (same idempotency key -> same row) but a genuinely
+new start attempt after one already exists fails closed
+(`GraceAlreadyStarted`, never a reset); `extend()` requires a strictly later
+`new_end_at` (never a no-op/shrink, `GraceTransitionError` otherwise) plus a
+CAS `expected_revision` and always writes an immutable, reason+evidence-ref
+audited `EXTENDED` event — there is no silent extension anywhere in this
+code. Pure boundary helpers (`grace_active`/`seconds_remaining`/`day_index`)
+implement the exact tested rule: `now < current_end_at` is still within
+grace, `now == current_end_at` is already expired.
+
+New privacy-safe grace-activity telemetry
+(`mgboost_legacy_grace_activity_daily`, `src/legacy_grace_activity*.py`,
+mirrors PH3-07's own isolated-short-timeout-connection discipline): daily
+per-account/per-channel (`LEGACY`/`OPAQUE`) request counters only — never a
+raw token, full subscription URL, UUID, full HWID, cookie/auth value or
+bearer path, 60-day retention (cleanup script:
+`scripts/cleanup_ph4_05_grace_activity_telemetry.py`, not yet on a systemd
+timer). Wired as a fail-open, response-blind observation hook into the
+already-live `routes/sub.py::handle_sub` (legacy path, once
+`legacy_bridge.resolve_account_for_legacy_username` resolves a real
+account) and the dormant `routes/opaque_sub.py::handle_opaque_sub` (real
+resolve path) — exactly the same pattern and exception-swallowing
+discipline as the already-deployed PH3-07 `_observe_compatibility_fail_open`
+hook; a write failure here can never change, delay or deny a subscription
+response (proven by `tests/test_legacy_grace_route_hooks.py`). This is the
+one part of this session's change that touches the **already-live**
+legacy `/sub` request path (an extra read + a fire-and-forget write per
+real request), not a purely dormant module — called out explicitly for the
+owner's separate deploy sign-off, distinct from the schema-only pieces.
+
+`src/legacy_grace_observability.py::account_grace_snapshot()` assembles the
+full per-account visibility set (grace day/remaining time, PH4-02 migration
+state counts, active vs. migrated devices, last legacy/opaque activity,
+24h/72h request counts, resolver/reconciliation/revoke-rebind event counts
+from PH4-02's own existing audit trail, `inactive_since_grace_start`) by
+composing already-existing tables wherever one exists rather than
+duplicating them — no mutation anywhere in this module.
+`scripts/ph4_05_grace_eligibility_report.py` is a read-only dry-run CLI
+(table/json/csv) producing exactly the requested
+account/migration-state/active-devices/last-activity/compatibility/
+blockers/`START_GRACE`|`HOLD` decision table, validated end-to-end against
+a synthetic local DB (real production dry-run requires a downloaded DB
+copy and was not run this session — no SSH/production access was used).
+Draft (unsent) Telegram/LK/support-ticket communications:
+`docs/PHASE4_GRACE_PERIOD_COMMS_DRAFT.md`. Full runbook:
+`docs/PHASE4_GRACE_PERIOD_RUNBOOK.md`. 38 new focused tests across 5 files
+covering exact `<`/`==`/`>` boundary semantics, restart/persistence,
+duplicate start, explicit audited extension (incl. stale-revision/no-shrink
+rejection), inactive-client detection and route-hook fail-open behavior;
+full regression `969 passed, 3 skipped` (zero regressions from `931`).
+
+**Explicitly NOT done, per instruction:** no real account has a
+`mgboost_legacy_grace_periods` row (dry-run report against real production
+accounts, and the schema/route-hook code's own production deploy, both
+await the owner's next decision); no communication was sent to any real
+user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 
 ## [ ] PH4-06 — Revoke shared legacy URL/UUID after grace
 
