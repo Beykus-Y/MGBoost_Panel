@@ -103,7 +103,8 @@ def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
 def test_malicious_admin_api_values_are_escaped_by_real_render_path():
     js_source = ADMIN_JS.read_text(encoding="utf-8")
     js_source = re.sub(
-        r"const ACCOUNT_UI_READY = import\('./admin/accounts\.js'\)\.then\(module=>\{.*?\n\}\);",
+        r"const _MODULE_VERSION = new URL\(document\.currentScript\.src, location\.href\)\.search;\n"
+        r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
         "const ACCOUNT_UI_READY=Promise.resolve(null);",
         js_source,
         flags=re.DOTALL,

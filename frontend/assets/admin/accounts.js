@@ -1,4 +1,7 @@
-import {badgeClass,formatDuration,formatPercent,formatTimestamp,humanLabel,maskTelegram} from './core.js';
+// Propagate the caller's own cache-busting query (see admin.js) to this
+// module's sibling import, so ./core.js can never be served stale
+// alongside a fresh ./admin/accounts.js after a deploy.
+const {badgeClass,formatDuration,formatPercent,formatTimestamp,humanLabel,maskTelegram} = await import(`./core.js${new URL(import.meta.url).search}`);
 
 export function createAccountUi({adminFetch,html,renderHtml,showPage,toast}){
   let accounts=[],detail=null,showTechnical=false,migrationShowTechnical=false;

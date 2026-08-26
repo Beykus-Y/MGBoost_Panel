@@ -12,7 +12,13 @@ let perUserConfigs = {};
 let userDeviceCounts = {};
 let inboundClientExtras = {};
 let accountUi = null;
-const ACCOUNT_UI_READY = import('./admin/accounts.js').then(module=>{
+// Same-origin ES module imports are not covered by the versioned `?v=`
+// query on this script's own <script src>; propagate it explicitly so a
+// stale-cached ./admin/*.js can never mix with a fresh one after a deploy.
+// (This file is a classic script, not type="module", so import.meta is not
+// available here -- document.currentScript is the correct source instead.)
+const _MODULE_VERSION = new URL(document.currentScript.src, location.href).search;
+const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,html,renderHtml,showPage,toast});
   return accountUi;
 });
