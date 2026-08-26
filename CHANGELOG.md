@@ -17,6 +17,23 @@
 
 ### Added
 
+- PH5-04 deterministic entitlement engine (2026-08-27, `[x]`,
+  production-deployed): `db.entitlements.calculate(account_id=..., now=...)`
+  is one versioned (`ph5-04-entitlement-v1`), side-effect-free SQLite-snapshot
+  calculation for effective subscription expiry/status, immutable real
+  plan/version, 3/6/12 or explicit INTERNAL device terms, WL access/current
+  period/base quota, actual PH6-03/04 usage, PH5-03 FIFO package remainder
+  and active durable overrides. It reuses existing canonical stores instead
+  of creating another accounting path; package eligibility remains the real
+  active commercial WL plan, so Base plus `FORCE_ENABLED` never gains billing
+  or package rights. Slot add-ons and adjustments intentionally return
+  `NONE`/`0` until PH5-07/PH6-08 have durable state. No schema change,
+  purchase/Stars wiring, enforcement or Marzban/network call from calculation.
+  Focused related tests: `98 passed`; full regression: `1161 passed, 3
+  skipped`. Production pre/post DB invariants stayed subscriptions/WL
+  periods/package grants/package refunds `18/0/0/0`, with `quick_check=ok`
+  and 0 FK violations; all 18 account calculations completed read-only and
+  only `mgboost-panel` restarted.
 - PH5-03 versioned WL package catalog (2026-08-27, `[x]`, production-deployed): immutable +50/+100/+250/+500 GB package products and
   exact Stars 79/149/349/599 plus RUB 139/249/579/999 prices reuse PH5-01's
   channel catalog versions. Paid grants snapshot product/catalog/price and

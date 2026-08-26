@@ -998,12 +998,62 @@ restarted; all four services active, unauthenticated admin remains `401` and
 legacy bogus `/sub` remains `404`. No route/UI/worker invokes grant/refund,
 and no enforcement/config/inbound/UUID/expiry behavior changed.
 
-## [ ] PH5-04 — Deterministic entitlement engine
+## [x] PH5-04 — Deterministic entitlement engine
 
 **Depends:** PH3-01, PH5-01–03. **Inputs:** plan, packages, admin adjustments/overrides, slot add-ons, period.
 **Accept:** one function returns effective expiry/device/WL plus explanation; no username hardcode.
 **Tests:** combinations, deductions, unlimited/internal, expired plans.
 **Migration:** calculation version pinned to migrated account.
+
+**Implemented and production-deployed (2026-08-27):**
+`src/entitlement_engine.py` exposes the sole public path,
+`db.entitlements.calculate(account_id=..., now=...)` (also
+`calculate_effective_entitlement`). It takes an explicit UTC snapshot time
+and opens one SQLite read transaction under the existing DB lock; it performs
+no write, period-status advance, network request or Marzban call. The result
+is structurally deterministic and versioned as `ph5-04-entitlement-v1`.
+It composes, rather than duplicates, the existing canonical models:
+immutable pinned `mgboost_plan_versions` and subscription state for real
+plan/version/expiry; PH6-04 `compute_parent_wl_pool()` for actual current
+period consumption from the PH6-03 WL-node ledger; and PH5-03
+`WLPackageStore.package_state()` for its already-approved base-first,
+DL-053 FIFO, rollover and freeze/resume bucket remainder. Package SKU/product
+version/catalog version are returned from the immutable grant snapshot.
+
+Commercial limits remain exactly 3/6/12 from the real plan. INTERNAL is an
+explicit plan model with configurable `LIMITED` or `UNLIMITED` device terms,
+never a username rule. Active canonical overrides are returned with durable
+ids/mutation/reason/expiry and applied in the existing `(starts_at,id)` order
+to effective access/device configuration. Billing and package eligibility are
+always facts of the real active commercial plan: a Base `FORCE_ENABLED`
+override can expose its effective access state but never makes Base billable
+as WL or package-eligible. A stale/expired override is absent and returns to
+`AUTO`. The current canonical period is selected without mutating its
+`PLANNED/ACTIVE/CLOSED` lifecycle; expired/lapsed entitlement exposes frozen
+package history but no fabricated active WL remainder. Decimal units stay
+`1 GB = 1_000_000_000 bytes`.
+
+PH5-07 has no durable add-on state, so the contract explicitly returns
+`slot_addon_state='NONE'` and `additional_slots=0`. PH6-08 has no durable
+adjustment ledger, so it explicitly returns `adjustment_state='NONE'` and
+`adjustment_bytes=0`; an existing quota override remains visible as a
+configuration component but does not retroactively rewrite an immutable
+period/package allocation. No schema migration was required.
+
+**Tests:** new `tests/test_entitlement_engine.py` covers all six commercial
+plans; exact 3/6/12 limits; WL/non-WL; 30/60-day periods; base
+`<`/`=`/`>` consumption; absent/one/multiple FIFO packages; expiry freeze and
+same-WL-plan resume; active/expired overrides; Base `FORCE_ENABLED`; both
+INTERNAL device modes; pinned catalog snapshots; stable JSON result for the
+same input; no known username literals; and no DB/period-status mutation.
+Focused related suite: `98 passed`. Complete regression in four terminal-safe
+groups: `1161 passed, 3 skipped` (the three pre-existing environment-dependent
+browser skips). Production preflight/verification: `quick_check=ok`, 0 FK
+violations; subscriptions/WL periods/package grants/package refunds stayed
+`18/0/0/0`; calculation across all 18 accounts returned only
+`ph5-04-entitlement-v1`, zero current WL periods and zero package buckets.
+Only `mgboost-panel` restarted. No purchase, Stars worker, enforcement,
+subscription/expiry/UUID/config/inbound/user-access mutation was introduced.
 
 ## [ ] PH5-05 — Stars purchase + renewal
 

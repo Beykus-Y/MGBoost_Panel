@@ -1,6 +1,62 @@
-# AGENT_HANDOFF — PH5-03 versioned WL package catalog production-deployed; PH5-04 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
+# AGENT_HANDOFF — PH5-04 deterministic entitlement engine production-deployed; PH5-05 unblocked / Wave A authenticated walkthrough still owner-only / PH4-05 live / PH4-06 not started
 
 Updated: 2026-08-27. **This top section supersedes everything below.**
+
+## PH5-04 — `[x]`, production-deployed, deterministic read-only composition only
+
+`src/entitlement_engine.py` is the authoritative public calculation path:
+`db.entitlements.calculate(account_id=..., now=...)`, versioned
+`ph5-04-entitlement-v1`. It opens one SQLite read snapshot under the existing
+lock and never writes, advances WL period state, calls network/Marzban, grants
+a purchase or enforces access. It composes the canonical stores already
+owned by earlier phases: current subscription + immutable plan version;
+PH6-04 `compute_parent_wl_pool()` over PH6-03 samples; PH5-03
+`WLPackageStore.package_state()` for base-first/DL-053 FIFO/rollover/freeze;
+and durable active `mgboost_entitlement_overrides`. The machine-readable
+result includes components/provenance, effective status/expiry, plan/version,
+device mode/limit, real/effective WL mode, current canonical period, decimal
+base quota, canonical usage, package bucket contribution and active overrides.
+
+No username behavior exists. Commercial device limits are still exactly
+3/6/12; INTERNAL is explicit configurable `LIMITED`/`UNLIMITED` plan data.
+Real billed WL-plan terms, not an override, determine billing/package
+eligibility -- Base + `FORCE_ENABLED` remains package-ineligible. Expiry/Base
+freezes historical packages and a real WL renewal resumes their original
+FIFO state. Slot add-ons intentionally return `NONE`/0 (PH5-07 deferred);
+adjustments intentionally return `NONE`/0 (PH6-08 absent), while an existing
+canonical quota override is exposed but never retroactively alters immutable
+period/package accounting.
+
+**Tests:** `tests/test_entitlement_engine.py` adds 17 focused checks covering
+six plans, 3/6/12, WL/non-WL, 30/60-day periods, package absent/one/multiple
+FIFO and freeze/resume, base usage boundaries, INTERNAL modes, active/expired
+overrides, catalog pinning, deterministic identical snapshots and zero
+calculation mutation. Related focused regression: `98 passed`; complete
+regression in four groups: **`1161 passed, 3 skipped`** (the skips are
+pre-existing environment-dependent browser cases).
+
+**Production deploy (2026-08-27):** application-code-only, no schema
+migration/backup needed. Preflight at `5a56d7f` found only the known untouched
+untracked `extra_configs.json`; `quick_check=ok`, 0 FK violations,
+accounts/subscriptions/periods/grants/refunds `18/18/0/0/0`, all four
+services active. Fast-forwarded to `4dadc33`; only `mgboost-panel` restarted.
+Read-only calculation across all 18 production accounts yielded exactly one
+calculation version, zero current WL periods and zero package buckets; the
+subscriptions/periods/grants/refunds cardinality remained `18/0/0/0` and
+integrity stayed clean. No live subscription, expiry, UUID, config, inbound,
+user access, Stars/purchase or enforcement state changed. The deployed
+listener correctly returns unauthenticated `/admin/accounts` = `401` on
+`127.0.0.1:8001`. Separate observed nginx routing of external
+`panel.beykus.fun/admin/*` to an unrelated `127.0.0.1:8000` Uvicorn yields
+`404`; PH5-04 did not alter nginx/listeners and this is outside its scope.
+
+## Exact next step
+
+**PH5-05 — Stars purchase + renewal is unblocked** by PH5-01/02/03/04. It
+must consume this engine's result; do not begin PH5-06, PH5-07, PH6-05..08,
+admin Wave B or PH4-06 without a new explicit owner request.
+
+---
 
 ## PH5-03 — `[x]`, production-deployed, catalog/accounting foundation only
 
