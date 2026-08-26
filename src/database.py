@@ -47,6 +47,9 @@ from .wl_period_admin_reset_schema import apply_wl_period_admin_reset_schema
 from .wl_period_admin_reset import WLPeriodAdminResetStore
 from .wl_usage_ledger_schema import apply_wl_usage_ledger_schema
 from .wl_usage_ledger import WLUsageLedgerStore
+from .wl_package_schema import apply_wl_package_schema
+from .wl_package_catalog import WLPackageCatalogStore
+from .wl_packages import WLPackageStore
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
 from .provenance_schema import apply_provenance_schema
@@ -151,6 +154,8 @@ class Database:
             self._conn, self._lock, self.primary_admin_authority
         )
         self.wl_usage_ledger = WLUsageLedgerStore(self._conn, self._lock)
+        self.wl_package_catalog = WLPackageCatalogStore(self._conn, self._lock)
+        self.wl_packages = WLPackageStore(self._conn, self._lock, self.wl_package_catalog)
 
     def _create_tables(self):
         self._conn.executescript("""
@@ -412,6 +417,7 @@ class Database:
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
         apply_wl_usage_ledger_schema(self._conn)
+        apply_wl_package_schema(self._conn)
         apply_child_workflow_schema(self._conn)
         apply_child_lifecycle_schema(self._conn)
         apply_parent_sync_schema(self._conn)

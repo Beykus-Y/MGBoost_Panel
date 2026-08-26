@@ -966,7 +966,7 @@ PH5-03 despite its `Depends` line not naming it explicitly. No further PH5
 slice was judged safely startable this session without either skipping this
 dependency or starting Phase 6, both explicitly out of scope.
 
-## [ ] PH5-03 — Versioned WL package catalog
+## [~] PH5-03 — Versioned WL package catalog
 
 **Depends:** PH5-01/02 and entitlement ledger. **Fixed policy:** OPD-02/03/04/12/13/32 and DL-025–027 — rollover/freeze, Base rejection, base-first consumption and unused-only refund. **Approved Stars:** +50/79, +100/149, +250/349, +500/599. **Approved RUB v1:** +50/139, +100/249, +250/579, +500/999. Purchase/use only on WL-enabled plans.
 **Accept:** invoice snapshot, eligibility, rollover bucket, adjustment/audit durable; period reset не удаляет remainder; expiry/Base transition freezes bucket; unused-only refund atomically revokes it.
@@ -979,6 +979,17 @@ now both closed and production-verified, so that real consumption data
 exists. No longer blocked by missing Phase 6 infrastructure; still needs its
 own fresh scoping session (package purchase/refund/rollover ledger design,
 package logic is explicitly out of PH6-04's own scope).
+
+**Implemented, pending production deployment (2026-08-27):** additive
+`ph5_03_wl_package_catalog_v1` reuses PH5-01's immutable channel catalog
+versions and PH3-09 payment/mutation provenance. It adds immutable versioned
+package products/prices and parent-account package grants/refund evidence;
+the explicit seed is dormant and no route/UI/worker invokes it. Consumption
+is a pure derived read over PH6-03 samples: each canonical period spends its
+base quota first, then allocates excess to active package buckets by DL-053
+FIFO. Expiry/lapse/Base reads as frozen; no bucket order or remainder is
+rewritten. A zero-derived-consumption refund appends durable evidence and
+atomically changes the bucket only from `ACTIVE` to `REVOKED`.
 
 ## [ ] PH5-04 — Deterministic entitlement engine
 
@@ -2488,6 +2499,24 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Кто:** пользователь.
 - **Почему:** масштаб проекта не оправдывает SPA-framework; текущий подход уже соответствует security-требованиям проекта (PH1-01 CSP/no-inline conventions), а миграция на framework не даёт архитектурной выгоды, соразмерной cost/risk.
 - **Связано:** PH1-01, PH7, `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-05).
+
+## DL-053 — PH5-03 package-bucket consumption order
+
+- **Дата:** 2026-08-27.
+- **Вопрос:** каким образом детерминированно отнести package consumption к
+  конкретному bucket, когда одновременно существуют несколько rollover
+  packages, чтобы unused-only refund был доказуемым.
+- **Варианты:** FIFO по grant; LIFO по grant; пропорциональное распределение
+  с отдельным правилом округления.
+- **Выбрано пользователем:** FIFO по immutable `granted_at ASC`; при точном
+  равенстве timestamp — stable `bucket_id ASC`. Freeze/resume и переходы
+  между WL periods не меняют исходный порядок. Refund возможен только при
+  `derived_consumption` конкретного bucket, равном нулю, в той же атомарной
+  транзакции, которая отзывает bucket.
+- **Кто:** пользователь.
+- **Почему:** гарантирует единственное воспроизводимое attribution для
+  rollover и refund, не меняя уже записанные product/payment snapshots.
+- **Связано:** PH5-03, OPD-13/32, DL-025–027, PH6-03/04/08.
 
 # Contradictions and migration hazards
 
