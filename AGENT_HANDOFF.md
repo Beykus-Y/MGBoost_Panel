@@ -1,3 +1,184 @@
+# AGENT_HANDOFF — PH7-13 Megochel account consolidation (DL-057) implemented, tested and executed in production; GLM migration-status bugfix (9edd42e) independently re-verified and deployed alongside it
+
+Updated: 2026-08-27 (controlled maintenance rollout session, starting from
+local `9edd42e` / origin+production `9b38c91`). **This top section
+supersedes everything below.** Owner asked for two things in one controlled
+rollout: (1) deploy the already-built GLM migration-status bugfix
+`9edd42e` (local checkpoint commit, not yet pushed/deployed at session
+start), and (2) design, implement, test and execute an owner-approved
+consolidation of two real duplicate accounts, `MegochelPC` (account 5) and
+`MegochelAndroid` (account 6), into one canonical `Megochel` account, per a
+prior read-only analysis session and the owner decisions given at the start
+of this session.
+
+## What this session did
+
+**GLM bugfix review.** Independently read the full `9edd42e` diff before
+building anything on top of it. Confirmed the core semantic change in
+`legacy_grace_observability.classify_action()` is correct and matches the
+three required properties exactly: Telegram `BOUND` + zero real-device
+lineage → `WAITING_FIRST_DEVICE` ("Ожидает первого подключения"); any real
+`mgboost_migration_bindings` lineage (`MIGRATING`/`MIGRATED`/
+`LEGACY_REVOKE_PENDING`/`LEGACY_REVOKED`) → `OK_MIGRATED` ("Миграция
+штатно") regardless of Telegram status; `telegram_status()`'s own taxonomy
+and the urgent-category precedence above it are untouched, so Telegram
+ownership and technical migration status are structurally independent
+inputs, never gating each other. Frontend label map, the PH4-05 daily
+report's blocker string and `docs/ADMIN_PANEL_REDESIGN.md`'s normative
+taxonomy were updated consistently in the same commit. Did not rewrite it
+stylistically. Ran full regression locally before touching anything else
+(`1264 passed, 4 skipped`, matching the commit's own claimed baseline
+modulo a skip/pass-count wording difference in its own message, not a real
+discrepancy).
+
+**Megochel consolidation — why no existing primitive covers it.**
+`mgboost_legacy_alias_groups` is a strict 1:1 `account_id PRIMARY KEY`
+table; a multi-alias group (like account 1's 3 aliases) is only ever
+assembled once, at bootstrap. `mgboost_legacy_account_aliases.legacy_username`
+is globally `UNIQUE` and the table is fully immutable (no `UPDATE`, no
+`DELETE`). Every other account-scoped table treats `account_id` as part of
+an immutable identity, by trigger or by construction. Reassigning history
+from one already-created account to another is therefore structurally
+impossible with anything that existed before this session — confirmed by
+reading every relevant store (`account_store.py`, `device_slots.py`,
+`child_lifecycle.py`, `legacy_bridge.py`, `legacy_paid_compat.py`,
+`subscription_renewal.py`, `subscription_admin_ops.py`) rather than assuming.
+
+**Built (PH7-13, DL-057):** new checksum-pinned
+`src/account_consolidation_schema.py` (`mgboost_account_merges`/
+`_merge_events`, append-only event-sourced `ACTIVE`/`REVERSED` merge state
+mirroring the existing `mgboost_legacy_bridge_bindings`/`_binding_events`
+precedent; `mgboost_account_display_names`, cosmetic owner-set label
+mirroring `mgboost_telegram_identities`'s revoke-and-reinsert pattern). New
+`src/account_consolidation.py`: `resolve_account_id()` (the one shared
+canonicalizer), `create_merge()`/`reverse_merge()` (self-merge and any
+chain/cycle permanently forbidden via a strict bipartition, bounded to
+depth 1 forever even across a later reversal; replay- and concurrency-safe),
+`close_account()`/`reopen_account()` (fail-closed preconditions: no active
+Telegram OWNER, no non-terminal child, no ACTIVE generation; cancels any
+live subscription with immutable evidence *before* flipping the account
+`CLOSED`, because `ProvenanceStore.record_mutation()` itself refuses
+evidence for an already-CLOSED account — found this the hard way, via a
+failing test, before it ever reached production), `set_display_name()`.
+New `legacy_paid_compat.increase_device_limit()`: `ensure_legacy_paid_
+compat_entitlement()` only ever bootstraps a brand-new entitlement and
+hard-conflicts on any different existing plan — it has no upgrade path, and
+this was independently discovered to contradict the owner's original
+instruction to use it for the D3->D6 bump, so a new narrow function was
+built and explicitly re-confirmed with the owner's decision instead of
+silently working around the mismatch.
+
+**Resolver-coverage audit, not limited to the three obviously-named
+paths:** `legacy_bridge.py::resolve_account_for_legacy_username()` now
+canonicalizes through an ACTIVE merge (covers the dormant `/sub` bridge and
+`migration_lifecycle.py`'s lineage recorder in one place). Found and fixed
+a real, previously-unflagged gap: `legacy_grace_registration.
+bind_telegram_after_registration()`/`resolve_ambiguous_telegram_ownership()`
+resolved an absorbed alias's raw `account_id` and called
+`link_telegram_owner()` directly, which raises `AccountSchemaError`
+(uncaught by these functions — only `IdentityConflict` was handled) for a
+CLOSED account instead of the correct `ALREADY_BOUND`/`CONFLICT` outcome
+against the survivor; a real customer typing the absorbed username into the
+bot would have hit an unhandled error. Fixed by canonicalizing first.
+`subscription_admin_ops.py` (PH7-01 expiry ops) had no account-status check
+at all — added one. Verified already-safe without any change, by reading
+the code: `direct_enrollment.py`'s alias-conflict guard, `device_slots.py`'s
+`_entitlement_capacity()` (hard-requires `account_status='ACTIVE'`),
+`manual_payment.py`/`entitlement_engine.py`, `device_slot_admin.py`
+Disable/Enable, Stars/WL purchase paths (resolve via `telegram_id`, never
+via username, and the absorbed account never had one).
+
+**Tests:** 34 new focused tests (`tests/test_account_consolidation.py`)
+covering schema/trigger immutability, both resolver fixes end to end, close
+preconditions independently, the canonical genesis-child Revoke->Free
+sequence, merge replay/reversal/reopen idempotency, self-merge and both
+chain/cycle directions rejected, concurrent `create_merge()` (8 real
+threads) converging to one row, the CAS guard clause proven directly
+against a stale `row_version`, the exact D3->D6 transition and its
+refusals, survivor identity/credential/subscription byte-for-byte
+stability, absorbed account's pre-existing history untouched, and a
+completely unrelated third account provably unaffected. Full regression:
+`1298 passed, 4 skipped` (zero regressions). `git diff --check` clean
+throughout.
+
+**Production rollout, this session, real accounts:** fresh encrypted
+backup (`mgboost-db-20260827T114917Z.tar.gpg`, `--verify` PASS) before
+anything; fast-forward deploy `9b38c91..d5ed3b7` (bundles `9edd42e` and all
+PH7-13 work into one `mgboost-panel` restart — the only service that needed
+it); schema applied automatically, `quick_check=ok`, zero FK violations.
+GLM fix re-verified against real production data post-deploy. A fresh
+read-only re-check of accounts 5/6 immediately before mutating found one
+real change since the original analysis session: account 6's real Android
+device had organically migrated onto a second real slot (`mgc_
+efwxdfyhmimnyb3dh37gaj3tl4`) in the interim — the merge plan required zero
+changes for this and none were made. Executed via a new, reviewed,
+hardcoded-target script (`scripts/dl057_megochel_consolidation.py`) that
+only ever calls the canonical primitives above, never raw SQL. The script
+itself had two real bugs, both caught live in production by its own
+typed exceptions before any wrong data was written, both fixed and
+redeployed before a clean completion: a 15-character `idempotency_key` one
+byte under `child_lifecycle`'s 16-minimum (caught immediately after the
+real Marzban `REVOKE` had already succeeded — safe, since revoke/re-run is
+idempotent and the retry never re-rotated the UUID); and a preflight that
+required the genesis child to still be "non-terminal", which broke
+resuming once `REVOKE` had already made it terminal (fixed to match by the
+keyed genesis-HWID proof instead of lifecycle state). Full sequence
+completed cleanly: real Marzban `REVOKE`+`FREE` on account 5's genesis
+child -> `close_account(5)` (subscription `CANCELLED`) -> `create_merge
+(5->6)` -> `set_display_name(6,'Megochel')` -> `increase_device_limit
+(6,+3)` (`LEGACY_PAID_COMPAT_V1_D6`).
+
+**Post-mutation verification, all read-only against the live DB:** account
+5 `CLOSED`, subscription `CANCELLED`, slot `RELEASED`/`FREE`, zero `ACTIVE`
+generations anywhere for it; exactly one `mgboost_account_merges` row
+(`5->6`, `ACTIVE`) with exactly one `CREATED` event; account 6's Telegram
+identity (id 6, `telegram_id=1623120036`), opaque credential (id 9, same
+generation/`last_used_at`) and subscription (same row id 6) all
+byte-for-byte unchanged except the intended plan bump to
+`LEGACY_PAID_COMPAT_V1_D6` (`device_limit=6`, `wl_mode` still `UNLIMITED`,
+`current_expiry` still `NULL`, exactly one live subscription); new
+`display_name='Megochel'`; both legacy aliases (`MegochelPC`->5,
+`MegochelAndroid`->6) byte-for-byte untouched;
+`resolve_account_for_legacy_username('MegochelPC')` and
+`resolve_account_id(db,5)` both now return `6`; both real legacy Marzban
+users (`MegochelPC` id 4, `MegochelAndroid` id 5) confirmed `active` with
+traffic still accruing normally, completely untouched; unrelated account 2
+(pre-existing `DISABLED` canary) and the other 16 `ACTIVE` accounts
+unchanged (18 total, as before); all 5 services active, zero errors/
+tracebacks/5xx in logs across the whole operation;
+`admin_read_models.account_detail()`/`account_summaries()` confirmed
+showing `display_name='Megochel'` for account 6 and the new
+`consolidation` block correctly cross-referencing both sides.
+
+## State after this session
+
+Local HEAD, origin `main` and production are all at `d5ed3b7`, working
+tree clean on both ends except the pre-existing, unrelated untracked
+`extra_configs.json` on production (documented drift from prior sessions,
+not touched). `ROADMAP.md` PH7-13 is `[x]` with full production evidence;
+DL-057 records every owner decision behind this consolidation. Real
+customer accounts 5/6 are the only accounts this session ever mutated in
+production; no other customer mutation was performed.
+
+## Known follow-up gaps (not blocking, not started this session)
+
+- No frontend panel renders the new `consolidation`/`display_name` fields
+  yet beyond the existing title-fallback chain and the raw `account_detail`
+  JSON block; a dedicated "merged from" UI affordance would be a natural
+  follow-up but was out of scope.
+- `tests/test_admin_browser_e2e.py`'s Playwright suite is environment-gated
+  (`playwright` not installed in this sandbox) and was not exercised here;
+  it was not newly broken (same 2 skips as the pre-existing baseline) and
+  the `display_name` frontend change is otherwise covered by
+  `admin_read_models` tests only.
+- `reverse_merge()`/`reopen_account()` exist and are tested but were never
+  exercised against the real Megochel accounts (no reason to reverse a
+  successful, verified consolidation) — they remain available if the owner
+  ever needs to undo this specific merge.
+- The real device-count ambiguity flagged in the original read-only
+  analysis (3 vs 4 physical devices) was explicitly waived by the owner
+  ("trusted user") and was not re-investigated.
+
 # AGENT_HANDOFF — account-centric migration action semantics fixed (Telegram ↔ device-lineage coupling removed); local checkpoint commit, NOT deployed, NOT pushed
 
 Updated: 2026-08-27 (bugfix session on stable `9b38c91`, owner-reported admin

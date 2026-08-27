@@ -18,9 +18,9 @@
 ### Added
 
 - PH7-13 account consolidation / merge-supersession primitive, DL-057
-  (2026-08-27, **local checkpoint commit, pending independent review and
-  production deploy -- production NOT touched, origin NOT pushed**): a
-  minimal, additive canonical primitive for merging two already-independent
+  (2026-08-27, **production-deployed and executed 2026-08-27, fast-forwarded
+  to `d5ed3b7`**): a minimal, additive canonical primitive for merging two
+  already-independent
   parent accounts that turn out to be the same real person (the concrete
   case: `MegochelPC` + `MegochelAndroid` -> `Megochel`), since neither
   `mgboost_legacy_alias_groups` (one alias group per account, set once at
@@ -70,6 +70,32 @@
   lineage and `OK_MIGRATED` for any real `mgboost_migration_bindings`
   lineage regardless of Telegram status -- Telegram ownership and technical
   migration status are structurally independent inputs; not modified.
+  **Production evidence:** fresh encrypted backup (`--verify` PASS)
+  preceded the fast-forward deploy; `mgboost-panel` restarted (only service
+  needed), schema applied automatically, `quick_check=ok`/zero FK
+  violations. Executed against the real accounts 5 (`MegochelPC`, absorbed)
+  and 6 (`MegochelAndroid`, survivor) via a new reviewed script
+  (`scripts/dl057_megochel_consolidation.py`, hardcoded to exactly these two
+  accounts, no raw SQL write) through the primitives only: real Marzban
+  genesis-child `REVOKE`+`FREE` -> `close_account(5)` (subscription
+  `CANCELLED`) -> `create_merge(5->6)` -> `set_display_name(6,'Megochel')`
+  -> `increase_device_limit(6,+3)` (`LEGACY_PAID_COMPAT_V1_D6`). Two real
+  bugs surfaced and fixed live during rollout (a 15-character
+  `idempotency_key` one under the 16-minimum; a preflight check that
+  couldn't resume once the already-applied `REVOKE` made the genesis child
+  intent "terminal") -- both fixed and redeployed before a clean re-run;
+  every retry was safe because the underlying primitives are independently
+  idempotent (the real Marzban `REVOKE` was never re-rotated). Post-mutation
+  verification confirmed: account 5 `CLOSED`/subscription `CANCELLED`/slot
+  `RELEASED`+`FREE`/zero `ACTIVE` generations; exactly one `ACTIVE` merge
+  row (`5->6`); account 6's Telegram identity, opaque credential and
+  subscription id all byte-for-byte unchanged, now `display_name='Megochel'`
+  and `LEGACY_PAID_COMPAT_V1_D6`; both legacy aliases (`MegochelPC`->5,
+  `MegochelAndroid`->6) untouched; `resolve_account_for_legacy_username
+  ('MegochelPC')` now returns 6; both real legacy Marzban users confirmed
+  `active` with traffic still accruing, untouched; unrelated accounts/
+  cardinalities unchanged; zero errors/5xx across the operation. Local =
+  origin = production = `d5ed3b7`.
 - Operational admin completion wave 2 (2026-08-27, **local checkpoint commit,
   pending independent review and production deploy -- production NOT touched,
   origin NOT pushed**): the two remaining operational-admin gaps are closed
@@ -295,7 +321,7 @@
 
 ### Fixed
 
-- Account-centric admin migration status no longer reuses Telegram semantics (2026-08-27, **local checkpoint commit, pending independent review and production deploy -- production NOT touched, origin NOT pushed**): `classify_action()`'s fallback labeled every account without real-device migration lineage `WAITING_FOR_REGISTRATION` ("Ожидает Telegram"), so a BOUND owner with zero real devices showed a Telegram-waiting pseudo migration state, and `OK_MIGRATED` additionally required an active slot on top of migrated lineage. The fallback is now device-migration semantics: zero real-device lineage = `WAITING_FIRST_DEVICE` ("Ожидает первого подключения"), any real lineage (`MIGRATING`/`MIGRATED`/`LEGACY_REVOKE_PENDING`/`LEGACY_REVOKED`) = `OK_MIGRATED` ("Миграция штатно"). Telegram ownership stays an independent read-model column via the unchanged `telegram_status()`; RECONCILE_REQUIRED / MANUAL_REVIEW / COMPATIBILITY_BLOCK / CONTACT_USER precedence is unchanged (CONTACT_USER thereby narrows to zero-lineage campaign members, its natural outreach audience). Pure read-model derivation fix, no schema/API shape changes; frontend label map and the PH4-05 daily report blocker text updated; both mandatory regression cases covered at every surface (list, detail, browser render).
+- Account-centric admin migration status no longer reuses Telegram semantics (2026-08-27, **independently re-verified and production-deployed 2026-08-27 as part of the PH7-13 rollout below, fast-forwarded to `d5ed3b7`**): `classify_action()`'s fallback labeled every account without real-device migration lineage `WAITING_FOR_REGISTRATION` ("Ожидает Telegram"), so a BOUND owner with zero real devices showed a Telegram-waiting pseudo migration state, and `OK_MIGRATED` additionally required an active slot on top of migrated lineage. The fallback is now device-migration semantics: zero real-device lineage = `WAITING_FIRST_DEVICE` ("Ожидает первого подключения"), any real lineage (`MIGRATING`/`MIGRATED`/`LEGACY_REVOKE_PENDING`/`LEGACY_REVOKED`) = `OK_MIGRATED` ("Миграция штатно"). Telegram ownership stays an independent read-model column via the unchanged `telegram_status()`; RECONCILE_REQUIRED / MANUAL_REVIEW / COMPATIBILITY_BLOCK / CONTACT_USER precedence is unchanged (CONTACT_USER thereby narrows to zero-lineage campaign members, its natural outreach audience). Pure read-model derivation fix, no schema/API shape changes; frontend label map and the PH4-05 daily report blocker text updated; both mandatory regression cases covered at every surface (list, detail, browser render). Production evidence: real accounts checked via `scripts/ph4_05_daily_cohort_report.py` post-deploy show account 6 (`BOUND`+real lineage) -> `OK_MIGRATED` and account 5 (`UNREGISTERED`+zero lineage) -> `WAITING_FIRST_DEVICE`.
 
 ### Security
 
