@@ -1562,7 +1562,7 @@ explicitly out of this task's own scope.
 **Transition policy (OPD-18):** shared/manual можно переключать в current period; перераспределяется только unspent remainder.
 **Tests:** allocated 60/consumed 50 cannot shrink to 10; concurrency/shared-mode transition, repeated transition cannot refund consumption.
 
-## [ ] PH6-06 — Exact inbound-only state machine — P2
+## [x] PH6-06 — Exact inbound-only state machine — P2
 
 **Depends:** PH1-05, PH6-01, children.
 **States:** `ACTIVE -> DISABLE_PENDING -> DISABLED`; `DISABLED -> ENABLE_PENDING -> ACTIVE`; mismatch `ERROR_RECONCILE`. Local DB holds desired.

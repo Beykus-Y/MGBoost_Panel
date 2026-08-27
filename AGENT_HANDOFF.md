@@ -76,9 +76,52 @@ confirmed with the owner before deleting, then deleted only that exact
 anonymous pattern; venvs/caches/repo untouched, matching the established
 precedent. `git diff --check` clean; all changed/new python files compile.
 
+## Production deploy (2026-08-27, this session, owner-authorized)
+
+Fresh encrypted backup create/restore `PASS` (`scripts/secure_db_backup.py`,
+isolated-tempdir decrypt+checksum+quick_check, before touching anything).
+Preflight over SSH: HEAD `14bdbcf` == local(pre-fix) == origin, only the
+known untracked `extra_configs.json` drift, all 3 services active,
+`quick_check=ok`, 0 FK violations, cardinalities accounts=18/
+subscriptions=18/child_intents=47/wl_periods=0, PH6-06's three prerequisite
+migration checksums (`ph3_01_parent_account_v1`/
+`ph3_03_child_prerequisites_v1`/`ph6_03_wl_usage_ledger_v1`) byte-identical
+to local. Pushed the fix commit, fast-forward pulled on production
+(`14bdbcf..33eaae0`), restarted **only** `mgboost-panel` (the additive
+migration self-applies on `Database()` construction, same class as every
+prior PH6-xx deploy). Post-deploy: `quick_check=ok`, 0 FK violations,
+`ph6_06_wl_enforcement_v1` migration row present with the exact local
+checksum, all three new tables present and **empty** (`states`/`ops`/
+`events` = 0/0/0 — dormant, no state created for anyone), unrelated
+cardinalities byte-identical to preflight, all 3 services active, no
+error/traceback/5xx in any service's journal since restart. Broker
+allowlist confirmed to include `child.user.wl.set` live in the running
+process; broker journal shows only ordinary read traffic
+(`child.user.observe`/`legacy.nodes.list`), zero new op calls. Ran ONE
+live, read-only PH6-01 topology assertion (`fetch_live_topology_
+observation` + `run_assertion` + `require_topology_ok()`, explicitly
+owner-pre-approved as read-only) — real production topology still matches
+the exact `2026-08-26-v1` baseline (`ok=True`, zero missing/extra/
+mismatched), appended one row to the append-only
+`mgboost_wl_topology_assertions` table (2 total now), touched nothing
+enforcement-related. A real legacy `/sub/<token>` fetch (token derived
+live from Marzban, never printed/logged) returned `200` with a normal
+subscription body. The opaque `/…` route was NOT smoke-tested — it is
+independently dormant in production for two unrelated, pre-existing
+reasons (`OPAQUE_SUBSCRIPTION_ENABLED` defaults off; nginx does not proxy
+any path to it), confirmed by reading `src/routes/opaque_sub.py`'s own
+docstring, not assumed. **Zero enforcement ops/state rows created for any
+customer; zero Marzban user/inbound/UUID/expiry/status mutated anywhere;
+zero real WL disable/enable transitions performed.** Final HEAD:
+local = origin = production = `33eaae0`.
+
 ## Exact next step
 
-[[UPDATED BELOW ONCE DEPLOY COMPLETES THIS SAME SESSION]]
+Independent review + deploy of this checkpoint is now closed. PH6-06 stays
+dormant/on-demand (`python -m scripts.run_wl_quota_enforcement`) until the
+owner separately authorizes PH6-07 (scheduler/periodic-reconciliation
+wiring — see `ROADMAP.md`'s rewritten PH6-07 entry for the exact narrowed
+scope). PH6-07 was explicitly NOT started this session.
 
 ---
 
