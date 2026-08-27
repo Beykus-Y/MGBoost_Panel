@@ -3563,6 +3563,65 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Связано:** PH3-01, PH4-01, PH3-05, PH4-03, PH7-13, `src/account_consolidation.py`,
   `src/account_consolidation_schema.py`, `src/legacy_paid_compat.py::increase_device_limit`.
 
+## DL-058 — `tpl-<public_id>` per-account provisioning template: Вариант A принят, cleanup — backlog
+
+- **Дата:** 2026-08-28.
+- **Вопрос:** независимый review PH5-11/PH5-12 (`f228b46..b22e5f8`) обнаружил,
+  что per-account infrastructure-owned Marzban template user
+  (`tpl-<public_id>`, один на каждый commercial account) можно прочитать
+  двумя способами: (A) технически необходимо, потому что существующий
+  `ChildProvisioningStore.prepare_child_ensure` жёстко требует, чтобы
+  source-alias принадлежал ТОМУ ЖЕ `account_id`; (B) избыточная per-customer
+  стоимость — это ограничение защищает от клонирования чужого
+  ДИФФЕРЕНЦИРОВАННОГО legacy-контента, а STANDARD-шаблон одинаков для всех
+  клиентов по построению, так что 1:1 — следствие переиспользования
+  существующей таблицы, а не security-необходимость. Два независимых
+  под-ревью в рамках одной сессии разошлись именно на этом пункте; ни одно
+  не решало самостоятельно.
+- **Выбрано:** Вариант A — оставить per-account `tpl-<public_id>` как есть
+  для текущего rollout. Обоснование (владелец): `tpl-*` — исключительно
+  infrastructure-provisioning source, не customer-facing identity; его
+  `source_contract_hash` (64-hex) используется для клонирования конфигурации
+  child'а, а сам template UUID/subscription URL никогда не передаются
+  клиенту и не могут использоваться как самостоятельная customer
+  subscription (подтверждено по коду: `opaque_resolver.py` читает только
+  `source_contract_hash` из `mgboost_provisioning_templates`, child получает
+  собственный Marzban-minted UUID — `child_provisioning.py`). Per-account
+  template не расширяет broker security model (не даёт новую authority
+  сверх уже существующего same-account alias-scoping). Redesign на
+  shared/pooled system-template (Вариант B) отклонён для этого запуска —
+  реальная архитектурная работа вне скоупа первого коммерческого launch.
+- **Явное условие owner'а (не просто рекомендация — inline STOP-триггер):**
+  это решение недействительно, и деплой должен быть немедленно
+  остановлен, если ревью в любой момент обнаружит, что (1) template
+  UUID/credential каким-либо путём может попасть клиенту, (2) template
+  способен использоваться как самостоятельная customer subscription, или
+  (3) per-account template создаёт дополнительную security authority сверх
+  уже существующей same-account alias-изоляции. Независимая проверка этого
+  условия на момент принятия решения (2026-08-28) подтвердила: ни один из
+  трёх триггеров не наблюдается в текущем коде.
+- **Backlog (не реализовано в этой сессии, обязательно завести отдельно):**
+  lifecycle/cleanup `tpl-<public_id>` при terminal `close_account()`/
+  консолидации/удалении аккаунта. Подтверждённый факт: `close_account()`
+  (`src/account_consolidation.py`) сейчас не знает о
+  `mgboost_provisioning_templates` вообще — при закрытии аккаунта
+  инфраструктурный Marzban-пользователь `tpl-*` остаётся `ACTIVE`
+  бессрочно, без аудита и без reversal. Будущая реализация обязана: (a)
+  затрагивать только template-ресурсы, доказанно принадлежащие закрываемому
+  `account_id` (тот же паттерн проверки владения, что уже используется в
+  `child_provisioning.py::prepare_child_ensure`); (b) быть crash-safe и
+  idempotent (get-or-transition, не безусловная мутация); (c) писать
+  audit-запись с before/after/reason, как остальные terminal-операции
+  аккаунта (PH3-05 Revoke/Free, DL-057 consolidation).
+- **Кто:** пользователь (владелец).
+- **Почему:** зафиксировать выбор между двумя равно защитимыми прочтениями
+  одного и того же кода как owner decision, а не как невалидированное
+  предположение любого из реализующих/ревьюирующих агентов — вместе с явным,
+  проверяемым условием, при котором решение перестаёт действовать.
+- **Связано:** PH5-11, PH5-12, `src/commercial_signup.py::ensure_template_for_account`,
+  `src/child_provisioning.py::prepare_child_ensure`, `src/account_consolidation.py::close_account`,
+  DL-057.
+
 # Contradictions and migration hazards
 
 1. Current production Stars 199/349 совпадает по цене с будущим WL, но schema не содержит plan/WL/device semantics; старые invoices нельзя молча переинтерпретировать.

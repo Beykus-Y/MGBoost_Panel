@@ -1,3 +1,21 @@
+## UPDATE (2026-08-28, same session): owner resolved the `tpl-<public_id>` question — see DL-058
+
+Owner chose Variant A (keep per-account `tpl-<public_id>` as-is for this
+rollout; it is infrastructure-only, never customer-facing identity),
+explicitly conditioned on: template UUID/credential never reaching the
+customer, template never usable as a standalone customer subscription, and
+per-account template never granting extra security authority. Re-verified
+by code before proceeding: none of the three triggers hold (`opaque_
+resolver.py` only reads `source_contract_hash`, never the template's UUID/
+URL; child gets its own Marzban-minted identity). Cleanup/lifecycle at
+`close_account()` recorded as backlog, not implemented this session — see
+`DL-058` in ROADMAP.md for the full decision and its explicit invalidation
+condition. Owner also granted this session SSH access to production to
+proceed with the remaining preflight/push/deploy/seed steps; see further
+updates below this line as that work happens.
+
+---
+
 # AGENT_HANDOFF — PH5-11/PH5-12 independent review: APPROVED WITH FIXES for implementation defects; deploy BLOCKED on an unresolved `tpl-<public_id>` architecture question; NOT pushed, NOT deployed
 
 Updated: 2026-08-28 (independent-review session, starting from local `b22e5f8`
