@@ -106,17 +106,62 @@ data point)
   cross-primitive ambiguities through an explicit DL like it already does
   for other product questions), not a correctness or security concern.
 
+## Production rollout (2026-08-27), following this review's own approval gates
+
+Fresh encrypted backup create/restore `PASS`
+(`scripts/secure_db_backup.py`); preflight confirmed HEAD `f7ea7f4`,
+`quick_check=ok`, 0 FK violations, cardinalities
+`accounts=18/subscriptions=18/manual_payments=0/child_lifecycle_ops=20/
+ownership_rebind_ops=0`, `SLOT_*`/`ADMIN_EXPIRY_ADJUSTMENT` rows `=0`, all 4
+services active; pushed reviewed HEAD (`78588bc` — the checkpoint plus this
+review's DL-056/verdict documentation, no code changes) to `origin/main`;
+`git pull --ff-only` on production to `78588bc`; `systemctl restart
+mgboost-panel` only (no schema/migration in the diff, independently
+confirmed); post-deploy: `quick_check=ok`, 0 FK violations, every
+cardinality above byte-identical before/after, all 4 services active, zero
+errors/tracebacks in the journal since restart. Safe HTTP smoke via the
+app's real `LISTEN_PORT=8001` (re-confirmed the documented gotcha that
+nginx's public `panel.beykus.fun` default location proxies to Marzban's own
+port 8000, not this app — not a new incident): unauthenticated
+`/admin/accounts`/`/admin/dashboard` and the two NEW mutation routes
+(`expiry/preview`, `devices/1/disable`) all `401`; bogus legacy `/sub` token
+`404`; all 7 admin JS modules incl. the new `expiry_ops.js` and `/admin`
+index `200`. Read-only direct-call verification (`Database()` +
+`admin_read_models.account_detail` + `admin_audit_timeline.account_timeline`)
+against 5 real production accounts ran without exception, zero raw secret
+markers in any timeline. **No real expiry adjustment, device disable/enable,
+revoke, free or rebind was created at any point** — every production touch
+this session was read-only until the reviewed code deploy itself, which made
+zero data-row changes. Final HEAD: local/origin/production all `78588bc`.
+
+## Roadmap status set by this session
+
+PH7-01 (admin expiry operations) → `[x]` — its Accept/tests bullets
+(preview/reason, all children converge, 12-child scale, UNLIMITED/plan-less
+refusal, concurrent-mutation CAS) are all genuinely covered and now
+production-deployed. PH7-05 (device slot administration) stays `[~]` —
+Disable/Enable are now production-deployed and reviewed-correct alongside
+Revoke/Free/Rebind, but add/remove slots & restore-baseline remain unbuilt
+(explicitly PH5-07/PH7-06 territory), so the task's own full Ops list is
+still not satisfied. PH7-08 (immutable administrative audit trail) stays
+`[~]` — both new families' write-side evidence is production-deployed, but
+the unified emit point for every future operation kind (PH7-11) remains
+unbuilt. DL-056 added to the Decision Log.
+
 ## Exact next step
 
-Per this review's own gates (APPROVED, tests green, DL-056 resolves the only
-ambiguity): commit the DL-056/review documentation, then proceed with
-production deploy (fresh backup, preflight, push, `git pull --ff-only`,
-`systemctl restart mgboost-panel` only, post-deploy verification, no real
-mutations for smoke). After deploy, PH7-01/PH7-05/PH7-08 statuses get
-updated with production evidence and ADMIN DONE can be declared per the
-owner's own brief — do not start WL enforcement, PH5-06, promo codes, live
-Stars sales, PH4-06 or the reseller system without a fresh explicit owner
-decision.
+Per the owner's own brief for this slice: with PH7-01/PH7-05 Disable-Enable/
+PH7-08-for-these-families independently reviewed, DL-056 resolving the only
+ambiguity, and production deploy verified with zero data mutation, **ADMIN
+DONE can be declared for the scope this task defined** (operational admin
+completion: expiry ops + reversible device pause + their write-side audit
+evidence, on top of the already-deployed Revoke/Free/Rebind/manual-payments/
+ownership-rebind/dashboard work). Explicitly out of this declaration and NOT
+started: PH7-05's add/remove/restore-baseline, PH7-11's unified audit-emit
+framework, WL enforcement/PH6, PH5-06 upgrade/downgrade, live Stars sales,
+promo codes, PH4-06, the reseller system and cosmetic redesign — the next
+phase per the owner's own instruction is **WL**, gated on a fresh explicit
+owner decision to start it.
 
 ---
 

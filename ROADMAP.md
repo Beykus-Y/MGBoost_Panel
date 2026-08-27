@@ -1600,7 +1600,7 @@ explicitly out of this task's own scope.
 
 # Phase 7 — Admin controls
 
-## [ ] PH7-01 — Expiry operations and child sync
+## [x] PH7-01 — Expiry operations and child sync
 
 **Depends:** PH3-08/outbox. **Ops:** +7/+30/+60, -N, exact date, end now; no WL reset.
 **Accept/tests:** preview/reason, all children converge, timezone/concurrent Stars/12 children.
@@ -1651,6 +1651,38 @@ needed. Independently re-ran the full suite after a confirmed `/tmp`
 scratch-quota exhaustion (same known class as prior sessions; cleaned only
 hour-stale anonymous `/tmp/tmp*` dirs): **1266 passed, 0 failed, 0
 skipped**, matching the implementer's own count exactly.
+
+**Production rollout (2026-08-27), following this review's own approval
+gates:** fresh encrypted backup create/restore `PASS`
+(`scripts/secure_db_backup.py`, default `/var/backups/mgboost`); preflight
+confirmed HEAD `f7ea7f4`, `quick_check=ok`, 0 FK violations, cardinalities
+`accounts=18/subscriptions=18/manual_payments=0/child_lifecycle_ops=20/
+ownership_rebind_ops=0` (all pre-existing), `SLOT_*`/`ADMIN_EXPIRY_
+ADJUSTMENT` rows `=0`, all 4 services active; pushed reviewed HEAD
+(`78588bc`, the checkpoint plus this review's DL-056/verdict documentation
+-- no code changes) to `origin/main`; `git pull --ff-only` on production to
+`78588bc`; `systemctl restart mgboost-panel` only (confirmed no schema/
+migration diff); post-deploy: `quick_check=ok`, 0 FK violations, every
+cardinality above byte-identical, all 4 services active, zero errors/
+tracebacks in the `mgboost-panel` journal since restart. Safe HTTP smoke via
+the app's real `LISTEN_PORT=8001` (not nginx's `panel.beykus.fun` default
+location, which proxies unrelated paths to Marzban's own port 8000 --
+the documented gotcha from earlier sessions, re-confirmed, not a new
+incident): unauthenticated `/admin/accounts`/`/admin/dashboard` and the two
+NEW mutation routes (`POST .../expiry/preview`, `POST .../devices/1/disable`)
+all `401`; bogus legacy `/sub` token `404`; all 7 admin JS modules incl. the
+new `expiry_ops.js` and `/admin` index `200`. Read-only direct-call
+verification (`Database()` + `admin_read_models.account_detail` +
+`admin_audit_timeline.account_timeline`, no HTTP session forged, matching
+this project's established read-only-verification precedent) against 5 real
+production accounts ran without exception and confirmed zero `mgc_`/
+`sha256:`/`hmac-sha256:`/`Bearer `/`uuid_verifier`/`hwid_verifier` markers in
+any timeline. **No real expiry adjustment, device disable/enable, revoke,
+free, rebind or any other mutation was created at any point** -- every
+production touch this session was read-only until the reviewed code deploy
+itself, and the deploy made zero data-row changes (cardinalities identical
+before/after, `SLOT_*`/`ADMIN_EXPIRY_ADJUSTMENT` rows stayed `0`). Final
+HEAD: local/origin/production all `78588bc`.
 
 ## [ ] PH7-02 — WL quota breakdown
 
@@ -1754,6 +1786,13 @@ IDOR, CSRF or secret-leak issue found in the new routes (`disable`/`enable`/
 except read-only `sync`'s primary-capability-gated retry, mandatory
 reason+confirm per DL-055, no raw HWID/UUID/bearer in evidence JSON --
 verified by `test_new_mutations_surface_in_existing_timeline_without_secrets`).
+DL-056 resolves the one product ambiguity found (Rebind-after-Disable
+consumes the pause; kept as-is, no code change). **Disable/Enable are now
+production-deployed** as part of this same review's rollout (see PH7-01's
+"Production rollout" entry above for the full evidence -- one push/deploy
+covered both families at HEAD `78588bc`); still `[~]` because add/remove
+slots & restore-baseline remain unbuilt (PH5-07/PH7-06 territory), not
+because Disable/Enable themselves are unverified.
 
 **Independent review (2026-08-27) found and fixed one P0 and one related P1/P2,
 both in the same root cause, before deploy:** `_existing_slot_op`
@@ -1842,7 +1881,10 @@ existing generic timeline projector with zero code changes to
 `admin_audit_timeline.py` -- confirmed by reading the projector's query (no
 operation-kind filtering) and by
 `test_new_mutations_surface_in_existing_timeline_without_secrets`. No second
-audit framework introduced.
+audit framework introduced. **Both families' write-side evidence is now
+production-deployed** (HEAD `78588bc`, 2026-08-27; see PH7-01's "Production
+rollout" entry); still `[~]` because the unified emit point covering every
+future operation kind (PH7-11) remains unbuilt.
 
 ## [ ] PH7-09 — Safe plan/entitlement admin
 
