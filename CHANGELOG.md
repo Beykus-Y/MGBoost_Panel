@@ -17,6 +17,59 @@
 
 ### Added
 
+- PH7-13 account consolidation / merge-supersession primitive, DL-057
+  (2026-08-27, **local checkpoint commit, pending independent review and
+  production deploy -- production NOT touched, origin NOT pushed**): a
+  minimal, additive canonical primitive for merging two already-independent
+  parent accounts that turn out to be the same real person (the concrete
+  case: `MegochelPC` + `MegochelAndroid` -> `Megochel`), since neither
+  `mgboost_legacy_alias_groups` (one alias group per account, set once at
+  bootstrap) nor any existing store supports reassigning history across
+  accounts -- every account-scoped table's identity, including
+  `legacy_username`, is immutable by design. New checksum-pinned schema
+  `mgboost_account_merges`/`mgboost_account_merge_events` (append-only,
+  event-sourced `ACTIVE`/`REVERSED` state -- reversal is a new event plus a
+  CAS status flip, never a `DELETE`, and never resurrects the absorbed
+  account's revoked child/generation) and `mgboost_account_display_names`
+  (a purely cosmetic owner-set label, modeled like
+  `mgboost_telegram_identities`'s revoke-and-reinsert pattern, unrelated to
+  any legacy alias). New `src/account_consolidation.py`:
+  `resolve_account_id()` (the one shared canonicalizer), `create_merge()`/
+  `reverse_merge()` (self-merge, chain/cycle -- strict permanent bipartition,
+  bounded to depth 1 forever -- and conflicting-survivor rejection; replay-
+  and concurrency-safe), `close_account()`/`reopen_account()` (fail-closed
+  preconditions: no active Telegram OWNER identity, no non-terminal child
+  intent, no ACTIVE device slot generation; cancels any live subscription
+  with immutable evidence, in the correct order relative to
+  `ProvenanceStore`'s own CLOSED-account write guard), `set_display_name()`.
+  New `legacy_paid_compat.increase_device_limit()`: the one canonical way to
+  raise an *already-provisioned* legacy-compat subscription's device limit
+  in place (`ensure_legacy_paid_compat_entitlement()` only ever bootstraps a
+  brand-new entitlement and hard-conflicts on any existing different plan --
+  it has no upgrade path) -- changes only `current_plan_version_id`, never
+  expiry/status/WL semantics, never a second subscription row, refuses any
+  billed/commercial or non-`LEGACY_PAID_COMPAT_V1_D{n}` plan outright (PH5-06
+  upgrade/downgrade territory, not implemented). Resolver-coverage audit
+  beyond the obvious legacy-bridge path found and fixed a real gap:
+  `legacy_grace_registration.bind_telegram_after_registration()`/
+  `resolve_ambiguous_telegram_ownership()` resolved an alias's raw
+  `account_id` and called `link_telegram_owner()` directly, which raises
+  `AccountSchemaError` (uncaught by these functions) for a CLOSED absorbed
+  account instead of the intended `IdentityConflict` -- both now
+  canonicalize through `resolve_account_id()` first. `subscription_admin_ops`
+  (PH7-01 expiry ops) gained an explicit CLOSED-account guard it was missing.
+  `admin_read_models`/`accounts.js` show the owner-set `display_name` first,
+  falling back to the existing note/primary-alias/public_id chain unchanged;
+  account detail exposes a new `consolidation` block (absorbed-into /
+  absorbs) for both sides of a merge. 34 new focused tests
+  (`tests/test_account_consolidation.py`) plus full regression: `1298
+  passed, 4 skipped` (was `1264 passed, 4 skipped` -- zero regressions).
+  Independently re-verified `9edd42e` (already-implemented device-migration-
+  status GLM bugfix, checked in this session): `classify_action()` now
+  yields `WAITING_FIRST_DEVICE` for Telegram-`BOUND` + zero real-device
+  lineage and `OK_MIGRATED` for any real `mgboost_migration_bindings`
+  lineage regardless of Telegram status -- Telegram ownership and technical
+  migration status are structurally independent inputs; not modified.
 - Operational admin completion wave 2 (2026-08-27, **local checkpoint commit,
   pending independent review and production deploy -- production NOT touched,
   origin NOT pushed**): the two remaining operational-admin gaps are closed

@@ -245,6 +245,7 @@ def test_note_display_fallback_and_multiple_aliases_are_deterministic(db):
     notes = {"primary_alias": "  Алиса  ", "secondary_alias": "Другой label"}
     detail = account_detail(db, created["account_id"], notes_by_alias=notes, now=200)
     assert detail["display_identity"] == {
+        "display_name": None,
         "display_note": "Алиса", "display_note_source_alias": "primary_alias",
         "primary_alias": "primary_alias", "public_id": detail["account"]["public_id"],
     }

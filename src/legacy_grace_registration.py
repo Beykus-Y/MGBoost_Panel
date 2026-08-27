@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import time
 
+from .account_consolidation import resolve_account_id
 from .legacy_grace import GraceAlreadyStarted
 
 
@@ -129,7 +130,13 @@ def bind_telegram_after_registration(
     ).fetchone()
     if alias_row is None:
         return "NO_ACCOUNT"
-    account_id = alias_row["account_id"]
+    # DL-057: an absorbed account's own legacy alias never accepts a new
+    # Telegram OWNER identity (it is CLOSED) -- canonicalize to the
+    # survivor first, exactly like the legacy bridge resolver does for
+    # device operations, so a customer typing an absorbed username here
+    # resolves to (and reports BOUND/CONFLICT against) the real, live
+    # survivor account instead of raising against a closed one.
+    account_id = resolve_account_id(db, alias_row["account_id"])
 
     already_owner = db._conn.execute(
         "SELECT telegram_id FROM mgboost_telegram_identities "
@@ -195,7 +202,8 @@ def resolve_ambiguous_telegram_ownership(
     ).fetchone()
     if alias_row is None:
         raise GraceRegistrationError("no bootstrapped account exists for this legacy username")
-    account_id = alias_row["account_id"]
+    # DL-057: same canonicalization as `bind_telegram_after_registration`.
+    account_id = resolve_account_id(db, alias_row["account_id"])
 
     evidenced_ids = {
         int(row["telegram_id"]) for row in db._conn.execute(

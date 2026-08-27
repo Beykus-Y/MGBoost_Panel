@@ -155,7 +155,15 @@ class LegacyBridgeStore:
         Never infers from username shape/prefix/similarity. Ambiguous or
         missing mapping (no alias, no binding, or a disabled binding) all
         return None -- the caller must fall through to the unmodified legacy
-        response, never guess or auto-create."""
+        response, never guess or auto-create.
+
+        DL-057: if the resolved account was absorbed by an ACTIVE PH7-13
+        merge, this returns the survivor's id instead -- the immutable
+        alias/binding rows keep pointing at the absorbed account exactly as
+        they always have, but any *new* device/child operation must land on
+        the canonical survivor. A real device reconnecting on the absorbed
+        legacy username transparently migrates onto the survivor's slot
+        pool, never onto the closed account."""
         if not isinstance(legacy_username, str) or not legacy_username:
             return None
         row = self._conn.execute(
@@ -165,4 +173,12 @@ class LegacyBridgeStore:
             "WHERE a.legacy_username=? AND b.enabled=1",
             (legacy_username,),
         ).fetchone()
-        return row["account_id"] if row else None
+        if row is None:
+            return None
+        account_id = row["account_id"]
+        merge_row = self._conn.execute(
+            "SELECT survivor_account_id FROM mgboost_account_merges "
+            "WHERE absorbed_account_id=? AND status='ACTIVE'",
+            (account_id,),
+        ).fetchone()
+        return merge_row["survivor_account_id"] if merge_row else account_id

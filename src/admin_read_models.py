@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 
+from .account_consolidation import get_display_name, resolve_account_id
 from .admin_audit_timeline import account_timeline
 from .device_headers import PLATFORMS as _RAW_PLATFORM_LABELS
 from .entitlement_engine import EntitlementNotFoundError
@@ -47,16 +48,34 @@ def _aliases(connection, account_id: int, notes_by_alias: dict[str, str] | None 
     return result
 
 
-def _display_identity(account: dict, aliases: list[dict]) -> dict:
-    """Presentation identity only; never used for account linkage/authority."""
+def _display_identity(connection, account: dict, aliases: list[dict]) -> dict:
+    """Presentation identity only; never used for account linkage/authority.
+
+    DL-057: `display_name` (an owner-set PH7-13 label, e.g. "Megochel" for a
+    merged account) outranks the ad-hoc per-alias `display_note` and the
+    bare legacy `primary_alias` wherever a single human-facing title is
+    needed -- absent one, behavior is unchanged."""
     primary = aliases[0] if aliases else None
     noted = next((alias for alias in aliases if alias.get("note")), None)
+    display_name = get_display_name(_DisplayNameDb(connection), account["id"])
     return {
+        "display_name": display_name,
         "display_note": noted["note"] if noted else None,
         "display_note_source_alias": noted["legacy_username"] if noted else None,
         "primary_alias": primary["legacy_username"] if primary else None,
         "public_id": account["public_id"],
     }
+
+
+class _DisplayNameDb:
+    """Adapts a bare connection to the tiny `db._conn` surface
+    `account_consolidation.get_display_name()` needs, so this read-only
+    presentation module never has to carry a full `Database` reference."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, connection):
+        self._conn = connection
 
 
 def _is_technical_account(connection, account: dict) -> bool:
@@ -439,7 +458,7 @@ def account_detail(
         (int(account_id),),
     ).fetchall()
     aliases = _aliases(db._conn, account_id, notes_by_alias)
-    identity = _display_identity(account, aliases)
+    identity = _display_identity(db._conn, account, aliases)
     action_availability = _device_action_availability(db._conn, account_id)
     devices = _device_summaries(
         db._conn, account_id, device_slot_hmac_key=device_slot_hmac_key,
@@ -468,6 +487,7 @@ def account_detail(
         "legacy_stars_invoices": _legacy_stars_summary(db, aliases),
         "timeline": account_timeline(db, account_id, limit_per_source=15),
         "technical": _technical_summary(db._conn, account_id, account["public_id"]),
+        "consolidation": _consolidation_summary(db, account_id),
     }
 
 
@@ -484,7 +504,7 @@ def account_summaries(
         if technical and not include_technical:
             continue
         aliases = _aliases(db._conn, account["id"], notes_by_alias)
-        identity = _display_identity(account, aliases)
+        identity = _display_identity(db._conn, account, aliases)
         grace = account_grace_snapshot(db, account["id"], now=timestamp)
         subscription = _subscription_summary(db, account["id"], now=timestamp)
         result.append({
@@ -528,7 +548,7 @@ def migration_grace_summaries(
         aliases = _aliases(db._conn, account_id, notes_by_alias)
         rows.append({
             **snapshot,
-            **_display_identity(account, aliases),
+            **_display_identity(db._conn, account, aliases),
             "grace": _grace_progress(snapshot["grace"], now=timestamp),
             "technical_account": technical,
             "action": classify_action(snapshot),
@@ -558,13 +578,36 @@ def migration_grace_summaries(
     return {"generated_at": timestamp, "summary": summary, "accounts": rows}
 
 
+def _consolidation_summary(db, account_id: int) -> dict:
+    """DL-057: surfaces PH7-13 merge state on both sides -- what this
+    account absorbed (as canonical survivor) and, if it is itself an
+    absorbed account, which survivor it now resolves to."""
+    absorbed_into = db._conn.execute(
+        "SELECT survivor_account_id,status,decision_ref,created_at "
+        "FROM mgboost_account_merges WHERE absorbed_account_id=?",
+        (int(account_id),),
+    ).fetchone()
+    absorbs_rows = db._conn.execute(
+        "SELECT m.absorbed_account_id,m.status,m.decision_ref,m.created_at,"
+        "(SELECT legacy_username FROM mgboost_legacy_account_aliases "
+        " WHERE account_id=m.absorbed_account_id AND alias_role='PRIMARY') AS legacy_username "
+        "FROM mgboost_account_merges m WHERE m.survivor_account_id=? ORDER BY m.created_at",
+        (int(account_id),),
+    ).fetchall()
+    return {
+        "absorbed_into": dict(absorbed_into) if absorbed_into else None,
+        "absorbs": [dict(row) for row in absorbs_rows],
+    }
+
+
 def _queue_label(db, account_id: int) -> dict:
+    account_id = resolve_account_id(db, account_id)
     account = db.accounts.get_account(account_id)
     if account is None:
         return {"account_id": account_id, "label": f"#{account_id}"}
     aliases = _aliases(db._conn, account_id)
-    identity = _display_identity(account, aliases)
-    label = identity["display_note"] or identity["primary_alias"] or identity["public_id"]
+    identity = _display_identity(db._conn, account, aliases)
+    label = identity["display_name"] or identity["display_note"] or identity["primary_alias"] or identity["public_id"]
     return {"account_id": account_id, "label": label,
             "primary_alias": identity["primary_alias"]}
 
@@ -691,8 +734,8 @@ def dashboard_summary(
         item = dict(row)
         account = db.accounts.get_account(item["id"])
         aliases = _aliases(db._conn, item["id"], notes_by_alias)
-        identity = _display_identity(account, aliases)
-        item["label"] = identity["display_note"] or identity["primary_alias"] or identity["public_id"]
+        identity = _display_identity(db._conn, account, aliases)
+        item["label"] = identity["display_name"] or identity["display_note"] or identity["primary_alias"] or identity["public_id"]
         item["primary_alias"] = identity["primary_alias"]
         seconds = item["current_expiry"] - timestamp
         item["seconds_remaining"] = seconds

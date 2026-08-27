@@ -19,8 +19,8 @@ export function createAccountUi({adminFetch,html,renderHtml,showPage,toast}){
   const deviceOps=createDeviceOps({html,toast,confirmFlow,formatTimestamp});
   const expiryOps=createExpiryOps({html,renderHtml,toast,confirmFlow,formatTimestamp,badgeClass,humanLabel});
   async function getJson(path,opts){const response=await adminFetch(path,opts);const data=await response.json();if(!response.ok)throw new Error(data.error||'request failed');return data;}
-  function identityTitle(row){return row.display_note||row.primary_alias||row.public_id||`Аккаунт #${row.id||row.account_id}`;}
-  function identityMarkup(row){const bits=[row.primary_alias,row.id?`#${row.id}`:`#${row.account_id}`].filter(Boolean);return html`<strong>${identityTitle(row)}</strong>${row.display_note?html`<div class="cell-sub">${bits.join(' · ')}</div>`:html`<div class="cell-sub">${bits.slice(1).join(' · ')||row.public_id||''}</div>`}`;}
+  function identityTitle(row){return row.display_name||row.display_note||row.primary_alias||row.public_id||`Аккаунт #${row.id||row.account_id}`;}
+  function identityMarkup(row){const bits=[row.primary_alias,row.id?`#${row.id}`:`#${row.account_id}`].filter(Boolean);return html`<strong>${identityTitle(row)}</strong>${(row.display_name||row.display_note)?html`<div class="cell-sub">${bits.join(' · ')}</div>`:html`<div class="cell-sub">${bits.slice(1).join(' · ')||row.public_id||''}</div>`}`;}
   const metadataWarning=available=>available===false?html`<div class="notice notice-amber">Заметки Marzban временно недоступны; показаны canonical aliases.</div>`:html``;
 
   function renderAccounts(rows=accounts){
@@ -37,7 +37,7 @@ export function createAccountUi({adminFetch,html,renderHtml,showPage,toast}){
     try{const data=await getJson(`/admin/accounts${showTechnical?'?include_technical=1':''}`);accounts=data.accounts||[];document.getElementById('show-technical-accounts').checked=showTechnical;renderHtml(document.getElementById('accounts-metadata-warning'),metadataWarning(data.presentation_metadata_available));document.getElementById('technical-hidden-count').textContent=!showTechnical&&data.technical_hidden_count?`Скрыто служебных: ${data.technical_hidden_count}`:'';filterAccounts();}
     catch(error){renderHtml(tbody,html`<tr><td colspan="8" class="error-state">Не удалось загрузить аккаунты</td></tr>`);throw error;}
   }
-  function filterAccounts(){const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();renderAccounts(accounts.filter(row=>!query||[row.display_note,row.primary_alias,row.public_id,String(row.id),...(row.aliases||[])].some(value=>String(value||'').toLowerCase().includes(query))));}
+  function filterAccounts(){const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();renderAccounts(accounts.filter(row=>!query||[row.display_name,row.display_note,row.primary_alias,row.public_id,String(row.id),...(row.aliases||[])].some(value=>String(value||'').toLowerCase().includes(query))));}
 
   function entitlementValue(sub){if(!sub)return 'Нет подписки';if(sub.effective?.device_limit_mode==='UNLIMITED'||sub.status==='UNLIMITED')return 'Безлимит';return sub.display_name||humanLabel(sub.status);}
 
@@ -102,7 +102,7 @@ export function createAccountUi({adminFetch,html,renderHtml,showPage,toast}){
     renderHtml(content,tabRenderers[name]?.()||overviewTab());
     if(name==='devices')bindDeviceButtons(content);
   }
-  async function openAccount(accountId,tab){detail=await getJson(`/admin/accounts/${accountId}`);document.getElementById('account-detail-title').textContent=identityTitle(detail.display_identity);document.getElementById('account-detail-subtitle').textContent=detail.display_identity.display_note?`${detail.display_identity.primary_alias||detail.display_identity.public_id} · #${accountId}`:`#${accountId}`;renderHtml(document.getElementById('account-detail-metadata-warning'),metadataWarning(detail.presentation_metadata_available));showPage('account-detail');showAccountTab(tab||'overview');}
+  async function openAccount(accountId,tab){detail=await getJson(`/admin/accounts/${accountId}`);document.getElementById('account-detail-title').textContent=identityTitle(detail.display_identity);document.getElementById('account-detail-subtitle').textContent=(detail.display_identity.display_name||detail.display_identity.display_note)?`${detail.display_identity.primary_alias||detail.display_identity.public_id} · #${accountId}`:`#${accountId}`;renderHtml(document.getElementById('account-detail-metadata-warning'),metadataWarning(detail.presentation_metadata_available));showPage('account-detail');showAccountTab(tab||'overview');}
   async function issueCredential(accountId){const reason=prompt('Причина выпуска/перевыпуска credential (3–300 символов):');if(reason===null)return;if(reason.trim().length<3){toast('Укажите причину не короче 3 символов','err');return;}const rotating=detail?.credential?.status==='ACTIVE';if(rotating&&!confirm('Текущий opaque credential будет немедленно отозван. Продолжить?'))return;const response=await adminFetch(`/admin/accounts/${accountId}/subscription-credential/issue`,{method:'POST',body:JSON.stringify({reason:reason.trim(),confirm:rotating})});const data=await response.json();if(!response.ok)throw new Error(data.error||'issue failed');renderHtml(document.getElementById('credential-delivery'),html`<div class="notice notice-success"><strong>Сохраните URL сейчас — повторно он не показывается.</strong><div class="credential-row"><input id="issued-credential-url" readonly value="${data.canonical_url}"/><button data-action="copy-issued-credential">Копировать</button></div></div>`);detail.credential=data.credential;toast('Credential выпущен');}
 
   async function startOwnershipRebind(accountId){

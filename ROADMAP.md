@@ -2148,6 +2148,20 @@ frontend ES modules: `modals.js` (reusable two-step consequence dialogs),
 `payments.js`, `device_ops.js`, `timeline.js`; monolithic `admin.js`
 split-out remains the open Wave A item above.
 
+## [~] PH7-13 — Account consolidation (merge/supersession)
+
+**Depends:** PH3-01 (account schema), PH4-01 (legacy bridge), PH3-05 (child lifecycle), PH4-03 (legacy-compat entitlement). **Scope:** merge two already-independent parent accounts that are the same real person into one canonical survivor, without ever mutating or physically moving either account's existing history.
+**Trigger:** owner-approved consolidation `MegochelPC` (account 5) + `MegochelAndroid` (account 6) -> `Megochel`, per DL-057.
+**Why no existing primitive covers this:** `mgboost_legacy_alias_groups` is a 1:1 `account_id PRIMARY KEY` table -- a multi-alias group is only ever assembled once, at bootstrap (`legacy_grace_migration.migrate_bootstrapped_account`); `mgboost_legacy_account_aliases.legacy_username` is globally `UNIQUE` and the table is fully immutable (no `UPDATE`, no `DELETE`), so an existing alias can never be moved to a different account. Every other account-scoped table (`mgboost_subscriptions`, `mgboost_device_slot_generations`, `mgboost_child_user_intents`, `mgboost_entitlement_mutations`, `mgboost_legacy_bridge_bindings`, `mgboost_legacy_grace_periods`, `mgboost_wl_usage_samples`) treats `account_id` as part of an immutable identity, enforced by triggers or by construction. Reassigning history across accounts is therefore structurally impossible; a new, purely additive supersession layer was required.
+**Implemented/staging verified 2026-08-27:** new checksum-pinned `src/account_consolidation_schema.py` (`ph7_13_account_consolidation_v1`, depends on the exact PH3-01 schema): `mgboost_account_merges` (`absorbed_account_id UNIQUE`, `survivor_account_id`, `status IN ('ACTIVE','REVERSED')`, `decision_ref`, immutable identity columns via trigger, no-delete) + `mgboost_account_merge_events` (append-only `CREATED`/`REVERSED` log, mirroring the existing `mgboost_legacy_bridge_bindings`/`_binding_events` precedent) + `mgboost_account_display_names` (append-only, `ux_..._active_display_name` partial-unique index enforcing at most one active label per account, modeled on `mgboost_telegram_identities`'s revoke-and-reinsert pattern -- unrelated to any legacy alias).
+`src/account_consolidation.py` (plain functions taking `db`, mirroring `legacy_paid_compat.py`'s cross-store orchestration style, not a single-table store class): `resolve_account_id()` is the one shared canonicalizer every resolver calls; `create_merge()` requires the absorbed account already `CLOSED` and the survivor `ACTIVE`, and permanently forbids self-merge and any chain/cycle via a strict bipartition (neither id may ever have played the other role anywhere in the table, even across a later reversal) -- replay of an identical pair is idempotent, a different survivor for an already-merged absorbed account is a hard `MergeConflict`; `reverse_merge()` never deletes the merge row, only appends a `REVERSED` event and CAS-flips `status` -- idempotent, and deliberately does NOT reopen the account or resurrect its revoked child/generation (PH3-05's own rollback policy: a new generation, never a restored leaked UUID); `close_account()` fails closed on an active Telegram OWNER identity, a non-terminal child intent, or an ACTIVE device slot generation, then cancels any live subscription (with immutable `mgboost_entitlement_mutations` evidence) *before* flipping the account to `CLOSED` -- `ProvenanceStore.record_mutation()` itself hard-refuses evidence for an already-CLOSED account, so the ordering is load-bearing, not stylistic; `reopen_account()` is the reversal counterpart, refused while an `ACTIVE` merge still points at the account; `set_display_name()` is a purely cosmetic, owner-set label, refused on a non-`ACTIVE` account.
+`legacy_paid_compat.increase_device_limit()`: `ensure_legacy_paid_compat_entitlement()` only ever bootstraps a brand-new entitlement (idempotent replay on an exact match, hard `SubscriptionConflict` on any existing different plan) -- it has no path to raise an already-live subscription's device limit, and `subscription_renewal.apply_purchase()` requires a billed commercial plan and explicitly refuses a plan change (`PlanMismatch`, "PH5-06 upgrade/downgrade policy, not implemented"). The new function is the one canonical way to change `current_plan_version_id` (device limit only) on an *already-provisioned* `LEGACY_PAID_COMPAT_V1_D{n}` subscription in place -- single-field optimistic-CAS `UPDATE`, mirroring `subscription_admin_ops.py`'s surgical-adjustment discipline; never touches expiry/status/WL semantics; never creates a second subscription row; refuses any billed/commercial or non-legacy-compat plan outright, and refuses a decrease (a distinct, not-yet-implemented decision).
+**Resolver-coverage audit (not limited to the three obviously-named paths):** `legacy_bridge.py::resolve_account_for_legacy_username()` (the sole username->account resolver behind the dormant `/sub` bridge and `migration_lifecycle.py`'s lineage recorder) now canonicalizes through an `ACTIVE` merge before returning -- a real device reconnecting on the absorbed legacy username lands on the survivor's slot pool, never on the closed account, with the alias/binding rows themselves completely untouched. A genuine, previously-unflagged gap was found and fixed: `legacy_grace_registration.bind_telegram_after_registration()`/`resolve_ambiguous_telegram_ownership()` resolved an alias's raw `account_id` and called `AccountStore.link_telegram_owner()` directly, which raises `AccountSchemaError` ("account not found or closed") for a CLOSED absorbed account -- an exception these functions did not catch (only `IdentityConflict` was handled), so a real customer typing the absorbed username into the bot would have hit an unhandled error instead of the correct `ALREADY_BOUND`/`CONFLICT` outcome against the survivor. Both now canonicalize via `resolve_account_id()` first. `subscription_admin_ops.py` (PH7-01 expiry ops) had no account-status check at all -- `preview()`/`apply_adjustment()` now explicitly refuse a CLOSED account's subscription. Verified already-safe without any change, by inspection: `direct_enrollment.py`'s pre-account-creation alias-conflict guard (blocks re-enrolling an absorbed username under a new account regardless of status); `device_slots.py::_entitlement_capacity()` (hard-requires `account_status='ACTIVE'`, so any device claim/rebind on a CLOSED account already fails `EntitlementUnavailable`); `manual_payment.py`/`entitlement_engine.py` (already check `status!='CLOSED'`); `device_slot_admin.py` Disable/Enable (operates only on an `ACTIVE` generation, none of which survive a correctly-sequenced close); Stars/WL purchase paths (resolve strictly via `telegram_id -> account`, and the absorbed account here never had a Telegram identity to resolve through).
+`admin_read_models.py`/`accounts.js`: `display_name` (when set) now outranks the existing per-alias `display_note`/`primary_alias`/`public_id` fallback chain everywhere an account's human-facing title is shown, without changing behavior for any account that has none; `account_detail()` gained a new `consolidation` block (`absorbed_into`/`absorbs`) surfacing PH7-13 merge state on both sides.
+**Tests:** 34 new focused tests in `tests/test_account_consolidation.py` -- schema/checksum/trigger immutability; `resolve_account_id()` passthrough and canonicalization; the legacy-bridge and Telegram-grace-registration resolver fixes end to end; the PH7-01 CLOSED-account guard; display-name fallback/idempotent-set/change/non-ACTIVE-refusal, visible through `account_detail()`/`account_summaries()`; close preconditions (active owner / non-terminal child / active generation, each independently); the canonical genesis-child Revoke->Free sequence before a successful close; merge apply replay, append-only reversal + reopen, both idempotent; self-merge, absorbed-not-closed, survivor-not-active, conflicting-survivor and both chain/cycle directions all rejected with the correct typed error; concurrent `create_merge()` (8 real threads) converging to exactly one row; the exact optimistic-CAS clause proven directly against a stale `row_version` for both the merge and subscription tables; the exact D3->D6 transition (same subscription id, unchanged expiry/status/WL, exactly one live subscription, idempotent replay, decrease refused, non-legacy-compat/commercial plan refused, missing-evidence refused); survivor's Telegram identity/opaque credential/subscription id byte-for-byte unchanged across the whole sequence; absorbed account's pre-existing alias/child-intent/device-generation row counts unchanged (only new evidence rows are added, which is the correct, expected behavior -- not a literal frozen total); a completely unrelated third account provably untouched. Full regression: `1298 passed, 4 skipped` (was `1264 passed, 4 skipped` -- zero regressions).
+**Independent re-verification of `9edd42e`** (a separately-authored, already-implemented device-migration-status GLM bugfix, checked in this same session before building on top of it): `classify_action()`'s `sum(migration_state.values()) > 0` branch (after the `ERROR_RECONCILE` guard) correctly yields `OK_MIGRATED` for any real `mgboost_migration_bindings` lineage regardless of Telegram status, and the renamed `WAITING_FIRST_DEVICE` fallback (no longer named after Telegram) fires only on zero lineage -- Telegram ownership never gates or is gated by technical migration status. Not modified; both mandatory regression cases (`tests/test_admin_account_read_models.py`) reconfirmed passing.
+**Production status:** not yet deployed. Pending: owner-approved production rollout (fresh encrypted backup + isolated restore verification, additive migration via ordinary app restart, then the actual `Revoke->Free->Close->Merge->display_name->D3-D6` sequence against real accounts 5/6 through these primitives only -- no ad-hoc SQL).
+
 # Phase 8 — Hardening and scale
 
 ## [ ] PH8-01 — Production-safe bounded HTTP concurrency — P2
@@ -3119,6 +3133,63 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   предположением агента, а не зафиксированной политикой.
 - **Связано:** DL-049, DL-055, PH7-05, `src/device_slots.py::rebind`,
   `src/device_slot_admin.py`.
+
+## DL-057 — Megochel consolidation: survivor, absorbed fate, device limit, name
+
+- **Дата:** 2026-08-27.
+- **Вопрос:** read-only анализ (предыдущая сессия) обнаружил, что `MegochelPC`
+  (account 5) и `MegochelAndroid` (account 6) — два реальных, независимо
+  провизионированных parent-аккаунта одного человека. Существующие
+  primitives не поддерживают слияние уже созданных аккаунтов
+  (`mgboost_legacy_alias_groups` — 1:1 с account, собирается только при
+  bootstrap; `mgboost_legacy_account_aliases` полностью immutable и
+  `legacy_username` глобально `UNIQUE`). Требовались явные решения по:
+  survivor/absorbed, судьбе absorbed-аккаунта, device limit, итоговому
+  человеческому имени, и минимальному новому primitive.
+- **Выбрано:**
+  1. Survivor = account 6 (`MegochelAndroid`) — там уже живёт единственная
+     активная Telegram OWNER identity и единственный реально используемый
+     opaque subscription credential; absorbed = account 5 (`MegochelPC`).
+  2. Human-facing display_name survivor'а = `Megochel` — через новый
+     аддитивный `mgboost_account_display_names` (см. PH7-13), поскольку в
+     схеме нет свободного текстового поля для имени аккаунта, а PRIMARY
+     alias обязан оставаться реальным legacy-именем.
+  3. Device limit survivor'а = D6 — через новый canonical
+     `legacy_paid_compat.increase_device_limit()` (см. PH7-13), а не через
+     `ensure_legacy_paid_compat_entitlement()` (та функция технически не
+     умеет менять план уже provisioned live-подписки — это отдельный,
+     независимо обнаруженный gap). Реальное число физических устройств (3
+     vs 4) не выясняется — trusted user, дополнительные слоты разрешены
+     явно.
+  4. `MegochelPC`-alias физически НЕ копируется на account 6 (нарушило бы
+     глобальный `UNIQUE` по `legacy_username`); immutable-строка остаётся
+     на account 5, а разрешение "старое имя → survivor" выполняется через
+     новый `mgboost_account_merges`/`resolve_account_id()` supersession
+     resolver, а не копированием.
+  5. Account 5 после безопасной consolidation → `CLOSED`, никогда `DELETE`.
+     Его live legacy-compat subscription при этом → `CANCELLED` (явно
+     одобренная owner semantics), сохраняясь как immutable evidence, а не
+     удаляясь.
+  6. Grace/evidence/history account 5 не переписываются и не переносятся —
+     остаются attributed к исходному `account_id` навсегда; `CLOSED`
+     account не считается operationally active ни в одном read model.
+  7. Rollback merge — только через explicit append-only reversal (новая
+     `REVERSED`-запись + CAS flip `status`, никогда `DELETE` merge-record);
+     terminal generation/child никогда не воскрешается (PH3-05 policy).
+  8. Genesis-child absorbed account: сначала canonical `Revoke` → `Free`
+     (переиспользуя PH3-05 `process_revoke`/`process_free` без нового
+     кода), и только затем `close_account()` — так что под `CLOSED`
+     parent никогда не остаётся осиротевшая `ACTIVE` ветка.
+  9. Legacy Marzban `MegochelPC`/`MegochelAndroid` не трогаются этой
+     операцией вообще — их органическая миграция на child-пользователей
+     survivor'а идёт уже существующим, отдельным маршрутом.
+- **Кто:** пользователь (владелец).
+- **Почему:** зафиксировать реальный merge/consolidation flow как owner
+  decision, а не как невалидированное предположение реализующего агента —
+  особенно выбор survivor'а, судьба absorbed-подписки и итоговое имя, ни
+  одно из которых не выводится однозначно из существующего кода/схемы.
+- **Связано:** PH3-01, PH4-01, PH3-05, PH4-03, PH7-13, `src/account_consolidation.py`,
+  `src/account_consolidation_schema.py`, `src/legacy_paid_compat.py::increase_device_limit`.
 
 # Contradictions and migration hazards
 

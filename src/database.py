@@ -15,6 +15,7 @@ from .config import (
 )
 from .admin_authority import PrimaryAdminAuthority
 from .account_schema import apply_parent_account_schema
+from .account_consolidation_schema import apply_account_consolidation_schema
 from .account_store import AccountStore
 from .compat_telemetry import record_observation, telemetry_key_is_valid
 from .compat_telemetry_schema import apply_compat_telemetry_schema
@@ -432,6 +433,7 @@ class Database:
         """)
         self._conn.commit()
         apply_parent_account_schema(self._conn)
+        apply_account_consolidation_schema(self._conn)
         apply_device_slot_schema(self._conn)
         apply_internal_entitlement_schema(self._conn)
         apply_plan_catalog_schema(self._conn)

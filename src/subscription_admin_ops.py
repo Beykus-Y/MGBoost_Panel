@@ -92,8 +92,10 @@ def _validate_adjustment(kind: str, value) -> tuple[str, int | None]:
 
 def _latest_subscription(conn, account_id: int):
     return conn.execute(
-        "SELECT s.*,p.plan_code AS current_plan_code FROM mgboost_subscriptions s "
+        "SELECT s.*,p.plan_code AS current_plan_code,a.status AS account_status "
+        "FROM mgboost_subscriptions s "
         "LEFT JOIN mgboost_plan_versions p ON p.id=s.current_plan_version_id "
+        "JOIN mgboost_accounts a ON a.id=s.account_id "
         "WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
         (int(account_id),),
     ).fetchone()
@@ -141,6 +143,11 @@ class SubscriptionAdminOpsStore:
             subscription = _latest_subscription(self._conn, account_id)
             if subscription is None:
                 raise AdminExpiryError("account has no subscription")
+            if subscription["account_status"] == "CLOSED":
+                raise AdminExpiryError(
+                    "ACCOUNT_CLOSED: this account is CLOSED (absorbed by an account "
+                    "merge or otherwise retired) and cannot accept expiry adjustments"
+                )
             if subscription["status"] == "UNLIMITED":
                 raise AdminExpiryError(
                     "ADMIN_GRANTED_UNLIMITED_NOT_ADJUSTABLE: an admin-granted "
@@ -184,6 +191,11 @@ class SubscriptionAdminOpsStore:
                 subscription = _latest_subscription(self._conn, account_id)
                 if subscription is None:
                     raise AdminExpiryError("account has no subscription")
+                if subscription["account_status"] == "CLOSED":
+                    raise AdminExpiryError(
+                        "ACCOUNT_CLOSED: this account is CLOSED (absorbed by an account "
+                        "merge or otherwise retired) and cannot accept expiry adjustments"
+                    )
                 if subscription["status"] == "UNLIMITED":
                     raise AdminExpiryError(
                         "ADMIN_GRANTED_UNLIMITED_NOT_ADJUSTABLE: an admin-granted "

@@ -39,6 +39,7 @@ import sqlite3
 import time
 
 from .admin_authority import PrimaryAdminAuthorizationError
+from .device_slots import PAID_BASELINE_LIMITS
 
 
 DEFAULT_LEGACY_PAID_DEVICE_LIMIT = 3
@@ -62,6 +63,14 @@ class DeviceOverageConflict(LegacyPaidCompatError):
 
 
 class SubscriptionConflict(LegacyPaidCompatError):
+    pass
+
+
+class NotLegacyCompatPlan(LegacyPaidCompatError):
+    pass
+
+
+class DeviceLimitDecreaseRefused(LegacyPaidCompatError):
     pass
 
 
@@ -190,6 +199,11 @@ def ensure_legacy_paid_compat_entitlement(
     ).fetchone()
     if row is None or row["account_source"] != "DIRECT":
         raise PrerequisiteMissing("account is not a reviewed DIRECT enrollment")
+    account_status = db._conn.execute(
+        "SELECT status FROM mgboost_accounts WHERE id=?", (account_id,),
+    ).fetchone()
+    if account_status is None or account_status["status"] != "ACTIVE":
+        raise PrerequisiteMissing("account must be ACTIVE")
     attested = db._conn.execute(
         "SELECT id FROM mgboost_owner_attested_legacy_payments WHERE account_id=?", (account_id,)
     ).fetchone()
@@ -284,3 +298,119 @@ def ensure_legacy_paid_compat_entitlement(
     result["_plan"] = plan
     result["_is_new"] = is_new
     return result
+
+
+def increase_device_limit(
+    db, *, capability, account_id: int, approved_extra_device_slots: int,
+    decision_ref: str, evidence: dict, now: int | None = None,
+) -> dict:
+    """DL-057's narrow, explicitly-scoped companion to
+    `ensure_legacy_paid_compat_entitlement`: that function only ever
+    bootstraps a brand-new entitlement and hard-conflicts on any existing
+    live subscription with a different plan -- it has no path to change an
+    already-provisioned account's device limit. This is the one canonical
+    way to raise the device limit of an ALREADY-live
+    `LEGACY_PAID_COMPAT_V1_D{n}` subscription in place: it changes ONLY
+    `current_plan_version_id` (device limit); `current_expiry`, `status`
+    and WL semantics (already `UNLIMITED` on every legacy-compat plan) are
+    never touched, and no second subscription row is ever created (a
+    single-field CAS `UPDATE` of the existing live row, mirroring
+    `subscription_admin_ops.py`'s surgical-adjustment discipline).
+
+    Refuses any COMMERCIAL/billed or non-legacy-compat plan outright: PH5-06
+    (the general upgrade/downgrade engine) is not implemented, and this
+    function must never be mistaken for it. Only ever increases -- a
+    decrease is a distinct, not-yet-implemented decision."""
+    actor = _require_primary(db, capability)
+    account_id = int(account_id)
+    decision_ref = (decision_ref or "").strip()
+    if not 3 <= len(decision_ref) <= 128:
+        raise LegacyPaidCompatError("a bounded decision reference is required")
+    if (
+        isinstance(approved_extra_device_slots, bool)
+        or not isinstance(approved_extra_device_slots, int)
+        or approved_extra_device_slots <= 0
+    ):
+        raise LegacyPaidCompatError("approved extra device slots must be a positive integer")
+    if not evidence or not isinstance(evidence, dict):
+        raise LegacyPaidCompatError(
+            "increasing a device limit requires recorded evidence of the owner's approval"
+        )
+
+    timestamp = int(time.time()) if now is None else int(now)
+    new_limit = DEFAULT_LEGACY_PAID_DEVICE_LIMIT + approved_extra_device_slots
+    if new_limit not in PAID_BASELINE_LIMITS:
+        raise LegacyPaidCompatError(f"device limit {new_limit} is not an approved baseline value")
+
+    with db._lock:
+        try:
+            db._conn.execute("BEGIN IMMEDIATE")
+            account = db._conn.execute(
+                "SELECT status FROM mgboost_accounts WHERE id=?", (account_id,),
+            ).fetchone()
+            if account is None or account["status"] != "ACTIVE":
+                raise PrerequisiteMissing("account must be ACTIVE")
+            sub = db._conn.execute(
+                "SELECT s.*, pv.plan_code AS current_plan_code, "
+                "pv.device_limit AS current_device_limit, pv.plan_kind, pv.billing_required "
+                "FROM mgboost_subscriptions s "
+                "JOIN mgboost_plan_versions pv ON pv.id=s.current_plan_version_id "
+                "WHERE s.account_id=? AND s.status IN ('ACTIVE','DISABLED','UNLIMITED')",
+                (account_id,),
+            ).fetchone()
+            if sub is None:
+                raise PrerequisiteMissing(
+                    "account has no live legacy-compat subscription to increase"
+                )
+            if (
+                sub["plan_kind"] != _PLAN_KIND or sub["billing_required"]
+                or not str(sub["current_plan_code"]).startswith("LEGACY_PAID_COMPAT_V1_D")
+            ):
+                raise NotLegacyCompatPlan(
+                    "this function only ever changes a pinned LEGACY_PAID_COMPAT_V1_D{n} "
+                    "plan's device limit -- a commercial/billed plan is PH5-06 upgrade/"
+                    "downgrade territory, which is not implemented"
+                )
+            if sub["current_device_limit"] is None:
+                raise NotLegacyCompatPlan("current plan has no fixed device limit to change")
+            if new_limit == sub["current_device_limit"]:
+                db._conn.commit()
+                return {**dict(sub), "already_applied": True}
+            if new_limit < sub["current_device_limit"]:
+                raise DeviceLimitDecreaseRefused(
+                    "this function only ever increases a device limit; a decrease is a "
+                    "separate, not-yet-implemented decision"
+                )
+
+            plan = _ensure_plan_version(db, device_limit=new_limit, unlimited=False, now=timestamp)
+
+            updated = db._conn.execute(
+                "UPDATE mgboost_subscriptions SET current_plan_version_id=?,updated_at=?,"
+                "row_version=row_version+1 WHERE id=? AND account_id=? AND row_version=?",
+                (plan["id"], timestamp, sub["id"], account_id, sub["row_version"]),
+            )
+            if updated.rowcount != 1:
+                raise SubscriptionConflict("concurrent subscription modification detected")
+            db._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            db._conn.rollback()
+            raise SubscriptionConflict("concurrent subscription modification detected") from exc
+        except Exception:
+            db._conn.rollback()
+            raise
+
+    db.provenance.record_mutation(
+        account_id, subscription_id=sub["id"],
+        operation="LEGACY_PAID_COMPAT_DEVICE_LIMIT_INCREASED",
+        payment_channel="NOT_APPLICABLE", mutation_source="ADMIN",
+        actor_type="PRIMARY_ADMIN", actor_ref=actor, reason=decision_ref,
+        external_reference=None,
+        before={"plan_code": sub["current_plan_code"], "device_limit": sub["current_device_limit"]},
+        after={"plan_code": plan["plan_code"], "device_limit": new_limit, "evidence": evidence},
+        idempotency_key=f"legacy-paid-compat-device-limit-v1:{account_id}:{new_limit}",
+        now=timestamp,
+    )
+    result = db._conn.execute(
+        "SELECT * FROM mgboost_subscriptions WHERE id=?", (sub["id"],),
+    ).fetchone()
+    return {**dict(result), "_plan": plan, "already_applied": False}
