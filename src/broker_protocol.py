@@ -33,6 +33,7 @@ BROKER_OPERATIONS = LEGACY_BROKER_OPERATIONS | frozenset({
     "child.user.credentials.get",
     "child.user.revoke",
     "child.user.state.sync",
+    "child.user.wl.set",
     "child.user.subscription.get",
     "maintenance.user.retire_shadowsocks",
 })

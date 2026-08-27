@@ -230,6 +230,7 @@ def test_all_ten_operations_are_explicit_and_preserve_legacy_payload_semantics()
     assert BROKER_OPERATIONS == LEGACY_BROKER_OPERATIONS | {
         "child.user.ensure", "child.user.credentials.get",
         "child.user.observe", "child.user.revoke", "child.user.state.sync",
+        "child.user.wl.set",
         "child.user.subscription.get", "maintenance.user.retire_shadowsocks",
     }
 

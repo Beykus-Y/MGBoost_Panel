@@ -1,4 +1,183 @@
-# AGENT_HANDOFF — PH7-13 Megochel account consolidation (DL-057) implemented, tested and executed in production; GLM migration-status bugfix (9edd42e) independently re-verified and deployed alongside it
+# AGENT_HANDOFF — PH6-06 exact inbound-only WL enforcement state machine implemented and fully tested locally; dormant, no push, NO deploy; production verified read-only compatible
+
+Updated: 2026-08-27 (implementation session, starting from local = origin =
+production `14bdbcf`, working tree clean). **This top section supersedes
+everything below.** Owner instruction: implement PH6-06 — the launch-critical
+WL state machine (`ACTIVE -> DISABLE_PENDING -> DISABLED`,
+`DISABLED -> ENABLE_PENDING -> ACTIVE`, mismatch/failure
+`ERROR_RECONCILE`), local DB as source of desired state, remote mutation
+restricted to exactly `inbounds.vless` of the exact PH0-05 allowlist with
+mandatory PH6-01 `require_topology_ok()` before any destructive mutation,
+then local checkpoint commit, no push, no deploy.
+
+## State after this session
+
+Local HEAD = checkpoint commit of this slice, one commit ahead of origin.
+**origin/main and production both remain at `14bdbcf`** (re-verified over
+SSH during the read-only preflight). PUSH AND DEPLOY EXPLICITLY FORBIDDEN.
+Nothing schedules or routes through the new code: dormant/on-demand,
+matching the PH6-01..04 precedent.
+
+## What was built (no second engine — every primitive reused)
+
+- **Schema** (`src/wl_enforcement_schema.py`, additive checksum-pinned
+  migration `ph6_06_wl_enforcement_v1`, requires PH3-01/PH3-03/PH6-03
+  checksums): `mgboost_wl_enforcement_states` (one row per account; epoch
+  monotonic-by-trigger; state CHECK =
+  ACTIVE/DISABLE_PENDING/DISABLED/ENABLE_PENDING/ERROR_RECONCILE),
+  `mgboost_wl_enforcement_ops` (per-(epoch, child) outbox rows —
+  UNIQUE(account, epoch, child), lease/next_attempt/attempts<=8/row_version,
+  frozen-manifest column), `mgboost_wl_enforcement_events` (append-only,
+  no-update/no-delete triggers). Zero existing tables touched; deploy is
+  application-code-only (`mgboost-panel` restart self-applies the additive
+  migration on `Database()` construction — same class as PH6-03).
+- **Machine/store** (`src/wl_enforcement.py`): `decide_direction_from_pool`
+  is pure policy over PH6-04's `resolve_current_parent_wl_pool()` —
+  LIMITED+exceeded -> EXCLUDED, LIMITED+not-exceeded -> INCLUDED, `None` or
+  UNLIMITED -> abstain (Non-WL/UNLIMITED accounts never even get a state
+  row). `apply_decision` opens a fresh epoch on every genuine direction
+  flip, mints ops for all current children (the exact ACTIVE-generation
+  join PH3-08 uses, revoked excluded; slot-paused children INCLUDED
+  deliberately), picks up late arrivals (rebind successors / devices
+  joining mid-suspension) as missing children, and — critically — always
+  hands back every unsettled op of the live epoch (PENDING/RETRY/expired
+  lease) so restarts and outages actually resume. `claim()` re-checks the
+  stamped epoch+direction against the LIVE machine row immediately before
+  dispatch (parent-revision precedent): a superseded disable/enable is
+  never sent, its evidence is a SUPERSEDED event. Attempt cap converts to
+  permanent ERROR (no infinite RETRY parking). `finalize_account` flips
+  terminal state ONLY when all epoch ops are APPLIED AND a fresh
+  independent reread of each touched child equals its frozen target;
+  anything else flags `ERROR_RECONCILE` — recovery from error is
+  verification-based only, never blind mutation.
+- **Wire contract + broker op** (`src/wl_enforcement_contract.py`, new
+  dispatch branch `child.user.wl.set` in `src/broker_operations.py`,
+  registered in `BROKER_OPERATIONS`; client wrapper
+  `ServiceMarzbanClient.set_child_wl_state` in `src/service_marzban.py`):
+  reread -> username + HMAC uuid-verifier fail-closed -> compute the exact
+  target vless member list from LIVE state plus the static PH0-05
+  allowlist ONLY (EXCLUDED = observed − WL tags, refuses an empty
+  remainder; INCLUDED = (observed − WL) ∪ baseline_wl_tags, where every
+  baseline tag must be a literal allowlist member — the caller can never
+  inject arbitrary inbounds, honoring the DL "no caller-suppliable
+  inbounds" doctrine) -> minimal partial update
+  `{"inbounds": {"vless": target}}` -> reread/verify membership == target
+  with UUID/status/expire byte-stable (STOP-class failure if anything
+  else moved). Verified against the real production Marzban 0.8.4-ph1-08
+  source read over SSH: `crud.update_user` applies only provided fields —
+  absent proxies/status/expire/data_limit are skipped, and `inbounds`
+  recomputes `excluded_inbounds` for exactly the protocols present in the
+  payload (vless only here).
+- **Exactly-once by observation, not bookkeeping** (the a68e265 lesson):
+  repeated/replayed dispatches against an already-converged remote return
+  `ALREADY_IN_SYNC` and perform zero writes. The first observation of a
+  pending op freezes its manifest (`baseline_full`/`target`/`removed_wl`)
+  first-writer-wins; a crash after the remote mutation but before the ACK
+  replays against the SAME recorded target and ACKs exactly once (op row
+  is terminal after its single APPLIED flip).
+- **Cycle** `run_wl_enforcement_cycle`: fresh PH6-01 assertion
+  (`fetch_live_topology_observation` + `run_assertion` +
+  `require_topology_ok`) BEFORE anything — never-checked/mismatch/
+  unreachable/stale-config-version all abort with zero transitions minted;
+  per-account isolation of errors (collector precedent); per-op dispatch
+  via `process_wl_op` (observe -> freeze -> mutate -> settle) with
+  REMOTE_MISSING never auto-creating. Observation reads reuse the EXISTING
+  `legacy.user.get` broker surface — zero new read endpoints.
+- **Runner** `scripts/run_wl_quota_enforcement.py` — on-demand only;
+  prints safe aggregate JSON (counts + error classes, no identifiers).
+
+## Known limitation (documented, feeds PH6-07/09 — not hidden)
+
+Marzban stores the vless target as a persistent `excluded_inbounds` list
+computed against the LIVE xray config. A NEWLY-ADDED WL inbound after a
+disable would therefore be auto-included for suspended users until the
+next enforcement pass; it would also surface in `extra_wl_like_tags`
+alert evidence. PH6-07 periodic reconciliation + topology versioning own
+this drift; PH6-09 owns outage cadence/fail-safe.
+
+## Verification performed
+
+- Targeted `tests/test_wl_enforcement.py`: **31 passed** — the full brief
+  matrix: exactly-once disable across repeated cycles (deep snapshots:
+  only `inbounds` moves; UUID/expire/status/proxies byte-stable),
+  exactly-once restore on reset/new period, three-epoch flip-flop with
+  distinct op ids and real mutations, stale epoch superseded + direction-
+  tampered claim guard, topology never-checked/fresh-mismatch/unreachable/
+  stale-version all blocking with zero transitions and zero state rows,
+  UNLIMITED and plan-less accounts structurally untouched, partial-offline
+  sibling isolation ending ERROR_RECONCILE, Marzban outage retry→recover
+  with exactly one mutation, attempt cap landing ERROR, restart between
+  desired commit and mutation, restart after remote success before ACK
+  (single mutation, frozen manifest intact), revoke exclusion, slot-pause
+  uniformity, rebind-shaped late arrival, absent child REMOTE_MISSING
+  without creation, remove-all-inbounds refusal, include-without-baseline
+  refusal, post-convergence manual drift deliberately NOT auto-repaired
+  (honest PH6-07 boundary pin), broker wire negatives (foreign baseline
+  tag, wrong verifier, EXCLUDED-with-baseline, shape noise), migration
+  checksum/FK/trigger guards (epoch downgrade, identity immutability,
+  no-delete, UNIQUE per epoch+child).
+- Related suites re-run green: wl topology/ledger/pool/period/packages,
+  marzban broker + client policies (the `BROKER_OPERATIONS` exact-set
+  guard test updated for the new op), child provisioning/lifecycle/
+  retention, parent sync, device slots, admin operational admin.
+- **Full regression (Playwright venv, every suite): `1333 passed,
+  0 failed, 0 skipped`.** First background run collided with the
+  documented `/tmp`-quota failure class because two pytest processes ran
+  concurrently on top of ~2700 hour-stale anonymous `tmp*` dirs; cleaned
+  strictly per the owner-approved precedent (only hour-stale anonymous
+  `/tmp/tmp*`; venvs/caches/repo untouched) and the identical solo command
+  passed deterministically.
+- `git diff --check` clean; all new/changed python files compile.
+- **Production read-only preflight (SSH only; ZERO writes/mutations/
+  restarts):** HEAD `14bdbcf` == local == origin; only the known untracked
+  `extra_configs.json` drift; `quick_check=ok`, 0 FK violations;
+  cardinalities accounts=18/subscriptions=18/`mgboost_wl_periods`=0/child
+  intents 47 (35 `observed_state='ACTIVE'`); PH6-06 tables absent as
+  expected pre-deploy (additive migration will self-apply at restart);
+  topology guard has one recorded `ok` assertion @ `2026-08-26-v1`; all
+  services active. No real WL disable/enable was performed anywhere.
+
+## Reviewer attention list (hotspots)
+
+1. `src/wl_enforcement.py::apply_decision` — the epoch/transition table
+   and the unsettled-ops hand-back (this is where the restart/resume
+   semantics live; the initial draft had a real livelock bug here —
+   `*_PENDING` continuation reopened a new epoch every cycle and
+   starved its own ops — caught by the partial-offline test before
+   commit; watch the current formulation closely).
+2. `WLEnforcementStore.claim` — the epoch+direction supersede guard and
+   the attempt-cap ERROR conversion (bounded-retry guarantee).
+3. `process_wl_op` / `_derive_freeze_and_dispatch` /
+   `_dispatch_frozen_manifest` — manifest-first-writer-wins and the
+   observation-based ALREADY_IN_SYNC path; check that no path can mutate
+   before a manifest exists, and that every failure class maps to
+   exactly one of {ack, retry, permanent error}.
+4. Broker `child.user.wl.set` branch + `wl_enforcement_contract` —
+   target math set equations, empty-remainder refusal, baseline
+   membership restricted to the static allowlist, post-write verify
+   (identity/UUID/status/expire byte-stable).
+5. `finalize_account` — verification-only terminal flips and
+   ERROR_RECONCILE entry points; deliberate v1 boundary: post-terminal
+   drift is NOT auto-repaired (PH6-07 owns reconciliation) — pinned by a
+   test so nobody "fixes" it into a blind self-heal later.
+6. The documented exclusion-list drift limitation above (new inbounds
+   after disable) — confirm the owner accepts the PH6-07/09 ownership
+   split.
+
+## Exact next step
+
+Independent review of this checkpoint against `origin/main` (`14bdbcf`),
+then owner deploy decision (application-code-only restart; additive
+migration self-applies; live-DB compatibility already proven above).
+After deploy PH6-06 remains dormant until the owner wires a schedule /
+operator cadence — wiring the worker loop IS the start of PH6-07
+(transactional outbox/reconciliation), which is explicitly NOT started
+here, nor are PH6-05/08/09/10, payments, promo, upgrade/downgrade or
+PH4-06.
+
+---
+
+# PRIOR HANDOFF — PH7-13 Megochel account consolidation (DL-057) implemented, tested and executed in production; GLM migration-status bugfix (9edd42e) independently re-verified and deployed alongside it
 
 Updated: 2026-08-27 (controlled maintenance rollout session, starting from
 local `9edd42e` / origin+production `9b38c91`). **This top section

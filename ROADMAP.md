@@ -1570,6 +1570,74 @@ explicitly out of this task's own scope.
 **Accept/tests:** WL blocked on cached/direct hosts, Non-WL works, offline node/retry/stale object/idempotency.
 **Rollback:** compensating desired transition, never blind full-object restore.
 
+**Implemented and fully tested locally (2026-08-27), pending independent
+review + production deploy.** `src/wl_enforcement.py` (+ additive checksum-
+pinned `src/wl_enforcement_schema.py`, migration `ph6_06_wl_enforcement_v1`)
+is the correct machine and the exact remote mutation semantics -- dormant,
+on-demand only (`python -m scripts.run_wl_quota_enforcement`), nothing
+scheduled, no route/UI/bot wiring, matching the PH6-01..04 precedent.
+Per-account machine row (`mgboost_wl_enforcement_states`: epoch monotonic by
+trigger, state, last_direction, decision source/period) plus durable per-
+(epoch, child) ops (`mgboost_wl_enforcement_ops`, lease/attempts/events
+mirroring `mgboost_parent_sync_operations`) -- `UNIQUE(account, epoch,
+child)`; every desired-direction change opens a fresh epoch and the
+claim-time guard re-checks the stamped epoch against the LIVE row, so a
+superseded disable/enable can never be dispatched (anti-stale both ways).
+Decisions come ONLY from PH6-04's `resolve_current_parent_wl_pool()`:
+LIMITED+exceeded -> EXCLUDED, LIMITED+not-exceeded -> INCLUDED, `None` /
+UNLIMITED -> structurally abstain (no state row is even created for
+Non-WL/UNLIMITED accounts). Late arrivals (rebind successors / devices
+joining mid-suspension) are picked up as missing children of the live epoch
+or a re-opened epoch. Remote mutation is ONE new narrow broker op
+`child.user.wl.set` (allowlist guard test updated): reread -> identity +
+UUID-verifier fail-closed -> target vless set derived from live state plus
+the static PH0-05 allowlist only (EXCLUDED = observed − WL tags, refuses to
+produce an empty remainder; INCLUDED = (observed − WL) ∪ baseline, where
+the baseline is the child's own frozen pre-disable list intersected the
+allowlist) -> minimal partial update `{"inbounds": {"vless": target}}` ->
+reread/verify membership == target with UUID/status/expire byte-stable.
+Convergence is decided from LIVE state (replay settles `ALREADY_IN_SYNC`
+with zero writes -- exactly-once by observation, per the a68e265 lesson):
+first observation freezes the manifest first-writer-wins, so a crash after
+the remote mutation replays against the SAME recorded target and ACKs
+exactly once. Full cycle gates on a FRESH PH6-01 assertion +
+`require_topology_ok()` BEFORE any decision is opened (unknown/mismatch/
+unreachable topology => zero transitions); Marzban/broker failures map to
+bounded RETRY (cap 8, then permanent ERROR => account `ERROR_RECONCILE`,
+never blind mutation out of error -- recovery is verification-only);
+finalization flips terminal state only when every epoch op is APPLIED AND a
+fresh independent reread of each touched child matches its frozen target.
+`ERROR_RECONCILE` entry points: op exhaustion, REMOTE_MISSING (never
+auto-create), NO_BASELINE_FOR_INCLUDE (fail closed), WOULD_REMOVE_ALL_
+INBOUNDS (fail closed), live-reread drift. Slot-paused children receive
+enforcement uniformly (status stays PH7-05's business); revoked children
+are structurally excluded by the same ACTIVE-generation join PH3-08 uses.
+**Known limitation (feeds PH6-07/09, documented not hidden):** Marzban
+stores our vless target as a persistent `excluded_inbounds` list computed
+against the LIVE xray config, so a NEWLY-ADDED WL inbound after a disable
+would be auto-included for suspended users until the next enforcement
+pass; a fresh topology assertion with changed tags plus PH6-07 periodic
+reconciliation own this drift (a new inbound also shows up in
+`extra_wl_like_tags` alert evidence).
+**Tests:** `tests/test_wl_enforcement.py` -- 31 focused tests covering the
+exact brief: exactly-once disable across repeated cycles (byte-exact
+snapshots: only inbounds moves), exactly-once restore on reset/new period,
+three-epoch flip-flop with all-distinct op ids, superseded stale epoch +
+direction-tampered claim guard, topology never-checked/fresh-mismatch/
+unreachable/stale-version all blocking with zero transitions, UNLIMITED and
+plan-less accounts structurally untouched, partial-offline sibling
+isolation to ERROR_RECONCILE, Marzban outage retry→recover without double
+mutation, attempt cap, restart between commit and mutation, restart after
+remote success before ACK (single mutation, manifest frozen), revoke
+exclusion, slot-pause uniformity, rebind-shaped late arrival, absent child
+REMOTE_MISSING, remove-all refusal, include-without-baseline refusal,
+post-convergence manual drift deliberately NOT auto-repaired (PH6-07
+boundary), broker wire negatives (foreign baseline tag, verifier mismatch,
+EXCLUDED-with-baseline), schema trigger guards.
+**Rollback:** additive-only schema + revert = plain code+migration revert;
+`Rollback:` line honored by design (compensating desired transitions are
+new epochs; never a blind full-object restore).
+
 ## [ ] PH6-07 — Transactional outbox/reconciliation
 
 **Depends:** PH6-06. **Scope:** local transaction writes quota desired+event; worker calls/rereads/verifies/observed/retries; periodic reconciliation.

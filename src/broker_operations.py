@@ -26,6 +26,12 @@ from .child_contract import (
     reread_child_credentials,
 )
 from .legacy_contract import validate_renew_payload, validate_user_payload, validate_username
+from .wl_enforcement_contract import (
+    build_wl_target,
+    normalize_observed_vless,
+    validate_wl_set_request,
+    verify_wl_converged,
+)
 from .shadowsocks_retirement import (
     build_functional_repair_payload,
     build_retirement_payload,
@@ -331,6 +337,57 @@ class BrokerOperations:
                         "unexpected credential rotation on a reversible state sync"
                     )
                 return {"outcome": "SYNCED"}
+
+        if operation == "child.user.wl.set":
+            # PH6-06: the only quota-enforcement mutation. Reread -> compute
+            # the exact inbound-only target from authoritative live state and
+            # the static PH0-05 allowlist -> minimal partial update of
+            # `inbounds.vless` ONLY -> reread/verify (identity, UUID, status,
+            # expire byte-stable; membership equal to the target). Proxies/
+            # expire/data_limit/status are never part of the payload.
+            request = validate_wl_set_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                try:
+                    current = self.marzban.get_user(child_username, token)
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        # Never (re)create -- a missing remote child is a
+                        # reconciliation matter, not an enforcement no-op.
+                        return {"outcome": "REMOTE_MISSING"}
+                    raise
+                if current.get("username") != child_username:
+                    raise ValueError("remote child identity mismatch")
+                try:
+                    current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
+                except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                    raise ValueError("remote child UUID is invalid") from exc
+                if not hmac.compare_digest(
+                    credential_verifier(current_uuid), request["uuid_verifier"]
+                ):
+                    raise ValueError("remote child UUID verifier mismatch")
+                observed = normalize_observed_vless(current)
+                target = build_wl_target(
+                    observed, request["direction"], request["baseline_wl_tags"],
+                )
+                if observed == target:
+                    return {"outcome": "ALREADY_IN_SYNC"}
+                self.marzban.modify_user(
+                    child_username,
+                    {"inbounds": {"vless": list(target)}},
+                    token,
+                )
+                after = self.marzban.get_user(child_username, token)
+                verify_wl_converged(
+                    after,
+                    child_username=child_username,
+                    target_vless=target,
+                    before_uuid=current_uuid,
+                    before_status=current.get("status"),
+                    before_expire=current.get("expire"),
+                )
+                return {"outcome": "SYNCED", "target_inbounds_count": len(target)}
 
         if operation == "maintenance.user.retire_shadowsocks":
             request = validate_retirement_request(data)

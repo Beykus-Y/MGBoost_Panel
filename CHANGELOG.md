@@ -17,6 +17,28 @@
 
 ### Added
 
+- PH6-06 exact inbound-only WL quota-enforcement state machine
+  (2026-08-27, implemented and fully tested locally; **NOT deployed,
+  dormant, no scheduler/route/UI wiring**): per-account
+  `ACTIVE -> DISABLE_PENDING -> DISABLED` /
+  `DISABLED -> ENABLE_PENDING -> ACTIVE` /
+  `ERROR_RECONCILE` machine over a new additive checksum-pinned schema
+  (`mgboost_wl_enforcement_states`/`_ops`/`_events`), epoch-gated so a
+  superseded desired state can never be dispatched. Desired state is
+  derived only from the PH6-04 shared-pool read model over the PH6-03
+  ledger (LIMITED exceeded -> remove; LIMITED available -> restore;
+  Non-WL/UNLIMITED structurally abstain). Remote effect is one new narrow
+  typed broker operation `child.user.wl.set`: reread -> UUID-verifier
+  fail-closed -> minimal partial update of ONLY the child's own
+  `inbounds.vless` member list (exact PH0-05 WL tags removed/restored;
+  non-WL hosts, proxies/UUID/expire/data_limit never touched) ->
+  reread/verify byte-stability. Exactly-once behavior is observational
+  (replays settle `ALREADY_IN_SYNC` with zero writes), manifest-frozen
+  first-writer-wins for crash/restart replay safety, bounded retries with
+  `ERROR_RECONCILE` fail-closed recovery, fresh PH6-01 topology assertion
+  gating every destructive pass. Operator entrypoint:
+  `python -m scripts.run_wl_quota_enforcement` (on-demand only).
+
 - PH7-13 account consolidation / merge-supersession primitive, DL-057
   (2026-08-27, **production-deployed and executed 2026-08-27, fast-forwarded
   to `d5ed3b7`**): a minimal, additive canonical primitive for merging two

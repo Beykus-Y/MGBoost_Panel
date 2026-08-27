@@ -25,6 +25,7 @@ from .child_contract import (
     validate_child_state_sync_request,
 )
 from .marzban import MarzbanClient
+from .wl_enforcement_contract import validate_wl_set_request
 from .shadowsocks_retirement import validate_retirement_request
 
 
@@ -236,6 +237,16 @@ class ServiceMarzbanClient:
             from .broker_operations import BrokerOperations
             return BrokerOperations(self.direct).dispatch("child.user.state.sync", normalized)
         return self._broker().call("child.user.state.sync", normalized)
+
+    def set_child_wl_state(self, request):
+        """PH6-06 exact inbound-only WL enforcement mutation; the broker
+        recomputes the target from live state plus the static PH0-05
+        allowlist and never touches proxies/UUID/expire/data_limit."""
+        normalized = validate_wl_set_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch("child.user.wl.set", normalized)
+        return self._broker().call("child.user.wl.set", normalized)
 
     def get_child_subscription(self, request):
         """Fetch the child's own rendered subscription body/headers through
