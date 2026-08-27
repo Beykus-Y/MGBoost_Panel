@@ -12,6 +12,7 @@ let perUserConfigs = {};
 let userDeviceCounts = {};
 let inboundClientExtras = {};
 let accountUi = null;
+let routingUi = null;
 // Same-origin ES module imports are not covered by the versioned `?v=`
 // query on this script's own <script src>; propagate it explicitly so a
 // stale-cached ./admin/*.js can never mix with a fresh one after a deploy.
@@ -21,6 +22,10 @@ const _MODULE_VERSION = new URL(document.currentScript.src, location.href).searc
 const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,html,renderHtml,showPage,toast});
   return accountUi;
+});
+const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(module=>{
+  routingUi=module.createRoutingUi({adminFetch,html,renderHtml,toast});
+  return routingUi;
 });
 
 const TRAFFIC_PERIODS = {
@@ -291,6 +296,7 @@ function showPage(name){
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
   if(name==='tickets'){loadTickets();}
   if(name==='stars'){loadStarsTariffs();loadStarsSettings();loadStarsPayments();loadStarsOrphans();}
+  if(name==='routing')ROUTING_UI_READY.then(()=>routingUi&&routingUi.loadRouting());
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -1674,6 +1680,7 @@ document.addEventListener('click',event=>{
     case'delete-stars-tariff':work=deleteStarsTariff(numericId);break;
     case'stars-payment-action':work=starsPaymentAction(numericId,el.dataset.paymentAction);break;
     case'stars-orphan-action':work=starsOrphanAction(numericId,el.dataset.paymentAction);break;
+    case'routing-host-op':if(routingUi)routingUi.handleRoutingClick(el);break;
     case'close-modal':closeModal(el.dataset.target);break;
     default:return;
   }

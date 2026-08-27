@@ -1247,6 +1247,153 @@ exact equality, matching the DL-044/PH5-05 precedent. See PH5-09's own
 entry above for the shared review verdict, DL-054 and full production
 evidence (same deploy, same commit).
 
+## [~] PH5-11 — First commercial STANDARD signup (self-service DIRECT account + system-owned provisioning template)
+
+**Depends:** PH5-01/02/04/05, PH3-01/02/03/04/08, PH2-01.
+**Scope:** первый полноценный commercial signup/purchase flow: Telegram →
+«Купить VPN» → BASIC/BASIC_PLUS/BASIC_PRO → 30/60 дней → canonical Stars
+invoice → confirmed payment → self-service DIRECT account → subscription →
+opaque credential → first device → child Marzban user → рабочий STANDARD
+config. Повторная покупка того же plan — существующая PH5-02 renewal
+semantics; другой plan — контролируемый отказ (PH5-06 не начат).
+**Implemented locally (2026-08-27), pending independent review + deploy;
+production read-only preflight verified compatible; NOT pushed, NOT
+deployed, canary NOT started.**
+
+- **Additive checksum-pinned migration `ph5_11_commercial_signup_v1`**
+  (requires PH3-01 + PH5-05 exact checksums): `mgboost_provisioning_templates`
+  (per-account infrastructure template anchor: deterministic
+  `tpl-<public_id>` username + pinned exact source-contract hash),
+  `mgboost_signup_template_jobs` (durable PENDING/READY/MANUAL_REVIEW retry
+  job), and the fill-once trigger `trg_stars_signup_account_fill_once` for
+  `CANONICAL_SIGNUP` invoice rows (the nullable `stars_invoices.account_id`
+  becomes the binding anchor; any second binding is schema-refused).
+- **No account/entitlement before confirmed payment**: the only durable
+  pre-payment state is the invoice row itself (kind `CANONICAL_SIGNUP`,
+  `account_id` NULL). At `capture_paid` — strictly after money moved — the
+  bound signup factory resolves-or-creates exactly ONE DIRECT account for
+  the payer (single transaction, fill-once, `PROVEN` Telegram owner link
+  `DIRECT_BIND`, PRIMARY alias = template username, review row in the
+  existing `mgboost_direct_account_reviews`). Concurrent capture races and
+  duplicate charge deliveries converge to one account / one evidence row /
+  one application (thread-race tested).
+- **Plan gate**: `SELLABLE_STANDARD_PLAN_CODES = (BASIC, BASIC_PLUS,
+  BASIC_PRO)` enforced server-side at `create_invoice`,
+  `validate_invoice_for_checkout` and `capture_paid` for BOTH purchase
+  kinds — WL/EXTENDED/FAMILY are structurally unpurchasable this rollout
+  (create raises `PlanNotSellable`; checkout/capture fail closed). The
+  renewal menu serves only the sellable subset of the active immutable
+  catalog; callback data carries only plan_code+duration — every
+  price/name/device count is re-resolved server-side.
+- **System-owned provisioning template** (owner-approved direction): the
+  account's source-of-contract is an infrastructure Marzban user
+  (`tpl-<public_id>`, flow `xtls-rprx-vision` — evidenced against live
+  production children 2026-08-27, inbounds == the STANDARD delivery
+  profile membership, expire=0, data_limit=None, note-marked
+  infrastructure). The anti-tamper source-contract verification is
+  preserved verbatim: the worker job re-reads live state through the
+  existing broker `legacy.user.get`/`legacy.user.create` ops, computes
+  `source_contract_hash`, and pins it once; any remote drift is a
+  STOP-class `MANUAL_REVIEW` (`template_contract_drift`), never a silent
+  re-pin. The customer never receives the template's UUID or subscription
+  URL; every occupied slot provisions its own child user with its own
+  Marzban-minted UUID (existing `validate_created_child` guarantees child
+  UUID != source UUID).
+- **First-device bootstrap**: `resolve_account_device` gains exactly one
+  new authority — when an account has zero prior child intents, the pinned
+  ACTIVE template row supplies the source contract hash (legacy accounts
+  without a template keep the exact prior behavior:
+  `PROVISIONING_UNAVAILABLE`). Broker-outage during provisioning stays
+  fail-closed and recoverable; the paid entitlement is durable
+  independent of the template.
+- **Credential delivery**: after a successful CREATE-apply the worker
+  delivers the initial opaque credential once (deliver-then-activate
+  sequencing; lost delivery leaves a recoverable `PENDING_DELIVERY` and
+  converges on retry), never rotates an existing ACTIVE credential
+  (pointing at `/newsub` instead), and is gated by
+  `OPAQUE_SUBSCRIPTION_ENABLED` (with an admin alert while it is off).
+  Renewal purchases keep the plain renewal text.
+- **Tests:** `tests/test_commercial_signup.py` (30): exact six-SKU matrix,
+  WL/EXTENDED/FAMILY rejection (new + existing paths), personal checkout,
+  single-account guarantee under 8-thread capture races, crash durability
+  across a real process restart (fresh `Database()` on the same file),
+  same-plan renewal / different-plan refusal, template
+  happy-path/idempotency/drift/outage/corrupted-membership, first-device
+  bootstrap without any legacy dependency, per-slot child/UUID isolation,
+  credential create/lost-delivery/no-rotation, and the bot buy UX
+  (3 plans → 30/60 → confirm → invoice; tampered callback rejected).
+- **Known v1 boundary (documented, feeds a future slice):** a delivery
+  profile change applies to templates/children created afterwards; already
+  provisioned children keep their pinned membership (admin recovery path:
+  Rebind provisions the successor from the current profile). Propagating
+  membership changes onto existing children is PH6-adjacent remote-mutation
+  territory and deliberately not built here.
+
+## [~] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
+
+**Depends:** PH0-05, PH3-01, PH6-01.
+**Scope:** host membership is operational routing configuration, NOT tariff
+data: replacing Germany/Estonia/etc. never requires a new plan version or a
+repurchase. STANDARD/WL delivery composition becomes explicit admin-managed
+state with a hard backend guarantee that the STANDARD profile can never
+contain an exact WL host.
+**Implemented locally (2026-08-27), pending independent review + deploy.**
+
+- **Additive checksum-pinned migration `ph5_12_delivery_routing_v1`:**
+  `mgboost_delivery_profiles` (CAS `row_version`),
+  `mgboost_delivery_profile_hosts` (immutable membership rows; UPDATE is
+  refused outright, DELETE is refused unless a prior `HOST_REMOVED` audit
+  event exists in the same transaction), `mgboost_plan_delivery_profiles`
+  (BASIC/BASIC_PLUS/BASIC_PRO → STANDARD seeded via
+  `scripts/seed_delivery_routing.py`, idempotent + audited), and the
+  append-only `mgboost_delivery_profile_events` ledger (no-update/no-delete
+  triggers, UNIQUE idempotency-key replay) — the entitlement-mutations
+  ledger requires a NOT NULL account_id, which a routing mutation does not
+  have, so this is the same-discipline sibling ledger.
+- **Backend safety policy (the UI is never the authority):** classification
+  is exact `PH0-05` allowlist membership (`wl_topology.WL_INBOUND_TAGS`)
+  only; adding an exact-WL tag is structurally rejected
+  (`WLHostRejected`); a wl-shaped tag absent from the exact allowlist is
+  unverified drift and is likewise rejected fail-closed
+  (`WLLikeHostRejected`) — stale/unknown rows are never auto-classified as
+  usable WL or STANDARD by name; an addition requires the tag to exist in a
+  FRESH live topology observation that passed `require_topology_ok()`
+  (the route records the assertion per mutation, the PH6-06 pattern).
+  Every mutation: session+CSRF (`require_admin_auth`) + sealed primary-admin
+  capability + mandatory reason + idempotency key + route-level
+  `expected_row_version` CAS (stale writer gets 409, never a silent
+  overwrite).
+- **STANDARD cannot physically receive WL — three exact layers:** (1) the
+  profile guard refuses WL tags; (2) template creation re-checks the
+  membership against the exact allowlist and refuses to pin
+  (`wl_tag_in_standard_profile` → MANUAL_REVIEW) even if storage is
+  corrupted; (3) the resolver's render-boundary backstop marks a freshly
+  ensured child carrying an exact WL inbound as a permanent
+  `WL_INBOUND_IN_STANDARD_CHILD` ERROR (new terminal
+  `ChildProvisioningStore.fail_permanent` — a poison state must never
+  retry), so no body containing WL can ever be served. Beyond these, the
+  existing broker contract re-verifies child membership on every credential
+  reread/subscription fetch (drift ⇒ fail-closed, never a partial body).
+  **Honest limitation:** Marzban subscription lines carry human remarks,
+  not inbound tags (verified live 2026-08-27: 32 real lines, remarks are
+  display names), so a line-level WL filter is impossible without
+  substring matching, which is forbidden — the fail-safe therefore lives at
+  the exact-membership layers above, where a corrupted child fails closed
+  instead of rendering at all.
+- **Admin UX:** new «Роутинг хостов» page (`frontend/assets/admin/
+  routing.js`, ES module, CSP-safe): live host inventory from the same
+  broker identity (tag + exact classification + membership state),
+  add/remove with mandatory-reason confirm dialog + one idempotency key per
+  dialog + CAS expectation, WL/wl-shaped rows render a permanently
+  disabled action with the server's own refusal reason, plan→profile map
+  and the recent immutable audit events. Routes: `GET
+  /admin/routing/hosts`, `POST /admin/routing/hosts/{add,remove}`.
+- **Tests:** `tests/test_delivery_routing.py` (15): exact-vs-fuzzy
+  classification, WL/wl-like/unknown rejections, add/remove roundtrip with
+  audit + replay, store-level serialization, corrupted-storage template
+  guard, and the route authz matrix (401/403/CSRF/400 WL refusal/409 stale
+  CAS/roundtrip).
+
 # Phase 6 — WL quota
 
 ## [x] PH6-01 — Runtime topology allowlist/assertions

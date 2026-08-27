@@ -88,6 +88,11 @@ from .routes.admin_devices import (
 )
 from .routes.admin_expiry import handle_expiry_adjustment, handle_expiry_preview
 from .routes.admin_ownership import handle_telegram_ownership_rebind
+from .routes.admin_routing import (
+    handle_routing_host_add,
+    handle_routing_host_remove,
+    handle_routing_hosts,
+)
 from .routes.admin_payments import (
     handle_manual_payment_apply,
     handle_manual_payment_cancel,
@@ -218,6 +223,10 @@ _ROUTES = [
     # OPD-39/DL-041: primary-admin Telegram ownership rebind.
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/telegram/rebind$"),
      lambda h, account_id: handle_telegram_ownership_rebind(h, account_id)),
+    # PH5-12 delivery routing: live host inventory + STANDARD membership.
+    ("GET",    re.compile(r"^/admin/routing/hosts$"),   lambda h: handle_routing_hosts(h)),
+    ("POST",   re.compile(r"^/admin/routing/hosts/add$"),    lambda h: handle_routing_host_add(h)),
+    ("POST",   re.compile(r"^/admin/routing/hosts/remove$"), lambda h: handle_routing_host_remove(h)),
     ("GET",    re.compile(r"^/admin/user-devices/(?P<username>[^/]+)$"), lambda h, username: handle_admin_user_devices(h, username) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices-counts$"),      lambda h: handle_admin_user_device_counts(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/user-devices/(?P<username>[^/]+)/limit$"), lambda h, username: handle_admin_set_device_limit(h, username) if require_admin_auth(h) else None),

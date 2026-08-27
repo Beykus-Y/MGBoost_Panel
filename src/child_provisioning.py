@@ -221,6 +221,45 @@ class ChildProvisioningStore:
                 self._conn.rollback()
                 raise
 
+    def fail_permanent(self, operation_id: str, *, worker_id: str, error_class: str, now: int) -> None:
+        """Terminal ERROR from a leased IN_FLIGHT state -- for poison-state
+        detection that must never be retried (e.g. a pinned template whose
+        membership contains an exact WL inbound). Mirrors ``retry``'s lease
+        discipline but leaves the op permanently stopped and visible."""
+        safe_error = (error_class or "").strip()
+        if not safe_error or len(safe_error) > 128:
+            raise ChildProvisioningError("safe error class is required")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mgboost_outbox WHERE operation_id=? AND state='IN_FLIGHT' "
+                    "AND lease_owner=?", (operation_id, worker_id),
+                ).fetchone()
+                if not row:
+                    raise ChildProvisioningConflict("outbox lease is not owned by worker")
+                self._conn.execute(
+                    "UPDATE mgboost_outbox SET state='ERROR',lease_owner=NULL,"
+                    "lease_expires_at=NULL,last_error_class=?,updated_at=?,"
+                    "row_version=row_version+1 WHERE id=?",
+                    (safe_error, now, row["id"]),
+                )
+                self._conn.execute(
+                    "UPDATE mgboost_child_user_intents SET observed_state='ERROR',"
+                    "updated_at=?,row_version=row_version+1 WHERE id=?",
+                    (now, row["child_intent_id"]),
+                )
+                self._conn.execute(
+                    "INSERT INTO mgboost_outbox_attempt_events "
+                    "(outbox_id,account_id,attempt_no,event_type,safe_error_class,created_at) "
+                    "VALUES (?,?,?,'FAILED',?,?)",
+                    (row["id"], row["account_id"], row["attempts"], safe_error, now),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def acknowledge(
         self, operation_id: str, *, worker_id: str, outcome: str,
         child_uuid: str, remote_result: dict, now: int,

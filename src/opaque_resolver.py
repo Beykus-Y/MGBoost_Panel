@@ -133,10 +133,19 @@ def resolve_account_device(
             "WHERE account_id=? LIMIT 1", (account_id,),
         ).fetchone()
         # Determine the account's already-approved source contract hash from
-        # any prior child of this account; if this is the account's first
-        # child ever, the caller must have provisioned one via the existing
-        # PH3-03 pipeline first -- this engine does not invent a new source
-        # discovery mechanism.
+        # any prior child of this account. If this is the account's first
+        # child ever, the only remaining authority is the account's pinned
+        # SYSTEM-OWNED provisioning template (PH5-11 commercial signup): an
+        # infrastructure-owned source user whose exact contract was verified
+        # and pinned by the durable signup worker -- never a customer legacy
+        # user, never a caller-supplied value. Legacy accounts (no template
+        # row) keep the exact prior behavior: their genesis child must be
+        # provisioned through the existing PH3-03 pipeline first.
+        if source is None:
+            source = db._conn.execute(
+                "SELECT source_contract_hash FROM mgboost_provisioning_templates "
+                "WHERE account_id=? AND state='ACTIVE'", (account_id,),
+            ).fetchone()
         if source is None:
             return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
         idem_key = f"account-device-resolver-child-v1:{slot_generation_id}"
@@ -167,6 +176,19 @@ def resolve_account_device(
                     db.child_provisioning.retry(
                         prepared["operation_id"], worker_id=worker_id,
                         error_class="PROVISIONING_UNAVAILABLE", now=now,
+                    )
+                    return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
+                # PH5-11 fail-safe: the freshly created child must never
+                # carry an exact PH0-05 WL inbound for a STANDARD delivery
+                # account. The pinned template contract should already make
+                # this impossible; this is the render-boundary backstop.
+                # WL classification is exact allowlist membership only.
+                from .wl_topology import WL_INBOUND_TAGS
+                child_tags = set((created.get("inbounds") or {}).get("vless") or [])
+                if child_tags & set(WL_INBOUND_TAGS):
+                    db.child_provisioning.fail_permanent(
+                        prepared["operation_id"], worker_id=worker_id,
+                        error_class="WL_INBOUND_IN_STANDARD_CHILD", now=now,
                     )
                     return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
                 child_uuid = created.pop("uuid")

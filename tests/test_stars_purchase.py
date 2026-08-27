@@ -57,26 +57,51 @@ def _application(db, invoice_id):
 
 
 def test_first_purchase_snapshots_product_evidence_and_entitlement(db):
+    """PH5-11 note: this test previously rode the WL 60d SKU. The first
+    rollout gate makes WL/EXTENDED/FAMILY unpurchasable, so the snapshot
+    coverage now rides the sellable BASIC 60d SKU; the WL-period scheduling
+    semantics of the untouched PH5-02 engine stay covered below and in
+    test_subscription_renewal.py."""
     account = _account(db)
-    invoice = _paid(db, account, plan="WL", days=60)
+    invoice = _paid(db, account, plan="BASIC", days=60)
     result = db.stars_purchases.apply_paid_invoice(invoice["id"], now=200)
 
     assert result["new_expiry"] == 200 + 60 * 86400
-    assert result["entitlement"]["plan"]["code"] == "WL"
+    assert result["entitlement"]["plan"]["code"] == "BASIC"
     assert result["entitlement"]["subscription"]["effective_expiry"] == result["new_expiry"]
     row = db.get_invoice(invoice["id"])
     assert row["invoice_kind"] == "CANONICAL_PLAN"
     assert (row["plan_code_snapshot"], row["catalog_version_snapshot"], row["price_amount_snapshot"]) == (
-        "WL", "STARS-2026-08-26-v1", 349,
+        "BASIC", "STARS-2026-08-26-v1", 169,
     )
     assert _application(db, invoice["id"])["applied_operation"] == "CREATE"
     assert db._conn.execute(
         "SELECT COUNT(*) FROM mgboost_stars_payment_evidence WHERE invoice_id=?", (invoice["id"],)
     ).fetchone()[0] == 1
-    periods = db._conn.execute(
-        "SELECT starts_at,ends_at FROM mgboost_wl_periods WHERE account_id=? ORDER BY sequence_no", (account["id"],)
-    ).fetchall()
-    assert len(periods) == 2 and periods[0]["ends_at"] == periods[1]["starts_at"]
+    # A Non-WL plan (wl_mode='NONE') schedules zero WL periods.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_wl_periods WHERE account_id=?", (account["id"],)
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("plan_code,amount", [("WL", 349), ("EXTENDED", 249), ("FAMILY", 299)])
+def test_first_rollout_purchase_gate_rejects_non_standard_plans(db, plan_code, amount):
+    account = _account(db)
+    with pytest.raises(Exception):
+        db.stars_purchases.create_invoice(
+            telegram_id=account["telegram_id"], plan=plan_code, duration_days=30,
+            ttl_seconds=3600, now=100,
+        )
+    assert db._conn.execute("SELECT COUNT(*) FROM stars_invoices").fetchone()[0] == 0
+
+
+def test_wl_period_scheduling_engine_remains_intact_behind_the_gate():
+    """The PH5-02 engine still schedules two contiguous 30-day WL periods
+    for a 60-day LIMITED-plan grant -- reachable only through the renewal
+    engine (future WL rollout), never through the current Stars gate."""
+    from src.subscription_renewal import schedule_wl_period_windows
+    windows = schedule_wl_period_windows(anchor=1_000, duration_days=60, wl_period_days=30)
+    assert windows == [(1_000, 1_000 + 30 * 86400), (1_000 + 30 * 86400, 1_000 + 60 * 86400)]
 
 
 @pytest.mark.parametrize("current_expiry,now,expected_anchor", [(10_000, 200, 10_000), (100, 200, 200)])

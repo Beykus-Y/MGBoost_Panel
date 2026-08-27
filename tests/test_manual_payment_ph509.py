@@ -61,19 +61,21 @@ def _record(db, capability, account_id, *, plan="WL", days=30, ref="transfer-000
 
 
 def _paid_stars_subscription(db, account_id, *, plan, days, telegram_id=900777):
+    """Fixture grant through the PH5-02 engine. PH5-11: the Stars channel
+    carries the first-rollout sellable-plan gate, so non-sellable plans
+    (WL/EXTENDED/FAMILY) apply directly through the engine -- the gate is
+    channel-level by design."""
     db.accounts.link_telegram_owner(
         account_id, telegram_id, provenance="MIGRATION", actor="test", now=1,
     )
-    invoice = db.stars_purchases.create_invoice(
-        telegram_id=telegram_id, plan_code=plan, duration_days=days,
-        ttl_seconds=3600, now=10,
+    return db.subscription_renewal.apply_same_plan_purchase(
+        account_id=account_id, plan_code=plan, duration_days=days,
+        payment_channel="TELEGRAM_STARS", mutation_source="DIRECT_PURCHASE",
+        actor_type="TELEGRAM", actor_ref=str(telegram_id),
+        reason="fixture subscription",
+        idempotency_key=f"fixture-mpay-{account_id}-{plan}-{days}",
+        now=20,
     )
-    assert db.stars_purchases.capture_paid(
-        invoice["id"], charge_id=f"charge-{account_id}-{plan}-{days}",
-        provider_charge_id=None, payer_telegram_id=telegram_id, currency="XTR",
-        amount=invoice["stars_price"], now=11,
-    ) == "paid"
-    return db.stars_purchases.apply_paid_invoice(invoice["id"], now=20)
 
 
 # --- approved catalog round-trips -----------------------------------------------

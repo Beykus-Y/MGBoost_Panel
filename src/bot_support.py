@@ -349,8 +349,14 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             keyboard=[
                 [KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")],
                 [KeyboardButton(text="🔧 Управление устройствами")],
-                [KeyboardButton(text="⭐️ Продлить подписку")],
+                [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="⭐️ Продлить подписку")],
             ],
+            resize_keyboard=True,
+        )
+
+    def kb_new_user():
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="🛒 Купить VPN")]],
             resize_keyboard=True,
         )
 
@@ -369,6 +375,29 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             keyboard=[[KeyboardButton(text="⬅️ Назад к боту")]],
             resize_keyboard=True,
         )
+
+    async def _send_stars_invoice(bot, chat_id: int, invoice: dict):
+        """Single canonical invoice sender: every field comes from the
+        server-side invoice row (catalog snapshot), never from callback
+        data. Single-chat invoice mode -- a forwarded copy gets a deep-link
+        button, never another Pay button."""
+        try:
+            await bot.send_invoice(
+                chat_id=chat_id,
+                title=invoice["tariff_name"],
+                description=f"{invoice['tariff_name']} — {invoice['duration_days']} дней",
+                payload=str(invoice["id"]),
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(label=invoice["tariff_name"], amount=invoice["stars_price"])],
+                start_parameter=f"stars_invoice_{invoice['id']}",
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить счёт: {e}")
+            try:
+                await bot.send_message(chat_id, "Не удалось создать счёт. Попробуйте позже.")
+            except Exception:
+                pass
 
     def kb_no_link():
         return InlineKeyboardMarkup(
@@ -574,6 +603,146 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             raise PaymentDurabilityError("Stars payment capture could not be verified") from exc
         if not fresh or fresh.get("telegram_payment_charge_id") != sp.telegram_payment_charge_id:
             await capture_orphan_payment(message, "invoice_changed_during_payment_capture")
+    # --- PH5-11 first-rollout purchase UX («Купить VPN») ---------------------
+    # Callback data carries ONLY plan_code + duration_days. Every price,
+    # name, device limit and the invoice itself are re-resolved server-side
+    # from the active immutable catalog inside create_invoice -- a tampered
+    # callback can never select another plan, version or price.
+
+    def _sellable_tariffs():
+        if db.get_setting("stars:enabled") != "1":
+            return None
+        return db.stars_purchases.sellable_catalog()
+
+    def _plan_summary(tariffs, plan_code):
+        items = [t for t in tariffs if t["plan_code"] == plan_code]
+        if not items:
+            return None
+        items.sort(key=lambda t: t["duration_days"])
+        first = items[0]
+        return {
+            "plan_code": plan_code, "display_name": first["display_name"],
+            "device_limit": first["device_limit"], "items": items,
+        }
+
+    @dp.message(F.text == "🛒 Купить VPN")
+    async def msg_buy_vpn(message: Message, state: FSMContext):
+        await state.clear()
+        tariffs = _sellable_tariffs()
+        if not tariffs:
+            await message.answer("Покупка через Telegram Stars временно недоступна, обратитесь к оператору.")
+            return
+        seen, plans = set(), []
+        for t in tariffs:
+            if t["plan_code"] not in seen:
+                seen.add(t["plan_code"])
+                plans.append(_plan_summary(tariffs, t["plan_code"]))
+        rows = [[InlineKeyboardButton(
+            text=f"{p['display_name']} — до {p['device_limit']} устройств",
+            callback_data=f"buy_plan:{p['plan_code']}",
+        )] for p in plans]
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel")])
+        await message.answer(
+            "Выберите тариф:\n\n"
+            "Все тарифы включают стандартный набор серверов.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    @dp.callback_query(F.data == "buy_cancel")
+    async def cb_buy_cancel(call: CallbackQuery):
+        await call.answer()
+        try:
+            await call.message.edit_text("Покупка отменена.")
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data.startswith("buy_plan:"))
+    async def cb_buy_plan(call: CallbackQuery):
+        await call.answer()
+        plan_code = call.data.split(":", 1)[1]
+        tariffs = _sellable_tariffs()
+        if not tariffs:
+            await call.message.answer("Покупка временно недоступна, обратитесь к оператору.")
+            return
+        summary = _plan_summary(tariffs, plan_code)
+        if summary is None:
+            await call.message.answer("Этот тариф сейчас недоступен для покупки.")
+            return
+        rows = [[InlineKeyboardButton(
+            text=f"{item['duration_days']} дн. — {item['amount']} ⭐️",
+            callback_data=f"buy_dur:{plan_code}:{item['duration_days']}",
+        )] for item in summary["items"]]
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_cancel")])
+        await call.message.edit_text(
+            f"Тариф «{summary['display_name']}» — до {summary['device_limit']} устройств.\n"
+            "Выберите срок:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    @dp.callback_query(F.data.startswith("buy_dur:"))
+    async def cb_buy_duration(call: CallbackQuery):
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+        tariffs = _sellable_tariffs()
+        if not tariffs:
+            await call.message.answer("Покупка временно недоступна, обратитесь к оператору.")
+            return
+        summary = _plan_summary(tariffs, plan_code)
+        item = next(
+            (i for i in (summary or {}).get("items", []) if i["duration_days"] == duration_days),
+            None,
+        )
+        if item is None:
+            await call.message.answer("Этот тариф сейчас недоступен для покупки.")
+            return
+        await call.message.edit_text(
+            f"Вы оформляете:\n\n"
+            f"Тариф: {item['display_name']}\n"
+            f"Срок: {item['duration_days']} дн.\n"
+            f"Устройств: до {item['device_limit']}\n"
+            f"Стоимость: {item['amount']} ⭐️\n\n"
+            "Оплата через Telegram Stars.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=f"Оплатить {item['amount']} ⭐️",
+                    callback_data=f"buy_pay:{plan_code}:{duration_days}",
+                ),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data.startswith("buy_pay:"))
+    async def cb_buy_pay(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+        if db.get_setting("stars:enabled") != "1":
+            await call.message.answer("Покупка временно недоступна.")
+            return
+        try:
+            invoice = db.stars_purchases.create_invoice(
+                telegram_id=call.from_user.id, plan_code=plan_code, duration_days=duration_days,
+                ttl_seconds=3600,
+            )
+        except Exception as exc:
+            logger.info("Canonical Stars invoice rejected: %s", type(exc).__name__)
+            await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
+            return
+        try:
+            await call.message.edit_text("Счёт готов — оплатите его ниже. ⬇️")
+        except Exception:
+            pass
+        await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
+
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message, state: FSMContext):
@@ -592,12 +761,11 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         else:
             await state.set_state(SupportStates.waiting_link)
             await message.answer(
-                (("Пересланный счёт оплатить нельзя — после привязки создайте свой через меню.\n\n")
+                (("Пересланный счёт оплатить нельзя — после покупки создайте новый через меню.\n\n")
                  if forwarded_invoice_link else "")
                 + "👋 Привет! Я помогу с вашей VPN-подпиской.\n\n"
-                "Пришлите ссылку подписки для привязки аккаунта.\n"
-                "Её можно найти в письме или у администратора.",
-                reply_markup=kb_no_link(),
+                "Здесь можно купить подписку или прислать существующую ссылку для привязки аккаунта.",
+                reply_markup=kb_new_user(),
             )
 
     @dp.message(StateFilter(None), ~F.successful_payment)
@@ -609,8 +777,9 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         else:
             await state.set_state(SupportStates.waiting_link)
             await message.answer(
-                "👋 Привет! Пришли ссылку подписки для привязки аккаунта.",
-                reply_markup=kb_no_link(),
+                "👋 Привет! Пришлите ссылку подписки для привязки аккаунта "
+                "или купите подписку через «🛒 Купить VPN».",
+                reply_markup=kb_new_user(),
             )
 
     @dp.callback_query(F.data == "no_link")
@@ -674,6 +843,34 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     async def msg_my_subscription(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
         if not tg_user:
+            # PH5-11: a commercial signup customer owns a canonical account
+            # but no legacy link -- show the canonical subscription state
+            # instead of the legacy binding prompt.
+            account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+            if account is not None:
+                try:
+                    ent = db.entitlements.calculate(account_id=int(account["id"]))
+                    sub = (ent or {}).get("subscription") or {}
+                    plan = ((ent or {}).get("plan") or {})
+                    expire = sub.get("effective_expiry")
+                    expire_str = ""
+                    if expire:
+                        from datetime import datetime as _dt, timezone as _tz
+                        expire_str = (
+                            "\nДата окончания: "
+                            + _dt.fromtimestamp(int(expire), tz=_tz.utc).strftime("%d.%m.%Y")
+                        )
+                    await safe_answer(
+                        message,
+                        f"👤 Тариф: {plan.get('display_name') or plan.get('code') or '—'}\n"
+                        f"Статус: {sub.get('effective_status') or '—'}{expire_str}\n\n"
+                        "Ваша ссылка подписки была отправлена вам после оплаты. "
+                        "Если вы её потеряли — отправьте /newsub для перевыпуска.",
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка получения канонической подписки: {type(e).__name__}")
+                    await message.answer("Не удалось получить информацию о подписке.")
+                return
             await state.set_state(SupportStates.waiting_link)
             await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
             return
@@ -901,7 +1098,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
             return
 
-        tariffs = db.stars_purchases.catalog()
+        tariffs = db.stars_purchases.sellable_catalog()
         if not tariffs:
             await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
             return
@@ -951,23 +1148,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
             return
 
-        try:
-            await call.message.bot.send_invoice(
-                chat_id=call.from_user.id,
-                title="Продление подписки",
-                description=f"{invoice['tariff_name']} — {invoice['duration_days']} дней",
-                payload=str(invoice["id"]),
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(label=invoice["tariff_name"], amount=invoice["stars_price"])],
-                # Official single-chat invoice mode: a forwarded copy gets
-                # a deep-link button, never another Pay button. This is not
-                # a gift-payment mechanism in Phase 2 MVP.
-                start_parameter=f"stars_invoice_{invoice['id']}",
-            )
-        except Exception as e:
-            logger.error(f"Не удалось отправить счёт: {e}")
-            await call.message.answer("Не удалось создать счёт. Попробуйте позже.")
+        await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
 
     @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
     async def msg_call_human(message: Message, state: FSMContext):

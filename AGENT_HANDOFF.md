@@ -1,3 +1,209 @@
+# AGENT_HANDOFF — PH5-11/PH5-12 first commercial STANDARD signup + delivery routing implemented and fully tested locally; local checkpoint only, NO push, NO deploy, canary NOT started
+
+Updated: 2026-08-27 (implementation session, starting from local = origin =
+production `f228b46`, working tree clean). **This top section supersedes
+everything below.** Owner instruction: implement the first full commercial
+STANDARD signup/purchase slice — 6 sellable SKU (BASIC/BASIC_PLUS/BASIC_PRO
+x 30/60d) via the existing canonical PH5-05 Stars flow, self-service DIRECT
+account creation strictly after confirmed payment, system-owned
+provisioning template for first-device bootstrap (no customer legacy
+dependency, anti-tamper verification preserved), operational delivery
+routing (plan -> delivery profile -> host membership) with a hard
+backend guarantee that STANDARD can never receive an exact WL host, admin
+UX for host membership, then local checkpoint commit. Production was
+read-only (catalog/accounts/payments/hosts/topology/schema/health); no test
+buyer, no real invoice.
+
+## State after this session
+
+Local HEAD = checkpoint commit of this slice, one commit ahead of origin.
+**origin/main and production both remain at `f228b46`.** PUSH AND DEPLOY
+ARE EXPLICITLY FORBIDDEN for this slice; the first real Stars purchase
+after deploy is a separate owner-run canary. Deadline context honored:
+nothing optional was started (no PH6-07/08/09/10, no WL/package sales, no
+promo, no PH5-06/07, no PH5-08 redesign, no PH4-06).
+
+## What was built
+
+- **Purchase gate (server-authoritative).** `SELLABLE_STANDARD_PLAN_CODES`
+  in `src/commercial_signup.py` enforced in `stars_purchase.create_invoice`,
+  `validate_invoice_for_checkout` and `capture_paid` for both invoice kinds.
+  Callback data carries only plan_code+duration; every price/name/device
+  count is re-resolved from the active immutable catalog.
+- **Self-service DIRECT account (PH5-11, `CANONICAL_SIGNUP`).** New
+  `src/commercial_signup.py` + `src/commercial_signup_schema.py`
+  (migration `ph5_11_commercial_signup_v1`, requires PH3-01+PH5-05 exact
+  checksums): `mgboost_provisioning_templates`,
+  `mgboost_signup_template_jobs`, and the fill-once trigger on
+  `stars_invoices.account_id` for signup rows. The invoice row (NULL
+  account_id) is the only durable pre-payment state; at `capture_paid`
+  (money already moved) the bound factory resolves-or-creates exactly ONE
+  DIRECT account (one txn; alias group + PRIMARY alias = `tpl-<public_id>`
+  + `mgboost_direct_account_reviews` PROVEN row + `DIRECT_BIND` owner link
+  + PENDING template job). A concurrent caller after the binding commit but
+  before the owner link resolves to the SAME account via the fill-once
+  anchor and re-runs the idempotent link — this exact race was found by the
+  8-thread test and fixed before commit.
+- **System-owned provisioning template.** Worker job
+  (`ensure_template_for_account` in stars.py `_tick`) converges a remote
+  infrastructure Marzban user (`tpl-<public_id>`, flow `xtls-rprx-vision`
+  evidenced live 2026-08-27, inbounds == STANDARD profile membership,
+  expire=0) through the REAL broker ops (`legacy.user.get/create`), pins
+  its exact `source_contract_hash` ONCE; remote drift -> STOP-class
+  MANUAL_REVIEW (`template_contract_drift`), never silent re-pin; empty or
+  WL-contaminated profile -> MANUAL_REVIEW (`wl_tag_in_standard_profile`).
+  The customer never receives the template UUID/URL; children still get
+  their own Marzban-minted UUIDs (`validate_created_child` unchanged).
+- **First-device bootstrap.** `opaque_resolver.resolve_account_device`
+  gained exactly one new authority: zero prior child intents + pinned
+  ACTIVE template row -> template hash (legacy accounts without a template
+  keep `PROVISIONING_UNAVAILABLE` exactly as before). Plus the
+  render-boundary backstop: a freshly ensured child carrying an exact WL
+  inbound -> permanent ERROR via new
+  `ChildProvisioningStore.fail_permanent` (`WL_INBOUND_IN_STANDARD_CHILD`)
+  — poison states never retry.
+- **Credential delivery.** After a CREATE-apply the worker delivers the
+  initial opaque credential (deliver-then-activate; lost delivery ->
+  recoverable PENDING_DELIVERY; existing ACTIVE credential -> hint, never
+  rotation; gated by `OPAQUE_SUBSCRIPTION_ENABLED` with an admin alert
+  while off). CREATE vs RENEW user texts split by the applications row.
+- **Delivery routing (PH5-12, `src/delivery_routing*.py`, migration
+  `ph5_12_delivery_routing_v1`).** Profiles (CAS row_version) + immutable
+  membership rows (UPDATE refused; DELETE allowed only with a prior
+  HOST_REMOVED event in the same txn) + plan mapping + append-only
+  `mgboost_delivery_profile_events` ledger (the entitlement-mutations
+  ledger requires a NOT NULL account_id a routing mutation lacks).
+  `apply_host_change`: exact PH0-05 classification (WLHostRejected),
+  wl-shaped-not-allowlisted fail-closed (WLLikeHostRejected), additions
+  require the tag in a FRESH live observation that passed
+  `require_topology_ok()` (route records the assertion per mutation, PH6-06
+  pattern), mandatory reason + idempotency replay + route-level
+  `expected_row_version` CAS (stale writer = 409). Routes `GET
+  /admin/routing/hosts`, `POST /admin/routing/hosts/{add,remove}`; admin
+  page `frontend/assets/admin/routing.js` (+nav/page wiring in
+  index.html/admin.js) with disabled WL rows and server refusal reasons.
+  `scripts/seed_delivery_routing.py --seed-verified-baseline` seeds the
+  shell + plan mapping + the 13-tag STANDARD membership verified read-only
+  against live production inbounds on 2026-08-27.
+- **Why STANDARD physically cannot get WL — three exact layers:** profile
+  guard; template pin guard; resolver backstop (permanent ERROR). Beyond
+  that the existing broker contract re-verifies child membership on every
+  reread/subscription fetch (drift => fail-closed, never a partial body).
+  PH6-06 enforcement semantics untouched (abstains for these accounts as
+  before).
+
+## Honest boundaries / limitations (documented, not hidden)
+
+1. **No line-level render filter.** Real production subscription lines
+   carry human remarks, not inbound tags (verified live: 32 lines, remarks
+   are display names like "🇩🇪 🌍 Germany [VLESS - grpc]"); a line-level WL
+   filter would require forbidden substring matching. The fail-safe lives
+   at the exact-membership layers above: a corrupted child fails closed and
+   never renders at all.
+2. **Profile changes reach new provisioning only** (new templates/children;
+   recovery for an existing device = admin Rebind, which provisions from
+   the current profile). Propagating membership onto already-provisioned
+   children is PH6-adjacent remote-mutation territory — deliberately not
+   built.
+3. **Per-account template users** are forced by
+   `mgboost_legacy_account_aliases.legacy_username` UNIQUE (one
+   infrastructure Marzban user per commercial account). Availability
+   coupling: template drift/deletion fails ALL future ensures closed
+   (by design; MANUAL_REVIEW alerting covers detection). Template users
+   must never be edited in Marzban.
+4. `OPAQUE_SUBSCRIPTION_ENABLED` must be ON at canary time — until then
+   signup applications still apply (entitlement durable) but credentials
+   are NOT issued (admin alert explains).
+
+## Verification performed
+
+- Targeted new suites: `tests/test_delivery_routing.py` **15 passed**;
+  `tests/test_commercial_signup.py` **35 passed** (exact SKU matrix;
+  WL/EXTENDED/FAMILY rejection; personal checkout; amount-mismatch capture
+  -> manual_review without account creation; 8-thread capture race -> one
+  account; crash durability across a fresh `Database()` on the same file;
+  same-plan renewal vs different-plan refusal; template
+  happy/idempotent/drift/outage/corrupted; first-device bootstrap without
+  any legacy dependency; per-slot child/UUID isolation; credential
+  create/lost-delivery/no-rotation; bot buy UX incl. tampered
+  `buy_pay:WL:30` callback rejection; unrelated-account isolation).
+- Updated for the rollout gate (reviewer-visible scaffolding changes, no
+  production-code impact): `tests/_ops_helpers.py::paid_wl_subscription`
+  and `tests/test_manual_payment_ph509.py::_paid_stars_subscription` now
+  grant WL/EXTENDED/FAMILY fixtures through the PH5-02 engine directly
+  (the sellable gate is deliberately channel-level); the ph510
+  Stars-vs-manual stacking test moved FAMILY->BASIC_PLUS so it can stay on
+  the real Stars path; `tests/test_stars_purchase.py` (19 passed; the
+  former WL-60d snapshot test now rides BASIC-60d + new gate pins);
+  `tests/test_admin_frontend_security.py` (4 passed; the JS-eval strip
+  regex now covers the new routing.js module import); the
+  `tests/test_admin_browser_e2e.py` fixture now serves routing.js (the
+  browser suite caught its absence — dynamic-import console error).
+- Related suites re-run green: stars worker/db/bot-support/admin-stars,
+  opaque resolver + PH2-07, subscription, plan catalog, subscription
+  renewal, direct enrollment, manual payments PH5-09/10, operational
+  admin, all browser E2E. FULL REGRESSION
+  (`/home/beykus/mgboost-pw-venv`, every suite, solo run):
+  **1388 passed, 0 failed, 0 skipped** (= baseline 1334 + exactly the 54
+  new/updated test outcomes). `git diff --check` clean; every touched JS
+  module passes `node --check`; all touched python files compile. (Two
+  earlier regression attempts hit the documented `/tmp`-quota failure
+  class — once from two runs racing, once from a concurrent targeted run;
+  cleaned strictly per the owner-approved anonymous-`/tmp/tmp*` precedent;
+  the clean solo run above is the recorded result.)
+- **Production read-only preflight (SSH only; ZERO writes/mutations):**
+  HEAD `f228b46` == local == origin, only the known untracked
+  `extra_configs.json` drift; `quick_check=ok`, 0 FK violations;
+  cardinalities accounts=18(15 DIRECT ACTIVE+1 CLOSED, 2 INTERNAL)/
+  subscriptions=18/stars_invoices=2(both legacy refunded)/
+  evidence=0/applications=0/reviews=16/credentials=9/child_intents=47/
+  wl_periods=0; all migrations through `ph6_06_wl_enforcement_v1` present
+  (both new ones will self-apply additively at restart); catalog seeded
+  exactly `STARS-2026-08-26-v1` with the 12 SKUs (prices match the brief's
+  6); `stars:enabled=1` already set; latest topology assertion
+  `2026-08-26-v1 ok`. Live reads: 25 inbounds (13 non-WL STANDARD
+  candidates + 12 exact WL), 5 nodes (2 exact WL), a real child user
+  carries flow `xtls-rprx-vision` and ALL 25 inbounds (its
+  LEGACY_PAID_COMPAT UNLIMITED plan includes WL — untouched by this
+  slice), subscription remarks are display names (boundary #1 above).
+  Three services active.
+
+## Reviewer attention list (hotspots)
+
+1. `src/stars_purchase.py::capture_paid` — the pre-transaction signup
+   factory call (it must stay OUTSIDE capture's BEGIN IMMEDIATE; the
+   factory is itself transactional) and the reason mapping to
+   manual_review.
+2. `src/commercial_signup.py::ensure_signup_account` — the fill-once
+   anchor logic and the always-idempotent owner link after the txn (the
+   concurrency race fixed here is exactly the reviewer surface).
+3. `src/commercial_signup.py::ensure_template_for_account` — get ->
+   (create) -> reread -> hash compare -> pin-once; confirm no path can
+   re-pin over drift or create a template from a WL-contaminated profile.
+4. `src/opaque_resolver.py` — the template-hash fallback placement (only
+   when zero prior intents) and the WL backstop's `fail_permanent`.
+5. `src/delivery_routing.py::apply_host_change` — exact-vs-startswith
+   classification boundaries, the REMOVE-with-pre-event trigger contract,
+   CAS bump ordering inside one txn.
+6. `src/routes/admin_routing.py` — fresh observation + assertion before
+   every mutation; confirm no mutation path skips `require_topology_ok`.
+7. `src/stars.py::_deliver_signup_credential` — deliver-then-activate
+   split and the no-rotation guarantee.
+
+## Exact next step
+
+Independent review of this checkpoint against `origin/main` (`f228b46`),
+then owner deploy decision (application-code-only + two additive
+self-applying migrations in the same restart class as PH6-06). At deploy:
+run `scripts/seed_delivery_routing.py --seed-verified-baseline` once
+(root, local, audited), verify `mgboost_delivery_profile_hosts` = 13 and
+the admin routing page renders, enable `OPAQUE_SUBSCRIPTION_ENABLED`
+(nginx already proxies the 43-char root path), then the first real Stars
+purchase (Анастасия) is the owner-run canary per the brief. After that:
+STOP — nothing else was authorized.
+
+---
+
 # AGENT_HANDOFF — PH6-06 independent review APPROVED WITH FIXES (one real P0 found, fixed, regression-tested); deploy in progress this session
 
 Updated: 2026-08-27 (independent-review session, starting from local

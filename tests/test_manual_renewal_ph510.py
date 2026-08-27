@@ -272,14 +272,16 @@ def test_concurrent_stars_and_manual_renewals_stack_exactly_once_each(db):
     account = db.accounts.create_account("DIRECT", now=1)
     db.accounts.link_telegram_owner(account["id"], 777001, provenance="MIGRATION",
                                     actor="test", now=1)
+    # PH5-11: must stay on the real Stars path, so the plan must be one of
+    # the sellable first-rollout SKUs (FAMILY is gated now).
     invoice = db.stars_purchases.create_invoice(
-        telegram_id=777001, plan_code="FAMILY", duration_days=60, ttl_seconds=3600, now=100,
+        telegram_id=777001, plan_code="BASIC_PLUS", duration_days=60, ttl_seconds=3600, now=100,
     )
     assert db.stars_purchases.capture_paid(
         invoice["id"], charge_id="charge-stars-concurrent", provider_charge_id=None,
         payer_telegram_id=777001, currency="XTR", amount=invoice["stars_price"], now=101,
     ) == "paid"
-    manual = _pay_manual(db, cap, account["id"], plan="FAMILY", days=60,
+    manual = _pay_manual(db, cap, account["id"], plan="BASIC_PLUS", days=60,
                          tag="concurrent-manual", now=102)
     results = {}
     barrier = threading.Barrier(2)

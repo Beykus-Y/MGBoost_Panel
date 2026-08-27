@@ -17,6 +17,32 @@
 
 ### Added
 
+- PH5-11 first commercial STANDARD signup flow (2026-08-27, implemented
+  locally, pending independent review + deploy; canary not started):
+  «Купить VPN» в Telegram для новых клиентов — 3 non-WL тарифа
+  (BASIC/BASIC_PLUS/BASIC_PRO) × 30/60 дней (ровно 6 SKU, цены только из
+  активного immutable-каталога, подмена callback не влияет на
+  plan/price), canonical Stars invoice, и только после подтверждённой
+  оплаты — самостоятельное создание DIRECT-аккаунта (fill-once, ровно один
+  аккаунт на Telegram-владельца при retry/duplicate), подписка через
+  существующий PH5-02 renewal engine, инфраструктурный provisioning-шаблон
+  (system-owned, без выдачи клиенту UUID/ссылки шаблона; anti-tamper
+  source-contract verification сохранён полностью), выдача opaque-ссылки
+  после применения платежа (потеря доставки восстановима, существующая
+  ссылка не вращается), первый device получает собственного child-юзера с
+  собственным UUID. Повторная покупка того же тарифа — renewal; другой
+  тариф — контролируемый отказ (PH5-06 не начат).
+- PH5-12 operational delivery routing (2026-08-27, implemented locally,
+  pending independent review + deploy): план → delivery profile → host
+  membership как отдельная operational-конфигурация (не тариф-версия):
+  смена хостов не требует перепокупки. Admin-страница «Роутинг хостов»
+  показывает живые inbounds с exact PH0-05 классификацией и управляет
+  STANDARD membership (auth + CSRF + primary-admin capability + reason +
+  idempotency + CAS; stale update = 409; всё аудируется в append-only
+  ledger). Backend-гарантия: exact-WL хост структурно не может попасть в
+  STANDARD (три независимых слоя — профиль, пиннинг шаблона, render-
+  boundary; corrupted state → fail-closed MANUAL_REVIEW/ERROR, никогда не
+  partial-выдача).
 - PH6-06 exact inbound-only WL quota-enforcement state machine
   (2026-08-27, **independently reviewed, one real P0 found and fixed
   (`apply_decision` could orphan a sibling's still-open op on a

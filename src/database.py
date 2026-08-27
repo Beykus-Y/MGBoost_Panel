@@ -16,6 +16,10 @@ from .config import (
 from .admin_authority import PrimaryAdminAuthority
 from .account_schema import apply_parent_account_schema
 from .account_consolidation_schema import apply_account_consolidation_schema
+from .commercial_signup import CommercialSignupStore
+from .commercial_signup_schema import apply_commercial_signup_schema
+from .delivery_routing import DeliveryRoutingStore
+from .delivery_routing_schema import apply_delivery_routing_schema
 from .account_store import AccountStore
 from .compat_telemetry import record_observation, telemetry_key_is_valid
 from .compat_telemetry_schema import apply_compat_telemetry_schema
@@ -174,10 +178,19 @@ class Database:
         self.wl_package_catalog = WLPackageCatalogStore(self._conn, self._lock)
         self.wl_packages = WLPackageStore(self._conn, self._lock, self.wl_package_catalog)
         self.entitlements = EntitlementEngine(self)
+        self.delivery_routing = DeliveryRoutingStore(
+            self._conn, self._lock, self.primary_admin_authority
+        )
+        self.commercial_signup = CommercialSignupStore(
+            self._conn, self._lock, self.accounts, self.delivery_routing
+        )
         self.stars_purchases = StarsPurchaseStore(
             self._conn, self._lock, self.accounts, self.plan_catalog, self.subscription_renewal
         )
         self.stars_purchases.bind_database(self)
+        self.stars_purchases.bind_signup_factory(
+            self.commercial_signup.ensure_signup_account
+        )
         self.manual_payments = ManualPaymentStore(
             self._conn, self._lock, self.accounts, self.plan_catalog,
             self.subscription_renewal, self.provenance, self.wl_packages,
@@ -452,6 +465,8 @@ class Database:
         apply_child_lifecycle_schema(self._conn)
         apply_parent_sync_schema(self._conn)
         apply_stars_purchase_schema(self._conn)
+        apply_commercial_signup_schema(self._conn)
+        apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)

@@ -8,6 +8,7 @@ first-attempt path triggered via an asyncio.Event.
 """
 import asyncio
 import logging
+import secrets
 import time
 from urllib.error import HTTPError
 
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 MAX_APPLY_ATTEMPTS = 5
 RETRY_INTERVAL_SECONDS = 30
+
+
+def _opaque_subscription_enabled() -> bool:
+    from .config import OPAQUE_SUBSCRIPTION_ENABLED
+    return bool(OPAQUE_SUBSCRIPTION_ENABLED)
 
 
 async def _run_sync(func, *args):
@@ -87,6 +93,191 @@ async def notify_user_extended(bot, row: dict):
         )
     except Exception as e:
         logger.warning(f"Не удалось уведомить пользователя о продлении: {e}")
+
+
+async def _notify_admin_signup_issue(bot, db, text: str):
+    """Generic admin alert for signup-side manual-review states, mirroring
+    notify_admin_stuck_payment's failure-honesty (a failed notification must
+    never mask the already-durable DB state)."""
+    if bot is None or db is None:
+        return
+    admin_tg_id = db.get_setting("bot:admin_tg_id")
+    if not admin_tg_id:
+        return
+    try:
+        await bot.send_message(int(admin_tg_id), f"🛒 Проблемный commercial signup:\n{text}")
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить admin о signup-проблеме: {e}")
+
+
+# --- PH5-11 signup delivery (initial opaque credential) ----------------------
+
+def _active_credential_row(db, account_id: int):
+    return db._conn.execute(
+        "SELECT id, generation FROM mgboost_subscription_credentials "
+        "WHERE account_id=? AND status='ACTIVE'", (int(account_id),),
+    ).fetchone()
+
+
+async def _deliver_signup_credential(bot, db, row: dict):
+    """Initial opaque-credential issuance for a freshly applied signup.
+
+    Mirrors the crash-safe split sequencing of bot_support's
+    ``_deliver_and_activate``: deliver the raw token first, activate only if
+    delivery did not raise. Never rotates an existing ACTIVE credential --
+    if one already exists (e.g. a prior attempt fully succeeded), the user
+    is pointed at /newsub instead. A delivery failure leaves exactly the old
+    state plus a harmless PENDING_DELIVERY row for the next attempt to
+    abandon and retry."""
+    account_id = int(row["account_id"])
+    payer = row.get("payer_telegram_id")
+    if bot is None or not payer:
+        return
+    if not _opaque_subscription_enabled():
+        await _notify_admin_signup_issue(
+            bot, db,
+            f"signup invoice #{row['id']} applied, but OPAQUE_SUBSCRIPTION_ENABLED "
+            f"is off -- credential for account #{account_id} was NOT issued",
+        )
+        return
+    try:
+        existing = await _run_sync(_active_credential_row, db, account_id)
+    except Exception as e:
+        logger.error(f"signup credential pre-check failed for account {account_id}: {type(e).__name__}")
+        return
+    if existing is not None:
+        try:
+            await bot.send_message(
+                int(payer),
+                "🔗 Ссылка подписки уже была отправлена ранее. "
+                "Если вы её потеряли — отправьте /newsub для перевыпуска.",
+            )
+        except Exception as e:
+            logger.warning(f"signup credential hint delivery failed: {type(e).__name__}")
+        return
+
+    actor_ref = f"telegram:{int(payer)}"
+    timestamp = int(time.time())
+    op_key = f"{row['id']}:{timestamp}:{secrets.token_urlsafe(16)}"
+    try:
+        await _run_sync(
+            lambda: db.subscription_credentials.abandon_pending(
+                account_id=account_id, actor_ref=actor_ref,
+                idempotency_key=f"ph5-11-signup-abandon:{op_key}", now=timestamp,
+            )
+        )
+        prepared = await _run_sync(
+            lambda: db.subscription_credentials.prepare(
+                account_id=account_id, actor_ref=actor_ref,
+                reason="commercial signup initial issuance",
+                idempotency_key=f"ph5-11-signup-prepare:{op_key}", now=timestamp,
+            )
+        )
+    except Exception as e:
+        logger.error(f"signup credential prepare failed for account {account_id}: {type(e).__name__}")
+        return
+    delivered = False
+    try:
+        await bot.send_message(
+            int(payer),
+            "🔗 Ваша ссылка подписки:\n"
+            f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
+            "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
+            "Откройте её в приложении VPN, чтобы подключить устройство.",
+        )
+        delivered = True
+    except Exception as e:
+        logger.error(f"signup credential delivery failed for account {account_id}: {type(e).__name__}")
+    if delivered:
+        try:
+            await _run_sync(
+                lambda: db.subscription_credentials.activate(
+                    credential_id=prepared["id"], account_id=account_id,
+                    expected_generation=prepared["generation"], actor_ref=actor_ref,
+                    idempotency_key=f"ph5-11-signup-activate:{op_key}", now=timestamp,
+                )
+            )
+        except Exception as e:
+            logger.error(f"signup credential activation failed for account {account_id}: {type(e).__name__}")
+
+
+async def _notify_signup_applied(bot, db, row: dict):
+    """Post-apply user notification for a signup invoice: welcome text plus
+    the initial subscription link delivery (CREATE) or the ordinary renewal
+    text (a second purchase of the same plan on the now-existing account)."""
+    if bot is None:
+        return
+    operation = "RENEW"
+    try:
+        applied = db._conn.execute(
+            "SELECT applied_operation FROM mgboost_stars_purchase_applications WHERE invoice_id=?",
+            (int(row["id"]),),
+        ).fetchone()
+        if applied is not None:
+            operation = applied["applied_operation"]
+    except Exception as e:
+        logger.warning(f"signup applied-operation lookup failed: {type(e).__name__}")
+    if operation == "CREATE":
+        payer = row.get("payer_telegram_id")
+        try:
+            await bot.send_message(
+                int(payer),
+                f"🎉 Подписка «{row.get('tariff_name')}» активирована "
+                f"на {row.get('duration_days')} дн. Спасибо за покупку!",
+            )
+        except Exception as e:
+            logger.warning(f"signup welcome notification failed: {type(e).__name__}")
+        await _deliver_signup_credential(bot, db, row)
+    else:
+        await notify_user_extended(bot, row)
+
+
+async def _process_signup_template_jobs(db, marzban, bot):
+    """Drive the durable PH5-11 template-provisioning jobs to convergence.
+
+    The paid entitlement never depends on this: account, subscription and
+    credential are already durable; the template only unlocks first-device
+    bootstrap. Failures stay PENDING (bounded by the job's own retries in
+    later ticks); poison states become MANUAL_REVIEW with an admin alert."""
+    jobs = db.commercial_signup.pending_template_jobs() if hasattr(db, "commercial_signup") else []
+    for job in jobs:
+        account_id = int(job["account_id"])
+        try:
+            result = await _run_sync(
+                lambda: db.commercial_signup.ensure_template_for_account(
+                    account_id, marzban=marzban,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "signup template provisioning retry for account %s: %s",
+                account_id, type(exc).__name__,
+            )
+            await _run_sync(
+                lambda: db.commercial_signup.record_template_result(
+                    account_id, state="PENDING", error_class=type(exc).__name__,
+                )
+            )
+            continue
+        state = result.get("state")
+        if state == "READY":
+            await _run_sync(
+                lambda: db.commercial_signup.record_template_result(
+                    account_id, state="READY",
+                )
+            )
+        else:
+            error_class = result.get("error_class") or "template_unknown"
+            await _run_sync(
+                lambda: db.commercial_signup.record_template_result(
+                    account_id, state="MANUAL_REVIEW", error_class=error_class,
+                )
+            )
+            await _notify_admin_signup_issue(
+                bot, db,
+                f"template job for account #{account_id} -> MANUAL_REVIEW "
+                f"({error_class})",
+            )
 
 
 # --- apply-worker -----------------------------------------------------------
@@ -267,7 +458,10 @@ async def process_canonical_invoice_row(bot, db, row: dict):
             metadata={"invoice_id": row["id"], "new_expire": result["new_expiry"],
                       "via": "canonical_ph5_05", "mutation_id": result["mutation_id"]},
         )
-        await notify_user_extended(bot, fresh)
+        if fresh.get("invoice_kind") == "CANONICAL_SIGNUP":
+            await _notify_signup_applied(bot, db, fresh)
+        else:
+            await notify_user_extended(bot, fresh)
 
 
 async def _sync_canonical_purchase_children(db, marzban):
@@ -298,6 +492,7 @@ async def _sync_canonical_purchase_children(db, marzban):
 async def _tick(bot, db, marzban, admin_token):
     for row in db.stars_purchases.pending_invoices():
         await process_canonical_invoice_row(bot, db, row)
+    await _process_signup_template_jobs(db, marzban, bot)
     await _sync_canonical_purchase_children(db, marzban)
     if not admin_token:
         return

@@ -57,6 +57,8 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "device_ops.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin/expiry_ops.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "expiry_ops.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/routing.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "routing.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin.css":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.css").read_bytes(), "text/css")
         elif path == "/sub-admin-api/admin/session":

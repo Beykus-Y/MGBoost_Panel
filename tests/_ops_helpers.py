@@ -120,24 +120,28 @@ def capability(db):
 
 
 def paid_wl_subscription(db, account_id, *, plan="WL", days=30, tg_suffix=1):
-    """Real subscription through the canonical Stars evidence chain. The
-    invoice lifecycle runs on tiny fixture timestamps except the APPLY step,
-    which uses the real wall clock -- so the DL-044 anchor
+    """Real subscription through the PH5-02 renewal engine. The APPLY step
+    uses the real wall clock -- so the DL-044 anchor
     max(current_expiry, now) lands in the live future exactly like a real
-    purchase would."""
+    purchase would.
+
+    PH5-11 note: the Stars purchase CHANNEL now carries the first-rollout
+    sellable-plan gate (BASIC/BASIC_PLUS/BASIC_PRO only), so fixtures that
+    need a WL/EXTENDED/FAMILY grant apply through the engine directly --
+    the gate is deliberately channel-level, not engine-level."""
     import time as _time
 
     telegram_id = 900_000_000 + account_id * 10 + tg_suffix
     db.accounts.link_telegram_owner(account_id, telegram_id,
                                     provenance="MIGRATION", actor="test", now=1)
-    invoice = db.stars_purchases.create_invoice(telegram_id=telegram_id, plan_code=plan,
-                                                duration_days=days, ttl_seconds=3600, now=10)
-    assert db.stars_purchases.capture_paid(
-        invoice["id"], charge_id=f"ops-{account_id}-{plan}-{days}",
-        provider_charge_id=None, payer_telegram_id=telegram_id,
-        currency="XTR", amount=invoice["stars_price"], now=11,
-    ) in ("paid", "already_captured")
-    return db.stars_purchases.apply_paid_invoice(invoice["id"], now=int(_time.time()))
+    return db.subscription_renewal.apply_same_plan_purchase(
+        account_id=account_id, plan_code=plan, duration_days=days,
+        payment_channel="TELEGRAM_STARS", mutation_source="DIRECT_PURCHASE",
+        actor_type="TELEGRAM", actor_ref=str(telegram_id),
+        reason="fixture subscription",
+        idempotency_key=f"fixture-stars-{account_id}-{plan}-{days}-{tg_suffix}",
+        now=int(_time.time()),
+    )
 
 
 def finish_child_provisioning(db, remote, child_intent_id, *, worker_id="fixture-worker", now=None):
