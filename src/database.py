@@ -2239,14 +2239,23 @@ class Database:
         return ok
 
     def begin_invoice_refund(self, invoice_id: int) -> bool:
-        """Durably claim the one allowed remote refund attempt."""
+        """Durably claim the one allowed remote refund attempt.
+
+        Money-only: refunding a canonical invoice never touches the account/
+        subscription/credential/child/template it already provisioned (that
+        is a separate, not-yet-built product-reversal feature). Deliberately
+        NOT extended to 'paid' -- refunding before the canonical apply has
+        run would race the PH5-05/PH5-11 apply pipeline in a way that is not
+        yet proven safe.
+        """
         now = int(time.time())
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE stars_invoices SET refund_previous_status=status, "
                 "status='refund_pending', refund_requested_at=?, refund_last_error=NULL "
                 "WHERE id=? AND status IN "
-                "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing')",
+                "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing',"
+                "'canonical_applied')",
                 (now, invoice_id),
             )
             self._conn.commit()

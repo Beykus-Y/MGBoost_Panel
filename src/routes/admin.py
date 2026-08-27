@@ -942,7 +942,10 @@ def handle_stars_payment_refund(handler, payment_id):
     if not row:
         _json_response(handler, 404, {"error": "Payment not found"})
         return
-    if row["status"] not in ("applied", "manual_review", "apply_retry_exhausted", "apply_failed_user_missing"):
+    if row["status"] not in (
+        "applied", "manual_review", "apply_retry_exhausted", "apply_failed_user_missing",
+        "canonical_applied",
+    ):
         _json_response(handler, 409, {"error": f"Cannot refund from status {row['status']}"})
         return
     if not row.get("payer_telegram_id") or not row.get("telegram_payment_charge_id"):

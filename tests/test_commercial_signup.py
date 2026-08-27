@@ -1007,3 +1007,231 @@ class StubTelegramSession:
                     yield b""
 
         return Session()
+
+
+# --- canonical (PH5-05/PH5-11) refund gate: money-only, no product reversal ------
+#
+# Owner decision (2026-08-28): a Telegram Stars refund of a canonical invoice
+# must be purely a money-state transition (stars_invoices.status only, via
+# the existing refund_pending -> refunded/refund_unknown -> reconcile state
+# machine already proven for legacy invoices). It must NEVER, by itself,
+# touch the account/subscription/credential/child/template it already
+# provisioned -- product reversal is a distinct, not-yet-built feature.
+# Deliberately NOT extended to invoice status 'paid' (only the terminal
+# 'canonical_applied' state): refunding before the canonical apply pipeline
+# has run would race PH5-05/PH5-11's own apply logic in a way nobody has
+# proven safe yet.
+
+def _full_signup_with_device(db, broker, telegram_id, *, now=100):
+    """Builds the full realistic chain a real canary purchase produces:
+    paid+applied signup account, pinned system-owned template, one
+    provisioned child/device slot, and an ACTIVE opaque credential --
+    everything a money-only refund must leave untouched."""
+    invoice, account, _applied = _run_signup(db, broker, telegram_id, now=now)
+    db.commercial_signup.ensure_template_for_account(account["id"], marzban=broker, now=now + 100)
+    db.commercial_signup.record_template_result(account["id"], state="READY", now=now + 101)
+    prepared = db.subscription_credentials.prepare(
+        account_id=account["id"], actor_ref="worker", reason="signup initial",
+        idempotency_key=f"cred-prepare-refund-test-{invoice['id']}", now=now + 200,
+    )
+    db.subscription_credentials.activate(
+        credential_id=prepared["id"], account_id=account["id"],
+        expected_generation=prepared["generation"], actor_ref="worker",
+        idempotency_key=f"cred-activate-refund-test-{invoice['id']}", now=now + 200,
+    )
+    from src.opaque_resolver import OUTCOME_OK, resolve_opaque_subscription
+    from src.config import DEVICE_SLOT_HMAC_KEY
+    result = resolve_opaque_subscription(
+        db, prepared["raw_token"], _known_hwid_meta("hw") | {"device_id": f"device-refund-{invoice['id']}"},
+        hmac_key=DEVICE_SLOT_HMAC_KEY, ensure_fn=broker.ensure_fn,
+        subscription_fn=broker.subscription_fn, worker_id="signup-worker", now=now + 300,
+    )
+    assert result.outcome == OUTCOME_OK
+    return invoice, account, result
+
+
+def _product_snapshot(db, account_id):
+    """Everything a money-only refund must leave byte-identical."""
+    def _rows(sql):
+        return [dict(r) for r in db._conn.execute(sql, (account_id,)).fetchall()]
+    return {
+        "account": _rows("SELECT * FROM mgboost_accounts WHERE id=?"),
+        "subscription": _rows("SELECT * FROM mgboost_subscriptions WHERE account_id=?"),
+        "credentials": _rows("SELECT * FROM mgboost_subscription_credentials WHERE account_id=?"),
+        "template": _rows("SELECT * FROM mgboost_provisioning_templates WHERE account_id=?"),
+        "child_intents": _rows("SELECT * FROM mgboost_child_user_intents WHERE account_id=?"),
+        "device_slots": _rows("SELECT * FROM mgboost_device_slots WHERE account_id=?"),
+        "application": _rows("SELECT * FROM mgboost_stars_purchase_applications WHERE account_id=?"),
+        "evidence": _rows("SELECT * FROM mgboost_stars_payment_evidence WHERE account_id=?"),
+    }
+
+
+def test_canonical_signup_refund_success_is_money_only(db, broker):
+    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from src.routes.admin import handle_stars_payment_refund
+
+    telegram_id = 555000900
+    invoice, account, _device = _full_signup_with_device(db, broker, telegram_id)
+    row = db.get_invoice(invoice["id"])
+    assert row["status"] == "canonical_applied"
+    before = _product_snapshot(db, account["id"])
+
+    calls = []
+
+    class Bot:
+        async def refund_star_payment(self, user_id, charge_id):
+            calls.append((user_id, charge_id))
+            return True
+
+    runner = LoopRunner(Bot())
+    try:
+        h = FakeHandler(db, bot_runner=runner)
+        handle_stars_payment_refund(h, str(invoice["id"]))
+        assert h._response_code == 200
+    finally:
+        runner.close()
+
+    # Exactly one Telegram refundStarPayment call, with the invoice's own
+    # payer/charge id -- never a guessed or reconstructed charge id.
+    assert calls == [(telegram_id, row["telegram_payment_charge_id"])]
+
+    after_row = db.get_invoice(invoice["id"])
+    assert after_row["status"] == "refunded"
+    assert after_row["refunded_at"] is not None
+    assert after_row["telegram_payment_charge_id"] == row["telegram_payment_charge_id"]
+
+    after = _product_snapshot(db, account["id"])
+    assert after == before, (
+        "a canonical refund must be money-only: no account/subscription/"
+        "credential/child/template/device/application/evidence row may change"
+    )
+    assert after["account"][0]["status"] == "ACTIVE"
+    assert after["subscription"][0]["status"] == "ACTIVE"
+    assert after["credentials"][0]["status"] == "ACTIVE"
+
+    # A second refund attempt on the now-refunded invoice must not repeat
+    # the Telegram call and must not be silently accepted either.
+    h2 = FakeHandler(db, bot_runner=LoopRunner(Bot()))
+    handle_stars_payment_refund(h2, str(invoice["id"]))
+    assert h2._response_code == 409
+    assert len(calls) == 1
+
+
+def test_canonical_signup_refund_concurrent_requests_make_one_telegram_call(db, broker):
+    import threading
+    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from src.routes.admin import handle_stars_payment_refund
+
+    invoice, _account, _device = _full_signup_with_device(db, broker, 555000901)
+    calls = []
+
+    class Bot:
+        async def refund_star_payment(self, user_id, charge_id):
+            calls.append((user_id, charge_id))
+            await asyncio.sleep(0.05)
+            return True
+
+    runner = LoopRunner(Bot())
+    results = []
+
+    def worker():
+        h = FakeHandler(db, bot_runner=runner)
+        handle_stars_payment_refund(h, str(invoice["id"]))
+        results.append(h._response_code)
+
+    try:
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        runner.close()
+
+    assert len(calls) == 1
+    assert results.count(200) == 1
+    assert set(results) <= {200, 409}
+    assert db.get_invoice(invoice["id"])["status"] == "refunded"
+
+
+def test_canonical_signup_refund_timeout_reconciles_via_existing_path(db, broker, monkeypatch):
+    from types import SimpleNamespace
+    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from src.routes import admin as admin_mod
+
+    invoice, account, _device = _full_signup_with_device(db, broker, 555000902)
+    row = db.get_invoice(invoice["id"])
+    before = _product_snapshot(db, account["id"])
+
+    class SlowBot:
+        async def refund_star_payment(self, user_id, charge_id):
+            await asyncio.sleep(1)
+            return True
+
+    runner = LoopRunner(SlowBot())
+    monkeypatch.setattr(admin_mod, "REFUND_RESULT_TIMEOUT_SECONDS", 0.01)
+    try:
+        h = FakeHandler(db, bot_runner=runner)
+        admin_mod.handle_stars_payment_refund(h, str(invoice["id"]))
+        assert h._response_code == 202
+        assert db.get_invoice(invoice["id"])["status"] == "refund_unknown"
+    finally:
+        runner.close()
+
+    # Blind retry stays blocked while the outcome is unknown.
+    blocked = FakeHandler(db, bot_runner=LoopRunner(SlowBot()))
+    admin_mod.handle_stars_payment_refund(blocked, str(invoice["id"]))
+    assert blocked._response_code == 409
+
+    class ReconcileBot:
+        async def get_star_transactions(self, offset=0, limit=100):
+            return SimpleNamespace(transactions=[SimpleNamespace(
+                id=row["telegram_payment_charge_id"],
+                receiver=SimpleNamespace(user=SimpleNamespace(id=row["payer_telegram_id"])),
+            )])
+
+    runner2 = LoopRunner(ReconcileBot())
+    try:
+        h2 = FakeHandler(db, bot_runner=runner2)
+        admin_mod.handle_stars_payment_reconcile_refund(h2, str(invoice["id"]))
+        assert h2._response_code == 200
+        final = db.get_invoice(invoice["id"])
+        assert final["status"] == "refunded"
+        assert final["refund_reconciled_at"] is not None
+    finally:
+        runner2.close()
+
+    after = _product_snapshot(db, account["id"])
+    assert after == before
+
+
+def test_paid_canonical_signup_invoice_is_still_not_refundable(db):
+    """Deliberate scope boundary: refund is enabled only from the terminal
+    'canonical_applied' state, never from the intermediate 'paid' state --
+    refunding before apply would race the PH5-05/PH5-11 apply pipeline."""
+    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from src.routes.admin import handle_stars_payment_refund
+
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=555000903, plan_code="BASIC", duration_days=30, ttl_seconds=3600, now=100,
+    )
+    outcome = db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="charge-paid-only", provider_charge_id="prov-1",
+        payer_telegram_id=555000903, currency="XTR", amount=invoice["stars_price"], now=110,
+    )
+    assert outcome == "paid"
+    assert db.get_invoice(invoice["id"])["status"] == "paid"
+    assert db.begin_invoice_refund(invoice["id"]) is False
+
+    class Bot:
+        async def refund_star_payment(self, user_id, charge_id):
+            raise AssertionError("must never call Telegram for a merely 'paid' canonical invoice")
+
+    runner = LoopRunner(Bot())
+    try:
+        h = FakeHandler(db, bot_runner=runner)
+        handle_stars_payment_refund(h, str(invoice["id"]))
+        assert h._response_code == 409
+    finally:
+        runner.close()
+    assert db.get_invoice(invoice["id"])["status"] == "paid"
