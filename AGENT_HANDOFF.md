@@ -1,3 +1,143 @@
+# AGENT_HANDOFF — PH5-11/PH5-12 independent review: APPROVED WITH FIXES for implementation defects; deploy BLOCKED on an unresolved `tpl-<public_id>` architecture question; NOT pushed, NOT deployed
+
+Updated: 2026-08-28 (independent-review session, starting from local `b22e5f8`
+/ origin+production `f228b46`). **This top section supersedes everything
+below.** Owner asked for an independent senior review of the PH5-11/PH5-12
+checkpoint against `f228b46..b22e5f8`, explicit instruction not to trust
+GLM's self-report, plus a conditional production deploy authorization if the
+verdict came back APPROVED or APPROVED WITH FIXES and no new owner ambiguity
+surfaced. One did.
+
+## Verdict: APPROVED WITH FIXES for implementation defects; deploy BLOCKED
+
+Five real, verified defects found and fixed (each reproduced by a failing
+regression test before the fix, confirmed passing after):
+
+- **P0** — `src/bot_support.py::on_pre_checkout`/`on_successful_payment`
+  special-cased only `invoice_kind == "CANONICAL_PLAN"`. A real Telegram
+  Stars payment for a brand-new `CANONICAL_SIGNUP` customer either failed at
+  pre-checkout (the placeholder `signup-<tg_id>` "Marzban username" isn't a
+  real user, so the legacy eligibility check 404'd) or, if it had gotten
+  past that, would have been captured through the legacy `mark_invoice_paid`
+  path instead of `capture_paid` — never creating an account. **The entire
+  commercial signup purchase was non-functional end-to-end**, despite 35
+  green store-level tests, because none of GLM's tests drove the real
+  `on_pre_checkout`/`on_successful_payment` dispatcher handlers — they all
+  called `capture_paid` directly. Fixed by routing both invoice kinds
+  through the same canonical path; proven with
+  `test_pre_checkout_routes_signup_invoice_through_canonical_validation` and
+  `test_successful_payment_routes_signup_invoice_through_capture_paid`.
+- **P1** — `CommercialSignupStore.ensure_signup_account` called
+  `link_telegram_owner` AFTER releasing the shared process lock; two
+  different signup invoices for the same brand-new Telegram payer,
+  captured concurrently, could race into two independently-created orphan
+  accounts (one permanently stuck in `manual_review`, never converging on
+  retry). Fixed by keeping the owner-link call inside the same locked
+  section as the account-creation commit; deterministic repro test
+  `test_owner_link_lock_scope_prevents_orphan_account_race` forces the exact
+  interleaving instead of hoping a real race lands.
+- **P1** — `scripts/seed_delivery_routing.py` shipped a hardcoded 13-tag
+  `VERIFIED_STANDARD_BASELINE` tuple ("STANDARD is these tags because
+  that's what live topology looked like on 2026-08-27") — exactly the
+  eternal-constant anti-pattern the brief explicitly forbade, and
+  contradicting the script's own docstring claim of being live-derived.
+  Rewritten to derive the baseline from a fresh live topology read every
+  run, fail-closed on topology mismatch.
+- **P2** — a failed initial opaque-credential delivery logged an error but
+  alerted neither the customer nor the admin. Added an admin alert
+  mirroring the existing `OPAQUE_SUBSCRIPTION_ENABLED=off` pattern.
+- **P3** — `test_first_rollout_purchase_gate_rejects_non_standard_plans`
+  passed vacuously (a `plan=` kwarg typo raised `TypeError` before the real
+  gate ever ran, caught by an overly broad `pytest.raises(Exception)`).
+  Fixed to assert the specific `PlanNotSellable`.
+
+Plus one minor lock-ordering fix in `DeliveryRoutingStore._replay`
+(read `self._conn` before the store's own lock was held).
+
+Full regression after fixes: **1396 passed, 0 failed** (independently run,
+not GLM's claimed count). `git diff --check` clean; touched JS/Python
+compile clean. Committed locally as `efcbafb`, **NOT pushed**.
+
+## Why deploy is BLOCKED: `tpl-<public_id>` architecture is unresolved
+
+This review used six parallel independent sub-reviews. Two of them examined
+the per-account `tpl-<public_id>` infrastructure-owned Marzban template and
+reached **opposite conclusions**, and per the owner's explicit brief neither
+is authorized to pick a winner unilaterally:
+
+- **Reading A (technically forced):** the pre-existing (pre-PH5-11)
+  `ChildProvisioningStore.prepare_child_ensure` contract hard-requires the
+  clone-source alias to belong to the SAME `account_id` being provisioned
+  (`child_provisioning.py`, scoped `WHERE id=? AND account_id=?`). With that
+  interface unmodified, a single shared system template is impossible, so
+  per-account is what the current code forces — reusing an already-tested,
+  already-trusted mechanism instead of building a second provisioning path.
+- **Reading B (avoidable per-customer cost):** that same-account scoping
+  exists to stop cross-tenant cloning of *differentiated* legacy content
+  (account A must never clone account B's real legacy alias, which might
+  carry different/WL inbounds). A system-owned STANDARD template carries no
+  differentiated, account-specific content at all — every commercial
+  account is entitled to the identical STANDARD membership already defined
+  once, centrally, by the new PH5-12 delivery-routing profile — so sharing
+  it doesn't reintroduce the risk that check defends against. The 1:1
+  requirement is then an artifact of reusing the per-account alias table
+  rather than a security necessity; a small system-scoped source path (the
+  same shape as the already-existing `system_actor` parameter in
+  `delivery_routing.py`) could serve every STANDARD account from one (or a
+  small versioned pool of) template(s). Reading B is reinforced by a
+  confirmed-by-code fact: `src/account_consolidation.py::close_account`
+  (exercised for real by DL-057) has no awareness of
+  `mgboost_provisioning_templates` at all — every closed/absorbed
+  commercial account's `tpl-<public_id>` Marzban user is left permanently
+  ACTIVE with no cleanup/reversal policy, a real (not hypothetical)
+  operational-debt surface that scales linearly with customer count.
+
+Both readings agree on everything independently checkable in the code:
+template UUID/subscription URL never reach the customer, child UUIDs are
+always Marzban-minted and distinct from the template's, remote drift never
+silently re-pins (goes to `MANUAL_REVIEW`), and template create-retry
+converges via get→create→reread without duplicating. This is a genuine,
+undecided product/architecture question, not an implementation defect —
+per the brief's own STOP condition list, this alone blocks deploy of this
+slice regardless of how clean the rest of the review came back.
+
+**Exact next step:** owner picks Reading A (ship as-is, file the
+close_account cleanup gap as backlog) or Reading B (redesign toward a
+system-scoped shared/pooled template — real work, out of scope for this
+session) or something else. No redesign was attempted here per explicit
+instruction not to invent architecture changes unilaterally.
+
+## What was NOT done in this session
+
+- **No production access.** This sandbox has no SSH/network path to
+  production (an attempt was blocked by the auto-mode classifier). Section
+  13/15/17-20 of the brief (actual production HEAD parity, actual
+  `OPAQUE_SUBSCRIPTION_ENABLED`, live-topology read, backup/restore
+  verification, push, `git pull --ff-only` on production, restarts,
+  routing seed execution, canary readiness) could **not** be independently
+  verified or performed. GLM's own preflight claims from 2026-08-27 were
+  read but not re-verified live.
+- No push to origin. No deploy. No routing seed run against real Marzban.
+  No real/synthetic Stars purchase attempted.
+- PH5-06, PH6-07/08/09/10, promo, WL sales, PH4-06: not started, per
+  standing instruction.
+
+## Exact next step if resumed
+
+1. Get the owner's Reading A vs Reading B decision on `tpl-<public_id>`
+   (see above) — do not proceed to deploy without it.
+2. Independently of that decision, if this session (or a fresh one) is
+   given actual SSH/production access: re-run the section 15/17 preflight
+   for real (HEAD parity, `OPAQUE_SUBSCRIPTION_ENABLED`, quick_check, FK
+   check, cardinalities, live topology) before pushing/deploying anything.
+3. Only after both (1) and (2) are satisfied: push `efcbafb`, deploy per
+   the brief's section 17 sequence, then (only if the architecture question
+   resolved to "ship as-is") run `scripts/seed_delivery_routing.py
+   --seed-verified-baseline` once, verify read-only per section 18, and
+   report `READY FOR FIRST CONTROLLED STARS CANARY`.
+
+---
+
 # AGENT_HANDOFF — PH5-11/PH5-12 first commercial STANDARD signup + delivery routing implemented and fully tested locally; local checkpoint only, NO push, NO deploy, canary NOT started
 
 Updated: 2026-08-27 (implementation session, starting from local = origin =
