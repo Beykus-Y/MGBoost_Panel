@@ -253,7 +253,7 @@ def main() -> None:
             account_id=EXPECTED_ABSORBED_ACCOUNT_ID,
             old_child_intent_id=plan["absorbed_child_intent_id"],
             reason="DL-057 Megochel consolidation: freeing absorbed account's genesis slot",
-            idempotency_key=f"dl057-free-v1:{EXPECTED_ABSORBED_ACCOUNT_ID}", now=now,
+            idempotency_key=f"dl057-free-slot-v1:{EXPECTED_ABSORBED_ACCOUNT_ID}", now=now,
         )
         free_result = process_free(
             db, free_prepared["operation_id"], worker_id=worker_id, now=now,
