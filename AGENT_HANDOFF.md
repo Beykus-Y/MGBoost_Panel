@@ -1,4 +1,126 @@
-# AGENT_HANDOFF — Operational admin scope fully implemented locally (PH7-01 expiry ops + PH7-05 Disable/Enable + write-side audit for both); checkpoint commit pending independent review; production read-only preflight verified compatible; no push / no deploy this slice
+# AGENT_HANDOFF — PH7-01 + PH7-05 Disable/Enable independently reviewed (APPROVED, no code defects, one product ambiguity resolved as DL-056); production deploy in progress this session
+
+Updated: 2026-08-27 (independent review session, following directly from the
+implementation checkpoint `dec28f5` recorded below). **This top section
+supersedes everything below.** Owner instruction: independently review
+`dec28f5` against `origin/main`/production (`f7ea7f4`), fix only real
+findings, then decide on production rollout.
+
+## What this session did
+
+Read `AGENT_HANDOFF.md`/`ROADMAP.md`/`docs/ADMIN_PANEL_REDESIGN.md` and the
+full `f7ea7f4..dec28f5` diff (18 files, +1977/-36) before touching anything;
+confirmed local HEAD `dec28f5` was one commit ahead of `origin/main`/
+production (`f7ea7f4`), working tree clean. Read every new/changed source
+file in full (`device_slot_admin.py`, `subscription_admin_ops.py`,
+`parent_sync.py`, `admin_devices.py`'s new routes, `admin_expiry.py`,
+`admin_read_models.py`'s availability projection, `device_slots.py`,
+`admin_audit_timeline.py`) rather than trusting the self-report, cross-
+checking every claim (CAS/row_version lost-update protection, live-state-only
+convergence, per-slot `parent_sync` override, capacity accounting, audit
+evidence shape/attribution, CSRF/auth/no-GET-mutation) against the actual
+code and against the exact reachable state space (schema CHECK constraints),
+not just the docstrings.
+
+**Verdict: APPROVED, no code defects.** No P0/P1/P2 correctness, security,
+durability or lifecycle bug found in either family (PH7-01 expiry ops,
+PH7-05 Disable/Enable) or in `parent_sync.enqueue_current_children`'s new
+per-slot pause override. Specifically verified by reading the code (not
+just trusting green tests):
+
+- **No lost update.** `SubscriptionAdminOpsStore.apply_adjustment` and
+  `SubscriptionRenewalStore` (Stars/manual renewal) both CAS on the exact
+  same `mgboost_subscriptions.row_version`, re-read fresh inside their own
+  transaction — a concurrent admin +30 vs. manual renewal, admin -N vs.
+  Stars renewal, or two admin mutations in flight can never silently
+  overwrite each other; the loser gets a loud 409/`AdminExpiryConflict`.
+- **No resurrection / no sibling collateral damage.** Verified both by
+  reading `enqueue_current_children`'s per-child override (narrows only the
+  slot whose OWN `desired_state='DISABLED'`) and empirically via
+  `test_pause_survives_expiry_adjustment_and_later_sync_cycles`: a paused
+  child's remote `expire` stays byte-identical across a real later
+  extension while its sibling receives the new expiry.
+- **Convergence is live-state-only**, never a hash-replay shortcut — the
+  exact a68e265 P0 defect class stays structurally impossible here; Disable
+  -> Enable -> Disable performs a real second remote disable.
+- **Guards are generation/intent-scoped**, never slot-lifetime-scoped
+  (confirmed against every reachable `desired_state` value under the schema
+  CHECK, not just the tested paths).
+- **No second audit framework.** Both new operation kinds
+  (`ADMIN_EXPIRY_ADJUSTMENT`, `SLOT_DISABLE`/`SLOT_ENABLE`) land in the
+  unmodified `mgboost_entitlement_mutations` ledger and render through the
+  existing generic (non-allow-listed-by-kind) timeline projector with zero
+  code changes; no raw secret in evidence JSON, confirmed by
+  `test_new_mutations_surface_in_existing_timeline_without_secrets`.
+- **Security:** every new route is POST-only, behind
+  `require_admin_auth` (session + CSRF) and `require_primary_capability`
+  where it mutates; mandatory reason (3..300) + explicit `confirm:true` on
+  every mutating dialog per DL-055; frontend never computes expiry/state,
+  only renders server preview values.
+
+**One genuine product ambiguity found and escalated to the owner rather than
+silently resolved (per this session's explicit brief):**
+`DeviceSlotStore.rebind()` does not check `desired_state` before setting it
+to `ACTIVE`, so Rebind on a currently-DISABLED (paused) slot silently drops
+the pause and starts the new generation active. This is real, reachable, and
+already exercised by GLM's own
+`test_rebind_after_disable_successor_starts_enabled_and_stale_enable_refused`
+— but no DL/ADMIN-UX text had explicitly ruled on this interaction, so it
+was an unvalidated assumption, not a fixed policy. Put to the owner directly;
+**resolved as DL-056: keep the current behavior (pause is consumed by
+Rebind), no code change.** Documented in `ROADMAP.md`.
+
+**Tests independently reproduced, not trusted from the self-report:**
+targeted `tests/test_admin_operational_admin.py` **39 passed**; browser E2E
+(Playwright venv) **2 passed**. Full regression's first run hit the exact
+documented `/tmp` scratch-quota-exhaustion class (`disk I/O error` /
+`Превышена дисковая квота` from ~5,180 stale anonymous `/tmp/tmp*`
+mkdtemp dirs, ~5.3 GB); diagnosis confirmed against the known precedent
+before cleaning (only hour-stale anonymous `/tmp/tmp*`, venv/caches/repo
+untouched); the identical command then passed deterministically: **1266
+passed, 0 failed, 0 skipped** — matching GLM's own claimed count exactly.
+`git diff --stat f7ea7f4..dec28f5 -- '*schema*' '*migration*'` empty, and
+`database.py`'s diff is wiring-only (two new store constructions, no new
+table/migration) — deploy is application-code-only, same class as every
+prior slice.
+
+## Agent comparison evidence (GLM-5.3-Flash as implementation agent, third
+data point)
+
+- **Substantive code defects:** 0. Zero files/lines needed a code fix.
+- **Product-ambiguity escalations GLM should have made but didn't:** 1 (the
+  Rebind-after-Disable interaction) — GLM implemented, tested and disclosed
+  it in the UI text, but recorded it as settled design in `AGENT_HANDOFF.md`/
+  `ROADMAP.md` prose rather than as an owner decision requiring a DL entry,
+  unlike its own precedent of stopping for DL-054/DL-055-shaped questions.
+  Once put to the owner, the owner kept GLM's exact behavior — so the
+  underlying engineering call was right; the process gap was not routing it
+  through an explicit DL before treating it as final.
+- **Architecture/security/durability defects:** 0, across both new stores
+  and the modified `parent_sync.enqueue_current_children`.
+- **Would this reviewer trust GLM-5.3-Flash with the next large
+  implementation slice, gated on mandatory independent review?** Yes — this
+  is GLM's cleanest of three reviewed sessions (0 code defects, versus 1 P0
+  in the a68e265 session and a resolved-by-STOP ambiguity in the PH5-09/10
+  session); the one gap found here is a process discipline note (route
+  cross-primitive ambiguities through an explicit DL like it already does
+  for other product questions), not a correctness or security concern.
+
+## Exact next step
+
+Per this review's own gates (APPROVED, tests green, DL-056 resolves the only
+ambiguity): commit the DL-056/review documentation, then proceed with
+production deploy (fresh backup, preflight, push, `git pull --ff-only`,
+`systemctl restart mgboost-panel` only, post-deploy verification, no real
+mutations for smoke). After deploy, PH7-01/PH7-05/PH7-08 statuses get
+updated with production evidence and ADMIN DONE can be declared per the
+owner's own brief — do not start WL enforcement, PH5-06, promo codes, live
+Stars sales, PH4-06 or the reseller system without a fresh explicit owner
+decision.
+
+---
+
+# PRIOR HANDOFF — Operational admin scope fully implemented locally (PH7-01 expiry ops + PH7-05 Disable/Enable + write-side audit for both); checkpoint commit pending independent review; production read-only preflight verified compatible; no push / no deploy this slice
 
 Updated: 2026-08-27 (implementation session closing the remaining operational
 admin tails before WL). **This top section supersedes everything below.**

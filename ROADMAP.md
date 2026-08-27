@@ -1633,6 +1633,25 @@ with byte-identical WL-period rows, validation matrix, UNLIMITED refusal,
 replay/no-duplicate-evidence, compounding grants, sibling-convergence and a
 12-children FAMILY-account convergence run.
 
+**Independent review (2026-08-27) verdict: APPROVED, no code defects.**
+Read the full `f7ea7f4..dec28f5` diff and the primitives it builds on
+(`subscription_admin_ops.py`, `parent_sync.py`, `admin_expiry.py`) line by
+line, independently re-derived (not trusted from the self-report) that: the
+CAS on `row_version` genuinely rejects a lost update against a concurrent
+Stars/manual renewal or a second admin mutation (both paths use the same
+`row_version`-guarded UPDATE, confirmed by reading `subscription_renewal.py`
+too); WL periods/terms/packages are never touched by this store (only
+`current_expiry` is written); the new `ADMIN_EXPIRY_ADJUSTMENT` operation
+renders in the existing Audit timeline via the unmodified generic
+allow-list projector (no second audit framework); idempotency-key replay
+returns the original result without double-applying. One genuine product
+ambiguity was found in the companion PH7-05 slice (Rebind-after-Disable,
+see PH7-05 below) — resolved by the owner as **DL-056**, no code change
+needed. Independently re-ran the full suite after a confirmed `/tmp`
+scratch-quota exhaustion (same known class as prior sessions; cleaned only
+hour-stale anonymous `/tmp/tmp*` dirs): **1266 passed, 0 failed, 0
+skipped**, matching the implementer's own count exactly.
+
 ## [ ] PH7-02 — WL quota breakdown
 
 **Depends:** PH6-08. **Display:** base, purchased, grants, deductions, effective, consumed, remaining, period, desired/observed.
@@ -1705,6 +1724,36 @@ a paused slot via a widened release CAS (`ACTIVE|DISABLED`); Rebind consumes
 the pause and starts its successor enabled. Mandatory reason + confirm and
 UI wiring follow DL-055. Remaining unbuilt for PH7-05: add/remove slots &
 restore-baseline (explicitly PH5-07/PH7-06 territory).
+
+**Independent review of the Disable/Enable slice (2026-08-27) verdict:
+APPROVED, no code defects.** Read `device_slot_admin.py`,
+`admin_devices.py`'s new pause routes, `parent_sync.py`'s per-slot override
+and `admin_read_models.py`'s availability projection line by line, plus every
+reachable `mgboost_device_slots.desired_state` value against the schema
+CHECK, and independently confirmed: convergence is decided from live
+in-transaction state only (never a hash-replay shortcut), so Disable ->
+Enable -> Disable performs a real second remote disable, matching the
+regression test; the CAS guard (`row_version` + `current_generation`) makes
+every guard generation-scoped, never slot-lifetime-scoped, closing the
+a68e265 P0 class; capacity accounting genuinely keeps counting a paused slot;
+Free-after-Revoke's widened CAS (`ACTIVE|DISABLED`) is correct; the per-slot
+override in `enqueue_current_children` narrows only the paused child's own
+target, verified empirically by
+`test_pause_survives_expiry_adjustment_and_later_sync_cycles` (sibling
+receives the new expiry, paused child's remote `expire` stays byte-identical
+across a real later extension). One genuine product ambiguity found and
+escalated rather than silently resolved: `DeviceSlotStore.rebind()` does not
+check `desired_state` before unconditionally setting it back to `ACTIVE`, so
+Rebind on a currently-DISABLED slot silently drops the pause -- a real
+behavior (confirmed reachable and exercised by
+`test_rebind_after_disable_successor_starts_enabled_and_stale_enable_refused`)
+that no DL/ADMIN-UX text had explicitly ruled on. Put to the owner directly;
+resolved as **DL-056** (keep GLM's behavior, no code change). No security,
+IDOR, CSRF or secret-leak issue found in the new routes (`disable`/`enable`/
+`sync` all POST, all through `require_admin_auth`+`require_primary_capability`
+except read-only `sync`'s primary-capability-gated retry, mandatory
+reason+confirm per DL-055, no raw HWID/UUID/bearer in evidence JSON --
+verified by `test_new_mutations_surface_in_existing_timeline_without_secrets`).
 
 **Independent review (2026-08-27) found and fixed one P0 and one related P1/P2,
 both in the same root cause, before deploy:** `_existing_slot_op`
@@ -1783,6 +1832,17 @@ production data (verified read-only against 5 real accounts post-deploy, see
 before deploy: 7 of 8 sections had no exception guard, so a single anomalous
 row anywhere would have taken down the whole account-detail page, not just
 the Audit tab -- every section now degrades independently.
+
+**Independent review (2026-08-27) of the two new write-side families
+confirmed:** `ADMIN_EXPIRY_ADJUSTMENT`/`SLOT_DISABLE`/`SLOT_ENABLE` all land
+in the unmodified `mgboost_entitlement_mutations` ledger (free-text
+`operation` column, no allow-list to fall through), carry actor_ref/reason/
+before_json/after_json with only bounded scalars, and are rendered by the
+existing generic timeline projector with zero code changes to
+`admin_audit_timeline.py` -- confirmed by reading the projector's query (no
+operation-kind filtering) and by
+`test_new_mutations_surface_in_existing_timeline_without_secrets`. No second
+audit framework introduced.
 
 ## [ ] PH7-09 — Safe plan/entitlement admin
 
@@ -2989,6 +3049,34 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Почему:** устранить противоречие между дизайн-доком и живой инструкцией;
   единый аудит-бар для всех административных мутаций устройств.
 - **Связано:** DL-049, ADMIN-UX-02, PH7-05, PH7-08.
+
+## DL-056 — Rebind на приостановленном (DISABLED) слоте снимает паузу
+
+- **Дата:** 2026-08-27.
+- **Вопрос:** независимый review `f7ea7f4..dec28f5` (PH7-01 expiry ops + PH7-05
+  Disable/Enable) обнаружил, что `DeviceSlotStore.rebind()` не проверяет
+  `mgboost_device_slots.desired_state` и безусловно переводит слот в `ACTIVE`
+  при создании новой generation. Итог: Disable → Rebind тихо снимает паузу и
+  запускает новое устройство активным, без отдельного Enable. Ни DL-049, ни
+  ADMIN-UX-02, ни DL-055 явно не определяют это взаимодействие — это был
+  самостоятельный выбор реализующего агента (задокументирован в коде/тестах/
+  UI-тексте подтверждения Rebind, но не зафиксирован как owner decision).
+- **Варианты:** (a) пауза снимается, successor стартует ACTIVE (текущая
+  реализация); (b) Rebind запрещён, пока слот на паузе (требует явный Enable
+  сначала); (c) successor наследует паузу (стартует DISABLED, требует
+  отдельный Enable).
+- **Выбрано:** (a) — поведение GLM оставлено без изменений. Rebind — самая
+  тяжёлая и явная операция среди device-мутаций (двухшаговое confirm,
+  compromise/replacement flow по DL-049), поэтому решение admin'а заменить
+  устройство считается приоритетнее более лёгкой предыдущей паузы. Код и
+  тесты изменений не требуют; UI уже раскрывает это в тексте подтверждения
+  Rebind («successor стартует активным (пауза не наследуется)»).
+- **Кто:** пользователь.
+- **Почему:** устранить product ambiguity, найденную независимым review,
+  до production deploy — без owner decision это оставалось невалидированным
+  предположением агента, а не зафиксированной политикой.
+- **Связано:** DL-049, DL-055, PH7-05, `src/device_slots.py::rebind`,
+  `src/device_slot_admin.py`.
 
 # Contradictions and migration hazards
 
