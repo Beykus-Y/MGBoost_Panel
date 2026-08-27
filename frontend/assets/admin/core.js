@@ -45,6 +45,10 @@ const HUMAN_LABELS=Object.freeze({
   ORDINARY:'Обычный rebind',COMPROMISE:'Компрометация',BASIC:'Базовый',
   BASIC_PLUS:'Базовый Плюс',BASIC_PRO:'Базовый Про',WL:'WL',
   EXTENDED:'Расширенный',FAMILY:'Семейный',
+  SLOT_DISABLE:'Пауза устройства',SLOT_ENABLE:'Снятие паузы',
+  ADMIN_EXPIRY_ADJUSTMENT:'Изменение срока',EXTEND_DAYS:'Продление',
+  REDUCE_DAYS:'Сокращение',SET_EXACT:'Точная дата',END_NOW:'Завершить сейчас',
+  IN_SYNC:'Синхронизировано',PARTIAL:'Частично',REPLAYED:'Повтор операции',
 });
 
 export function humanLabel(value,fallback){

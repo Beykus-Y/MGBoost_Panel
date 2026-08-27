@@ -242,10 +242,11 @@ def _technical_summary(connection, account_id: int, public_id: str) -> dict:
 
 
 def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
-    """Per-slot Wave B action availability, derived only from the existing
-    durable lifecycle tables. Disable/Enable deliberately have no key here:
-    no standalone slot-disable primitive exists yet in the backend, and the
-    UI must not offer invented operations."""
+    """Per-slot action availability, derived only from the existing durable
+    lifecycle tables. Revoke/Free/Rebind follow DL-049; Disable/Enable reflect
+    the reversible pause primitive (`DeviceSlotAdminStore`, PH7-05). This is
+    presentation-only: every mutation route independently re-validates
+    lifecycle state server-side and never trusts this view."""
     ops = connection.execute(
         "SELECT s.slot_number,o.operation_kind,o.state,o.last_error_class,"
         "o.id AS lifecycle_id,c.id AS child_intent_id,"
@@ -262,7 +263,8 @@ def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
     active_intents = {
         row["slot_number"]: row
         for row in connection.execute(
-            "SELECT s.slot_number,c.id AS child_intent_id,c.observed_state "
+            "SELECT s.slot_number,c.id AS child_intent_id,c.observed_state,"
+            "s.desired_state AS slot_desired "
             "FROM mgboost_device_slots s "
             "JOIN mgboost_device_slot_generations g ON g.slot_id=s.id AND g.status='ACTIVE' "
             "JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
@@ -294,13 +296,28 @@ def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
             ).fetchone()
             slot_desired_value = latest_slot["desired_state"] if latest_slot else None
         entry: dict = {}
+        pause_target_live = (
+            intent_row is not None and child_observed != "REVOKED" and not revoke_applied
+        )
+        if pause_target_live and slot_desired_value == "ACTIVE":
+            entry["disable"] = "available"
+        elif slot_desired_value == "DISABLED":
+            entry["disable"] = "done"
+        else:
+            entry["disable"] = "unavailable"
+        if pause_target_live and slot_desired_value == "DISABLED":
+            entry["enable"] = "available"
+        elif slot_desired_value != "DISABLED" or not pause_target_live:
+            entry["enable"] = "unavailable"
         if intent_row is not None and child_observed != "REVOKED" and not revoke_applied:
             entry["revoke"] = "available"
         elif revoke_applied:
             entry["revoke"] = "done"
         else:
             entry["revoke"] = "unavailable"
-        if revoke_applied and slot_desired_value == "ACTIVE":
+        # A paused slot still owns its active generation, so Free stays legal
+        # after the confirmed Revoke exactly as for an ACTIVE slot.
+        if revoke_applied and slot_desired_value in ("ACTIVE", "DISABLED"):
             entry["free"] = "available" if pending_free is None else f"PENDING:{pending_free['state']}"
         elif pending_free is not None:
             entry["free"] = f"PENDING:{pending_free['state']}"

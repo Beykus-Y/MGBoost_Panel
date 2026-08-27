@@ -79,10 +79,14 @@ from .routes.admin_accounts import (
     handle_admin_migration_grace,
 )
 from .routes.admin_devices import (
+    handle_device_disable,
+    handle_device_enable,
     handle_device_free,
     handle_device_rebind,
     handle_device_revoke,
+    handle_device_sync,
 )
+from .routes.admin_expiry import handle_expiry_adjustment, handle_expiry_preview
 from .routes.admin_ownership import handle_telegram_ownership_rebind
 from .routes.admin_payments import (
     handle_manual_payment_apply,
@@ -200,6 +204,17 @@ _ROUTES = [
      lambda h, account_id, slot_number: handle_device_free(h, account_id, slot_number)),
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/rebind$"),
      lambda h, account_id, slot_number: handle_device_rebind(h, account_id, slot_number)),
+    # PH7-05 (reversible pause) + its child-sync retry, PH7-01 expiry ops.
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/disable$"),
+     lambda h, account_id, slot_number: handle_device_disable(h, account_id, slot_number)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/enable$"),
+     lambda h, account_id, slot_number: handle_device_enable(h, account_id, slot_number)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/sync$"),
+     lambda h, account_id, slot_number: handle_device_sync(h, account_id, slot_number)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/expiry/preview$"),
+     lambda h, account_id: handle_expiry_preview(h, account_id)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/expiry/adjust$"),
+     lambda h, account_id: handle_expiry_adjustment(h, account_id)),
     # OPD-39/DL-041: primary-admin Telegram ownership rebind.
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/telegram/rebind$"),
      lambda h, account_id: handle_telegram_ownership_rebind(h, account_id)),

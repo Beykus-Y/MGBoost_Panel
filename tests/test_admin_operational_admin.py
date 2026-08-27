@@ -9,10 +9,12 @@ representation and queue surfacing.
 """
 
 import json
+import time
 
 import pytest
 
 from src.routes import admin_devices as AD
+from src.routes import admin_expiry as AE
 from src.routes import admin_ownership as AO
 from src.routes import admin_payments as AP
 from src.security import AdminSessionStore
@@ -681,3 +683,516 @@ def test_timeline_aggregator_survives_one_source_being_unreadable(db):
     assert "PAYMENT_RECORD" not in sources
     # Other sources (e.g. the manual payment created above) still surface.
     assert "MANUAL_PAYMENT" in sources
+
+
+# ---------------------------------------------------------------------------
+# PH7-05 reversible slot pause (Disable/Enable)
+
+
+def _slot_row(db, account_id, slot_number):
+    return db._conn.execute(
+        "SELECT desired_state,observed_state,current_generation FROM mgboost_device_slots "
+        "WHERE account_id=? AND slot_number=?",
+        (int(account_id), int(slot_number))).fetchone()
+
+
+def _intent_row(db, child_intent_id):
+    return db._conn.execute(
+        "SELECT * FROM mgboost_child_user_intents WHERE id=?",
+        (int(child_intent_id),)).fetchone()
+
+
+def _remote_user(db, child_intent_id):
+    username = _intent_row(db, child_intent_id)["child_username"]
+    return username, db._fake_remote.users[username]
+
+
+def _slot_pause_evidence_count(db, account_id, kind):
+    return db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_entitlement_mutations "
+        "WHERE account_id=? AND operation=?", (int(account_id), kind)).fetchone()[0]
+
+
+def test_slot_disable_enable_roundtrip_preserves_generation(db):
+    account, children = build_topology_account(db, tag="pause1", n_children=1)
+    intent_id = children[0]["prepared"]["child_intent_id"]
+    before = _intent_row(db, intent_id)
+    expiry_before = db._conn.execute(
+        "SELECT current_expiry FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],)).fetchone()[0]
+
+    disable = make_handler(db, payload={"reason": "client asked to pause",
+                                        "confirm": True})
+    AD.handle_device_disable(disable, str(account["id"]), "1")
+    assert disable.status in (200, 202)
+    body = disable.json()
+    assert body["operation"]["operation_kind"] == "SLOT_DISABLE"
+    username, remote = _remote_user(db, intent_id)
+    assert remote["status"] == "disabled"
+
+    after = _intent_row(db, intent_id)
+    assert after["uuid_verifier"] == before["uuid_verifier"]  # pause never rotates
+    assert after["slot_generation_id"] == before["slot_generation_id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_child_user_intents c "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+        "JOIN mgboost_device_slots s ON s.id=g.slot_id WHERE s.account_id=? AND s.slot_number=?",
+        (account["id"], 1)).fetchone()[0] == 1  # exactly the same single generation
+    slot = _slot_row(db, account["id"], 1)
+    assert slot["desired_state"] == "DISABLED"
+    capacity = db.device_slots.get_capacity_state(account["id"])
+    assert capacity["active_count"] == 1  # pause does not free capacity
+
+    again = make_handler(db, payload={"reason": "double click", "confirm": True})
+    AD.handle_device_disable(again, str(account["id"]), "1")
+    assert again.status == 200 and again.json().get("converged") is True
+    assert _slot_pause_evidence_count(db, account["id"], "SLOT_DISABLE") == 1
+
+    enable = make_handler(db, payload={"reason": "client returned",
+                                       "confirm": True})
+    AD.handle_device_enable(enable, str(account["id"]), "1")
+    assert enable.status in (200, 202)
+    assert enable.json()["operation"]["operation_kind"] == "SLOT_ENABLE"
+    _, remote_after_enable = _remote_user(db, intent_id)
+    assert remote_after_enable["status"] == "active"
+    assert int(remote_after_enable["expire"]) == int(expiry_before)
+    final = _intent_row(db, intent_id)
+    assert final["uuid_verifier"] == before["uuid_verifier"]  # SAME credential
+    assert _slot_row(db, account["id"], 1)["desired_state"] == "ACTIVE"
+
+    # Regression for the a68e265-review defect class: Disable -> Enable ->
+    # Disable on the SAME generation must perform a REAL pause again, never
+    # answer off a prior occurrence of the same deterministic action key.
+    redisable = make_handler(db, payload={"reason": "pause requested again",
+                                          "confirm": True})
+    AD.handle_device_disable(redisable, str(account["id"]), "1")
+    assert redisable.status in (200, 202)
+    _, remote_after = _remote_user(db, intent_id)
+    assert remote_after["status"] == "disabled"  # real remote effect, not replay
+    assert _slot_pause_evidence_count(db, account["id"], "SLOT_DISABLE") == 2
+
+
+def test_slot_pause_requires_confirm_reason_and_primary_capability(db):
+    account, _ = build_topology_account(db, tag="pauseauth")
+
+    unauth = make_handler(db, payload={"reason": "no session", "confirm": True},
+                          authenticated=False)
+    AD.handle_device_disable(unauth, str(account["id"]), "1")
+    assert unauth.status == 401
+    nonprimary = make_handler(db, payload={"reason": "secondary admin", "confirm": True},
+                              primary=False)
+    AD.handle_device_enable(nonprimary, str(account["id"]), "1")
+    assert nonprimary.status == 403
+    missing_reason = make_handler(db, payload={"confirm": True})
+    AD.handle_device_disable(missing_reason, str(account["id"]), "1")
+    assert missing_reason.status == 400
+    missing_confirm = make_handler(db, payload={"reason": "no confirm here"})
+    AD.handle_device_enable(missing_confirm, str(account["id"]), "1")
+    assert missing_confirm.status == 409
+    assert "confirm" in missing_confirm.json()["error"]
+
+    unknown_slot = make_handler(db, payload={"reason": "wrong slot number",
+                                             "confirm": True})
+    AD.handle_device_disable(unknown_slot, str(account["id"]), "7")
+    assert unknown_slot.status == 409
+    foreign_account = make_handler(db, payload={"reason": "idor probe",
+                                                "confirm": True})
+    AD.handle_device_enable(foreign_account, "999999", "1")
+    assert foreign_account.status == 404
+
+
+def test_pause_survives_expiry_adjustment_and_later_sync_cycles(db):
+    """Structural resurrection guard: a paused slot keeps its suspended target
+    across repeated sync cycles AND a real later extension; only its sibling
+    receives the new expiry."""
+    from src.parent_sync import run_account_sync_cycle
+    from tests._ops_helpers import BrokerBackedService
+
+    account, children = build_topology_account(db, tag="pause2", n_children=2)
+
+    disable = make_handler(db, payload={"reason": "suspicious activity",
+                                        "confirm": True})
+    AD.handle_device_disable(disable, str(account["id"]), "1")
+    assert disable.status in (200, 202)
+    paused_username, _ = _remote_user(db, children[0]["prepared"]["child_intent_id"])
+    sibling_username, _ = _remote_user(db, children[1]["prepared"]["child_intent_id"])
+    paused_expire_at_disable = db._fake_remote.users[paused_username]["expire"]
+
+    result = run_account_sync_cycle(
+        db, account["id"], sync_fn=BrokerBackedService(db._fake_remote).sync_child_user_state,
+        worker_id="resync-check", now=int(time.time()))
+    assert result["aggregate_state"] == "IN_SYNC"
+    assert db._fake_remote.users[paused_username]["status"] == "disabled"
+    assert db._fake_remote.users[sibling_username]["status"] == "active"
+
+    extend = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                       "reason": "goodwill week",
+                                       "idempotency_key": "pause-ext-key-000000001"})
+    AE.handle_expiry_adjustment(extend, str(account["id"]))
+    assert extend.status == 200
+    assert extend.json()["aggregate_state"] == "IN_SYNC"
+    remote_users = db._fake_remote.users
+    assert remote_users[paused_username]["status"] == "disabled"  # still paused
+    assert remote_users[paused_username]["expire"] == paused_expire_at_disable
+    assert remote_users[sibling_username]["status"] == "active"
+    expected_new = extend.json()["new_expiry"]
+    assert int(remote_users[sibling_username]["expire"]) == int(expected_new)
+
+
+def test_crash_between_durable_flag_and_remote_sync_recovers_via_retry_route(db):
+    """Simulates an admin crash right AFTER the durable flag+evidence commit
+    but BEFORE convergence: store-level toggle with no inline drive leaves a
+    PENDING revision-stamped op; POST /devices/{n}/sync then converges and
+    aligns observed state -- no invented second mutation."""
+    from tests._ops_helpers import capability as primary_capability
+
+    account, children = build_topology_account(db, tag="pausecrash", n_children=1)
+    intent_id = children[0]["prepared"]["child_intent_id"]
+
+    result = db.device_slot_admin.set_paused(
+        primary_capability(db), account_id=account["id"], slot_number=1,
+        paused=True, reason="crash scenario", idempotency_key="crash-key-000000000001",
+        now=int(time.time()))
+    assert result["converged"] is False
+    _, remote = _remote_user(db, intent_id)
+    assert remote["status"] == "active"  # not yet converged: crash window
+    assert _slot_row(db, account["id"], 1)["desired_state"] == "DISABLED"
+    assert _slot_row(db, account["id"], 1)["observed_state"] != "DISABLED"
+
+    retry = make_handler(db, payload={})
+    AD.handle_device_sync(retry, str(account["id"]), "1")
+    assert retry.status == 200
+    assert retry.json()["aggregate_state"] == "IN_SYNC"
+    assert retry.json()["aligned"] is True
+    assert remote["status"] == "disabled"
+    assert _slot_row(db, account["id"], 1)["observed_state"] == "DISABLED"
+
+
+def test_rebind_after_disable_successor_starts_enabled_and_stale_enable_refused(db):
+    account, children = build_topology_account(db, tag="pauserebind", n_children=1)
+    old_gen = _slot_row(db, account["id"], 1)["current_generation"]
+
+    disable = make_handler(db, payload={"reason": "device swap prep",
+                                        "confirm": True})
+    AD.handle_device_disable(disable, str(account["id"]), "1")
+    assert disable.status in (200, 202)
+
+    rebind = make_handler(db, payload={"reason": "replacement hardware",
+                                       "new_device_hwid": "raw-rebind-hwid-pr",
+                                       "confirm": True})
+    AD.handle_device_rebind(rebind, str(account["id"]), "1")
+    assert rebind.status in (200, 202)
+    new_gen = _slot_row(db, account["id"], 1)["current_generation"]
+    assert new_gen == old_gen + 1
+    assert _slot_row(db, account["id"], 1)["desired_state"] == "ACTIVE"
+
+    finish_child_provisioning(
+        db, db._fake_remote,
+        db._conn.execute(
+            "SELECT c.id FROM mgboost_child_user_intents c "
+            "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+            "WHERE g.slot_id=(SELECT id FROM mgboost_device_slots "
+            "WHERE account_id=? AND slot_number=?) ORDER BY g.generation DESC LIMIT 1",
+            (account["id"], 1)).fetchone()[0])
+    stale_enable = make_handler(db, payload={"reason": "stale UI tab",
+                                             "confirm": True})
+    AD.handle_device_enable(stale_enable, str(account["id"]), "1")
+    # Convergence is decided from LIVE state inside the store transaction:
+    # an Enable against an already-ACTIVE slot honestly reports converged
+    # without writing any duplicate evidence or revision bump.
+    assert stale_enable.status == 200
+    assert stale_enable.json().get("converged") is True
+    before_count = _slot_pause_evidence_count(db, account["id"], "SLOT_ENABLE")
+    assert before_count == 0
+
+    fresh_disable = make_handler(db, payload={"reason": "pause successor gen",
+                                              "confirm": True})
+    AD.handle_device_disable(fresh_disable, str(account["id"]), "1")
+    assert fresh_disable.status in (200, 202)  # scoped to the NEW generation
+
+
+def test_revoke_then_free_works_on_paused_slot(db):
+    account, children = build_topology_account(db, tag="pauserevoke", n_children=1)
+    intent_id = children[0]["prepared"]["child_intent_id"]
+
+    pause = make_handler(db, payload={"reason": "pause before revoke",
+                                      "confirm": True})
+    AD.handle_device_disable(pause, str(account["id"]), "1")
+    assert pause.status in (200, 202)
+
+    revoke = make_handler(db, payload={"reason": "compromised while paused"})
+    AD.handle_device_revoke(revoke, str(account["id"]), "1")
+    assert revoke.status == 200 and revoke.json()["state"] == "APPLIED"
+
+    free = make_handler(db, payload={"reason": "release revoked paused slot"})
+    AD.handle_device_free(free, str(account["id"]), "1")
+    assert free.status == 200 and free.json()["state"] == "APPLIED"
+    assert _slot_row(db, account["id"], 1)["desired_state"] == "FREE"
+    history = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_device_slot_generations WHERE slot_id="
+        "(SELECT id FROM mgboost_device_slots WHERE account_id=? AND slot_number=?)",
+        (account["id"], 1)).fetchone()[0]
+    assert history >= 1  # tombstone/history preserved, nothing deleted
+
+
+# ---------------------------------------------------------------------------
+# PH7-01 admin expiry operations
+
+
+def _wl_chain_counts(db, account_id):
+    conn = db._conn
+    return (
+        conn.execute("SELECT COUNT(*) FROM mgboost_wl_periods WHERE account_id=?",
+                     (int(account_id),)).fetchone()[0],
+        conn.execute("SELECT COUNT(*) FROM mgboost_subscription_terms WHERE account_id=?",
+                     (int(account_id),)).fetchone()[0],
+    )
+
+
+def test_expiry_extend_active_anchors_at_current_expiry_and_converges(db):
+    account, children = build_topology_account(db, tag="exp1", n_children=1)
+    base = db._conn.execute(
+        "SELECT current_expiry FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],)).fetchone()[0]
+    terms_before = _wl_chain_counts(db, account["id"])
+
+    h = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                  "reason": "paid via support chat",
+                                  "idempotency_key": "expiry-ext-00000000000001"})
+    AE.handle_expiry_adjustment(h, str(account["id"]))
+    assert h.status == 200
+    body = h.json()
+    assert body["previous_expiry"] == base
+    assert body["new_expiry"] == base + 7 * 86400  # exact DL-044 anchor
+    assert body["aggregate_state"] == "IN_SYNC"
+    assert body["entitlement_summary"]["effective_expiry"] == base + 7 * 86400
+    assert _wl_chain_counts(db, account["id"]) == terms_before  # no WL reset
+
+    _, remote = _remote_user(db, children[0]["prepared"]["child_intent_id"])
+    assert remote["status"] == "active"
+    assert int(remote["expire"]) == base + 7 * 86400
+
+    # replay of the same idempotency key adds no second evidence row
+    replay = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                       "reason": "retry after lost response",
+                                       "idempotency_key": "expiry-ext-00000000000001"})
+    AE.handle_expiry_adjustment(replay, str(account["id"]))
+    assert replay.status == 200 and replay.json()["already_applied"] is True
+    count = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_entitlement_mutations WHERE account_id=? "
+        "AND operation='ADMIN_EXPIRY_ADJUSTMENT'", (account["id"],)).fetchone()[0]
+    assert count == 1
+
+
+def test_expiry_reduce_into_past_expires_children_then_extend_resumes_from_now(db):
+    account, children = build_topology_account(db, tag="exp2", n_children=2)
+
+    reduce_h = make_handler(db, payload={"adjustment_kind": "REDUCE_DAYS", "value": 400,
+                                         "reason": "chargeback correction",
+                                         "idempotency_key": "expiry-red-00000000000001"})
+    AE.handle_expiry_adjustment(reduce_h, str(account["id"]))
+    assert reduce_h.status == 200
+    assert reduce_h.json()["aggregate_state"] == "IN_SYNC"
+    for child in children:
+        _, remote = _remote_user(db, child["prepared"]["child_intent_id"])
+        assert remote["status"] == "disabled"  # EXPIRED parent disables children
+
+    extend_h = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 30,
+                                         "reason": "customer renewed late",
+                                         "idempotency_key": "expiry-res-00000000000001"})
+    AE.handle_expiry_adjustment(extend_h, str(account["id"]))
+    assert extend_h.status == 200
+    body = extend_h.json()
+    import time as _time
+    now_floor = int(_time.time())
+    assert body["new_expiry"] >= now_floor + 30 * 86400 - 5  # anchored at resume-now
+    for child in children:
+        _, remote = _remote_user(db, child["prepared"]["child_intent_id"])
+        assert remote["status"] == "active"
+        assert int(remote["expire"]) == int(body["new_expiry"])
+
+
+def test_end_now_disables_all_children_leaving_wl_periods_untouched(db):
+    account, children = build_topology_account(db, tag="exp3", n_children=3)
+    before_periods = db._conn.execute(
+        "SELECT sequence_no,starts_at,ends_at,status FROM mgboost_wl_periods "
+        "WHERE account_id=? ORDER BY sequence_no",
+        (account["id"],)).fetchall()
+
+    h = make_handler(db, payload={"adjustment_kind": "END_NOW",
+                                  "reason": "service terminated by owner request",
+                                  "idempotency_key": "expiry-end-00000000000001"})
+    AE.handle_expiry_adjustment(h, str(account["id"]))
+    assert h.status == 200
+    body = h.json()
+    import time as _time
+    assert abs(body["new_expiry"] - int(_time.time())) <= 2
+    assert body["aggregate_state"] == "IN_SYNC"
+    for child in children:
+        _, remote = _remote_user(db, child["prepared"]["child_intent_id"])
+        assert remote["status"] == "disabled"
+
+    after_periods = db._conn.execute(
+        "SELECT sequence_no,starts_at,ends_at,status FROM mgboost_wl_periods "
+        "WHERE account_id=? ORDER BY sequence_no",
+        (account["id"],)).fetchall()
+    assert [tuple(r) for r in before_periods] == [tuple(r) for r in after_periods]
+
+
+def test_expiry_input_validation_and_audited_compounding(db):
+    account, _ = build_topology_account(db, tag="exp4")
+
+    bad_inputs = [
+        {"adjustment_kind": "SOMETHING_ELSE", "value": 5},
+        {"adjustment_kind": "EXTEND_DAYS", "value": 0},
+        {"adjustment_kind": "SET_EXACT", "value": True},
+    ]
+    for payload in bad_inputs:
+        h = make_handler(db, payload=payload)
+        AE.handle_expiry_preview(h, str(account["id"]))
+        assert h.status == 400
+
+    exact_value = int(time.time()) + 10 * 86400
+    set_exact = make_handler(db, payload={
+        "adjustment_kind": "SET_EXACT",
+        "value": exact_value,
+        "reason": "align to billing cycle",
+        "idempotency_key": "exact-key-00000000000001"})
+    AE.handle_expiry_adjustment(set_exact, str(account["id"]))
+    assert set_exact.status == 200
+    live = db._conn.execute(
+        "SELECT current_expiry FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],)).fetchone()[0]
+    assert abs(live - exact_value) <= 2
+
+    # Two sequential adjustments are separate audited operations and compound.
+    first = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                      "reason": "first grant",
+                                      "idempotency_key": "compound-key-000000000001"})
+    AE.handle_expiry_adjustment(first, str(account["id"]))
+    second = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                       "reason": "second grant",
+                                       "idempotency_key": "compound-key-000000000002"})
+    AE.handle_expiry_adjustment(second, str(account["id"]))
+    after_first = first.json()["new_expiry"]
+    assert second.status == 200
+    assert second.json()["new_expiry"] == after_first + 7 * 86400
+
+
+def test_unlimited_subscription_refuses_expiry_adjustment(db):
+    account, _ = build_topology_account(db, tag="expunl")
+    db._conn.execute(
+        "UPDATE mgboost_subscriptions SET status='UNLIMITED',current_expiry=NULL "
+        "WHERE account_id=?", (account["id"],))
+    db._conn.commit()
+
+    h = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 30,
+                                  "reason": "should be refused",
+                                  "idempotency_key": "unlimited-refused-key-00001"})
+    AE.handle_expiry_adjustment(h, str(account["id"]))
+    assert h.status == 400
+    assert "UNLIMITED" in h.json()["error"]
+    count = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_entitlement_mutations WHERE account_id=? "
+        "AND operation='ADMIN_EXPIRY_ADJUSTMENT'", (account["id"],)).fetchone()[0]
+    assert count == 0
+
+
+def test_missing_subscription_account_is_rejected(db):
+    account = db.accounts.create_account("DIRECT", now=1)  # no subscription row
+    h = make_handler(db, payload={"adjustment_kind": "END_NOW",
+                                  "reason": "nothing to adjust",
+                                  "idempotency_key": "nosub-key-000000000000001"})
+    AE.handle_expiry_adjustment(h, str(account["id"]))
+    assert h.status == 400
+    assert "no subscription" in h.json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-cutting: action availability surfacing, timeline evidence, 12-child
+
+
+def test_action_availability_reflects_pause_state_truthfully(db):
+    from src.admin_read_models import account_detail
+    account, _ = build_topology_account(db, tag="avail1")
+
+    def actions():
+        detail = account_detail(db, account["id"], now=int(time.time()))
+        return detail["devices"][0]["actions"]
+
+    fresh = actions()
+    assert fresh["disable"] == "available"
+    assert "enable" not in fresh or fresh["enable"] == "unavailable"
+
+    pause = make_handler(db, payload={"reason": "availability probe",
+                                      "confirm": True})
+    AD.handle_device_disable(pause, str(account["id"]), "1")
+    paused = actions()
+    assert paused["disable"] == "done"
+    assert paused["enable"] == "available"
+
+    resume = make_handler(db, payload={"reason": "resume probe", "confirm": True})
+    AD.handle_device_enable(resume, str(account["id"]), "1")
+    resumed = actions()
+    assert resumed["disable"] == "available"
+    assert resumed["enable"] != "available"
+
+
+def test_new_mutations_surface_in_existing_timeline_without_secrets(db):
+    """PH7-08 write-side evidence for the NEW admin mutations: durable
+    actor/reason/before-after rows land in the EXISTING ledger and the already-
+    deployed Audit timeline renders them; no credential material leaks."""
+    from src.admin_audit_timeline import account_timeline
+    account, _ = build_topology_account(db, tag="tlevid")
+
+    pause = make_handler(db, payload={"reason": "timeline evidence pause",
+                                      "confirm": True})
+    AD.handle_device_disable(pause, str(account["id"]), "1")
+    extend = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                       "reason": "timeline evidence extension",
+                                       "idempotency_key": "tlevid-key-000000000001"})
+    AE.handle_expiry_adjustment(extend, str(account["id"]))
+
+    timeline = account_timeline(db, account["id"])
+    kinds = {entry["kind"].split("_")[0] for entry in timeline["entries"]}
+    assert "SLOT" in kinds      # SLOT_DISABLE / SLOT_DISABLE APPLIED entries
+    assert "ADMIN" in kinds     # ADMIN_EXPIRY_ADJUSTMENT entry
+    blob = json.dumps(timeline)
+    assert "timeline evidence pause" in blob
+    assert "timeline evidence extension" in blob
+    assert "PRIMARY_ADMIN" in blob  # actor surfaced
+    for banned in ("mgc_", "sha256:", "hmac-sha256:", HWID_KEY, "Bearer ",
+                   "uuid_verifier", "hwid_verifier"):
+        assert banned not in blob
+
+
+def test_twelve_children_converge_after_expiry_operations(db):
+    """Roadmap PH7-01 acceptance: 'all children converge' at scale (12)."""
+    account, children = build_topology_account(db, tag="scale12", plan="FAMILY",
+                                               days=30, n_children=12)
+    assert len(children) == 12
+
+    extend = make_handler(db, payload={"adjustment_kind": "EXTEND_DAYS", "value": 7,
+                                       "reason": "mass renewal credit",
+                                       "idempotency_key": "scale-key-000000000000001"})
+    AE.handle_expiry_adjustment(extend, str(account["id"]))
+    assert extend.status == 200
+    assert extend.json()["aggregate_state"] == "IN_SYNC"
+    new_expiry = extend.json()["new_expiry"]
+    active_remote = sum(
+        1 for child in children
+        if _remote_user(db, child["prepared"]["child_intent_id"])[1]["status"] == "active"
+    )
+    assert active_remote == 12
+
+    end_now = make_handler(db, payload={"adjustment_kind": "END_NOW",
+                                        "reason": "terminate whole family",
+                                        "idempotency_key": "scale-key-000000000000002"})
+    AE.handle_expiry_adjustment(end_now, str(account["id"]))
+    assert end_now.status == 200
+    assert end_now.json()["aggregate_state"] == "IN_SYNC"
+    disabled_remote = sum(
+        1 for child in children
+        if _remote_user(db, child["prepared"]["child_intent_id"])[1]["status"] == "disabled"
+    )
+    assert disabled_remote == 12

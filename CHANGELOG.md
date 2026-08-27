@@ -17,6 +17,33 @@
 
 ### Added
 
+- Operational admin completion wave 2 (2026-08-27, **local checkpoint commit,
+  pending independent review and production deploy -- production NOT touched,
+  origin NOT pushed**): the two remaining operational-admin gaps are closed
+  over existing primitives with no new engine and no schema migration.
+  PH7-01 admin expiry operations: primary-admin preview + adjust routes over
+  a new durable `SubscriptionAdminOpsStore` writer that mutates ONLY
+  `mgboost_subscriptions.current_expiry` (optimistic CAS against concurrent
+  Stars/manual renewals), reuses the DL-044 anchor for +N (an expired term
+  resumes from now), supports -N / exact UTC date / end-now, refuses
+  admin-granted UNLIMITED, leaves WL periods/terms/packages untouched, drives
+  child convergence through the existing PH3-08 sync cycle and appends
+  actor/reason/before-after evidence to the existing immutable mutations
+  ledger. PH7-05 reversible device pause: new `DeviceSlotAdminStore`
+  primitive (the only writer of the schema-blessed slot `DISABLED` state)
+  with convergence decided from live state inside one transaction --
+  Disable -> Enable -> Disable re-performs a real pause instead of replaying
+  a prior result; pause narrows only its own child target in the revision-
+  stamped PH3-08 enqueue so no parent transition can resurrect it; Enable
+  restores the same generation/UUID; capacity still counts paused slots;
+  Free-after-Revoke works on paused slots; Rebind starts its successor
+  enabled; a per-slot `/sync` retry route converges crash windows. Mandatory
+  reason + confirm on every dialog per DL-055 (owner instruction superseding
+  ADMIN-UX-02's lighter note). Both families render in the existing Audit
+  timeline via their ledger rows. UI stays account-centric vanilla ES modules:
+  new `expiry_ops.js`, extended `device_ops.js`; CSP/no-inline/event-
+  delegation gates green.
+
 - Operational admin completion over existing primitives (2026-08-27,
   **independently reviewed, two real defects found and fixed
   (`1854bb9`), production-deployed same day**; PH7-10 `[x]`, PH7-05/PH7-08

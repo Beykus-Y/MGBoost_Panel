@@ -1,5 +1,186 @@
-# AGENT_HANDOFF — Operational admin completion independently reviewed, two real defects fixed, production-deployed; PH7-10 `[x]`, PH7-05/PH7-08 stay `[~]` (Disable/Enable + unified write-side audit remain future scope)
+# AGENT_HANDOFF — Operational admin scope fully implemented locally (PH7-01 expiry ops + PH7-05 Disable/Enable + write-side audit for both); checkpoint commit pending independent review; production read-only preflight verified compatible; no push / no deploy this slice
 
+Updated: 2026-08-27 (implementation session closing the remaining operational
+admin tails before WL). **This top section supersedes everything below.**
+
+## State after this session
+
+- Local HEAD = checkpoint commit of this slice, exactly one commit ahead of
+  origin. **origin/main and production both remain at
+  `f7ea7f4`** (re-verified over SSH; note production is genuinely on the
+  docs-only `f7ea7f4`). PUSH TO ORIGIN AND PRODUCTION DEPLOY ARE EXPLICITLY
+  FORBIDDEN for this slice.
+- **No schema migration of any kind** -- both new stores reuse deployed
+  tables exclusively; the future deploy is application-code-only
+  (`mgboost-panel` restart).
+
+## Gap-audit result (what actually blocked ADMIN DONE at f7ea7f4)
+
+1. PH7-01 `[ ]` -- admin expiry operations (+7/+30/+60, -N, exact date,
+   end now; no WL reset): the last major Phase 7 gap per the prior handoff's
+   own recommendation.
+2. PH7-05 `[~]` -- exactly one missing subgroup: reversible Disable/Enable
+   (no standalone backend primitive existed); add/remove slots &
+   restore-baseline deliberately NOT started (PH5-07/PH7-06 territory --
+   starting them would be a product phase beyond this brief).
+3. PH7-08 `[~]` -- write-side emission of durable actor/reason/before-after
+   evidence for these NEW mutation kinds into the existing timeline. The
+   unified emit point for future kinds stays `[ ]` under PH7-11 exactly as
+   ROADMAP states.
+Nothing else blocks operational admin; WL enforcement/PH6, live Stars sales,
+promo codes, PH5-06 upgrade/downgrade, a tariff engine, PH4-06 and cosmetic
+redesign were not touched.
+
+## What was built (over proven primitives only, no second engine)
+
+- **Expiry ops (PH7-01)** -- `src/subscription_admin_ops.py::
+  SubscriptionAdminOpsStore`, routes `POST /admin/accounts/{id}/expiry/
+  preview|adjust` (`src/routes/admin_expiry.py`). +N reuses DL-044's exact
+  anchor via the existing `compute_new_expiry` (expired resumes from now);
+  -N / exact bounded UTC second / END_NOW; ONE optimistic-CAS update of ONLY
+  `current_expiry` per op (`row_version` detects concurrent Stars/manual
+  renewals -> loud 409, never overwrite); refuses UNLIMITED and plan-less
+  UNKNOWN_LEGACY; never touches terms/WL periods/packages; child convergence
+  via existing `run_account_sync_cycle`; immutable evidence row in the
+  EXISTING `mgboost_entitlement_mutations` ledger
+  (`ADMIN_EXPIRY_ADJUSTMENT`, mutation_source=ADMIN, actor/reason/
+  before-after). Key replay honestly reports the ORIGINAL result with
+  `already_applied=true` (payments precedent); distinct keys are separate,
+  compensable audited adjustments -- that IS the roadmap's rollback story;
+  no raw DB-edit expiry path exists anywhere.
+- **Slot pause (PH7-05 Disable/Enable)** -- `src/device_slot_admin.py::
+  DeviceSlotAdminStore`: the ONLY writer of the schema-blessed slot value
+  `desired_state='DISABLED'` (present in the PH3-02 CHECK since day one;
+  prod DDL re-verified in preflight). Routes `.../devices/{n}/disable|
+  enable|sync`. Remote effect strictly the typed `child.user.state.sync`:
+  flag + evidence row + forced PH3-08 desired-state revision bump commit in
+  ONE transaction, and `parent_sync.enqueue_current_children` derives each
+  child target from its OWN slot row inside every enqueue (structural
+  join-level override shaped like the REVOKED exclusion) => no later
+  renewal/expiry/parent transition can resurrect a paused device, stale ops
+  supersede structurally, Enable restores the SAME generation/UUID narrowed
+  by parent state, capacity keeps counting paused slots, Free after Revoke
+  works on paused slots (`DeviceSlotStore.release` CAS widened to
+  ACTIVE|DISABLED), Rebind consumes the pause and starts its successor
+  enabled. Guards scope to the CURRENT generation/intent (never slot
+  lifetime). Convergence/replay decided from LIVE state inside the txn (see
+  self-review below). `/devices/{n}/sync` retry route drives the same cycle
+  for crash windows without inventing mutations.
+- **Audit write-side (PH7-08 scope for these families)** -- evidence rows
+  carry sealed-capability actor_ref, mandatory reason (3..300), bounded
+  scalar before/after; existing Audit tab renders them with ZERO timeline
+  changes needed. DL-055 records the owner-instruction resolution (mandatory
+  reason+confirm apply to pause as well, superseding ADMIN-UX-02's lighter
+  no-reason note).
+- **UI** -- account-centric vanilla ES modules kept: new
+  `frontend/assets/admin/expiry_ops.js` (server-preview-driven dialog with
+  presets +7/+30/+60, custom ±N, datetime-local exact date, end-now; one
+  idempotency key minted per opened dialog), extended `device_ops.js`
+  (Приостановить/Возобновить dialogs: consequences + mandatory reason + ack
+  checkbox; «Sync…» shown only when desired!=observed), `accounts.js`
+  subscription tab gains the expiry card; CSP/no-inline/event-delegation
+  gate-tested; raw identifiers stay Technical-only.
+
+## Self-review finding fixed BEFORE commit (flagged for the reviewer)
+
+The first internal draft decided replay/convergence from the deterministic
+idempotency-key hash alone (revoke-route style). Self-review identified this
+as an instance of the EXACT false-convergence class the a68e265 review
+caught: Disable(k) -> Enable -> Disable(k again -- deterministic keys repeat)
+would have answered `converged:true` against an ACTIVE slot. Redesign: the
+store decides convergence ONLY from the slot's live state read inside its own
+transaction (target state already held => honest converged no-op with zero
+writes); the client key is advisory first-occurrence metadata in the evidence
+row; regression added asserting the full flip-flop performs a REAL second
+remote disable with its own evidence row.
+
+## Verification performed
+
+- Targeted `tests/test_admin_operational_admin.py`: **39 passed** (was 24;
+  +15): authz matrix incl. all new routes, IDOR/slot probes, roundtrip with
+  SAME uuid verifier/generation preserved and capacity unchanged, double-
+  submit converged without duplicate evidence, pause survival across repeated
+  sync cycles AND a real post-pause expiry extension (sibling advances,
+  paused child untouched remotely), crash-between-durable-flag-and-remote-
+  sync recovery via the sync route, Rebind-after-Disable successor starts
+  enabled + stale Enable honesty, Revoke+Free on a paused slot with tombstone
+  history intact, availability truthfulness (disable/enable/free gates),
+  timeline evidence surfacing without secrets, expiry anchors active vs
+  expired, reduce-into-past disabling children then resume-from-now, END_NOW
+  exactness with byte-identical WL-period rows, SET_EXACT rounding-free
+  equality, validation matrix, UNLIMITED / missing-subscription refusals,
+  idempotent replay without duplicate evidence, audited compounding (+7 twice
+  = separate rows, chain exact), and a 12-child FAMILY-account convergence
+  sequence.
+- Browser gates (Playwright venv): **2 passed** (fixture extended: serves
+  expiry_ops.js, enriched payload; asserts pause+revoke buttons render,
+  confirm gating fires locally with zero network requests, expiry card shows
+  server-authoritative presets; end_now/enable counters).
+- Full regression (Playwright venv, every suite included): **1266 passed,
+  0 failed, 0 skipped** (= prior recorded full baseline 1251 + exactly these
+  15). One transient environment event: the FIRST venv run showed escalating
+  collection-time ERRORs, root-caused again to `/tmp` quota pressure from
+  thousands of stale prior-session mkdtemp scratch dirs; cleaned per the
+  owner-approved precedent (only hour-stale anonymous `/tmp/tmp*`; venv/
+  caches/repo untouched) after which the identical command passes
+  deterministically.
+- `git diff --check` clean; every touched JS module passes `node --check`.
+- **Production read-only compatibility preflight (SSH only; ZERO writes,
+  restarts or mutations):** HEAD `f7ea7f4` == local == origin; only the known
+  untracked `extra_configs.json` drift; `PRAGMA quick_check=ok`; 0 FK
+  violations; cardinalities accounts/subscriptions/manual-payments/lifecycle-
+  ops = `18/18/0/20` unchanged (20 = pre-existing PH3-05 canary rows);
+  production DDL re-read literally confirms `CHECK(desired_state IN
+  ('FREE','ACTIVE','DISABLED'))` on mgboost_device_slots, free-TEXT operation
+  column plus UNIQUE(idempotency_key_hash) on mgboost_entitlement_mutations,
+  row_version on mgboost_subscriptions, 14 entitlement_state rows for real
+  accounts; `0` SLOT_*/ADMIN_EXPIRY_ADJUSTMENT rows exist (nothing was ever
+  created by any session since those ops are brand new); current prod slots
+  35 ACTIVE / 3 FREE; all four services active; panel journal clean. Deploy
+  is therefore application-code-only with live-DB compatibility already
+  proven.
+
+## Reviewer attention list
+
+1. `src/device_slot_admin.py::set_paused` -- live-state convergence rule vs
+   the a68e265 P0 class; verify the guard set (REVOKED intent, missing
+   generation/intent, pause requires ACTIVE desired, CAS on row_version AND
+   current_generation) leaves no slot-history-shaped hole.
+2. `_bump_parent_revision_locked` commits atomically WITH the flag flip;
+   confirm enqueue can never stamp old-revision ops against the new per-slot
+   reality (BEGIN IMMEDIATE serialization argument).
+3. `subscription_admin_ops.apply_adjustment` -- CAS refusal maps to 409 via
+   AdminExpiryConflict; replay reports original result + already_applied and
+   never claims CURRENT state; check there is no silent double-apply path.
+4. `parent_sync.enqueue_current_children` per-slot override: paused =>
+   ("disabled", None), siblings keep parent target exactly; aggregate_state
+   logic untouched.
+5. `DeviceSlotStore.release` CAS widened to ACCEPT disabled; hard
+   Free-after-Revoke ordering remains solely in `apply_free`.
+6. Reason-before-confirm ordering (400 vs 409) asserted in tests.
+
+## Roadmap statuses set
+
+- PH7-01 stays `[ ]` but entry text now says "Implemented locally ...
+  pending independent review + production deploy".
+- PH7-05 stays `[~]` with updated text: Disable/Enable implemented locally;
+  add/remove/restore-baseline remain explicitly unbuilt (PH5-07/PH7-06).
+- PH7-08 stays `[~]` noting the two new families emit write-side evidence
+  through the existing ledger/timeline; unified framework remains `[ ]`
+  under PH7-11.
+- DL-055 added to the Decision Log.
+
+## Exact next step
+
+Independent review of this checkpoint against `origin/main` (`f7ea7f4`),
+then owner deploy decision. After review+deploy, per this slice's own brief:
+ADMIN DONE can be declared and work proceeds to WL; do NOT start PH5-06,
+promo codes/trials, live Stars sales flow, a new tariff engine, PH4-06, the
+reseller system or cosmetic redesign without a fresh explicit owner decision.
+
+---
+
+# PRIOR HANDOFF -- Operational admin completion independently reviewed
 Updated: 2026-08-27 (independent review session, following directly from the
 implementation session recorded below at checkpoint `a68e265`). **This top
 section supersedes everything below.** Owner instruction: independently

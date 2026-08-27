@@ -145,7 +145,15 @@ class ParentSyncStore:
         Released/revoked generations and other accounts' children are never
         selected -- PH3-05 terminal transitions are structurally excluded by
         the ACTIVE-generation join, not by a convention this module could
-        violate."""
+        violate.
+
+        A slot administratively paused (`desired_state='DISABLED'`, PH7-05
+        Disable) overrides only ITS OWN child's target to "disabled"; sibling
+        slots keep the parent-level target. The pause is read from the slot
+        row inside this same transaction, so a paused child is re-issued its
+        suspended target on every later revision bump too -- a renewal,
+        expiry change or any other parent transition can never resurrect it.
+        """
         timestamp = int(time.time()) if now is None else int(now)
         account_id = int(account_id)
         with self._lock:
@@ -159,16 +167,26 @@ class ParentSyncStore:
                 ).fetchone()
                 if not state:
                     raise ParentSyncError("desired state has not been computed for this account yet")
-                desired_status, expire = child_target_for(state["desired_status"], state["current_expiry"])
+                parent_target_status, parent_target_expire = child_target_for(
+                    state["desired_status"], state["current_expiry"],
+                )
                 children = self._conn.execute(
-                    "SELECT ci.id,ci.child_username,ci.uuid_verifier "
+                    "SELECT ci.id,ci.child_username,ci.uuid_verifier,s.desired_state AS slot_desired "
                     "FROM mgboost_child_user_intents AS ci "
                     "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
+                    "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
                     "WHERE ci.account_id=? AND g.status='ACTIVE' AND ci.desired_state!='REVOKED'",
                     (account_id,),
                 ).fetchall()
                 results = []
                 for child in children:
+                    # The per-slot pause narrows only that slot's own child;
+                    # everything else converges to the exact parent target.
+                    desired_status, expire = (
+                        ("disabled", None)
+                        if child["slot_desired"] == "DISABLED"
+                        else (parent_target_status, parent_target_expire)
+                    )
                     results.append(self._prepare_locked(
                         account_id=account_id, child_intent_id=child["id"],
                         child_username=child["child_username"], uuid_verifier=child["uuid_verifier"],

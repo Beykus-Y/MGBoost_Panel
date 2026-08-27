@@ -26,6 +26,8 @@ from .child_lifecycle_schema import apply_child_lifecycle_schema
 from .child_lifecycle import ChildLifecycleStore
 from .parent_sync_schema import apply_parent_sync_schema
 from .parent_sync import ParentSyncStore
+from .device_slot_admin import DeviceSlotAdminStore
+from .subscription_admin_ops import SubscriptionAdminOpsStore
 from .subscription_credential_schema import apply_subscription_credential_schema
 from .subscription_credentials import SubscriptionCredentialStore
 from .legacy_bridge_schema import apply_legacy_bridge_schema
@@ -145,6 +147,12 @@ class Database:
         self.child_workflow = ChildWorkflowStore(self._conn, self._lock)
         self.child_lifecycle = ChildLifecycleStore(self._conn, self._lock)
         self.parent_sync = ParentSyncStore(self._conn, self._lock)
+        self.device_slot_admin = DeviceSlotAdminStore(
+            self._conn, self._lock, self.primary_admin_authority
+        )
+        self.subscription_admin_ops = SubscriptionAdminOpsStore(
+            self._conn, self._lock, self.primary_admin_authority
+        )
         self.subscription_credentials = SubscriptionCredentialStore(self._conn, self._lock)
         self.legacy_bridge = LegacyBridgeStore(self._conn, self._lock, self.primary_admin_authority)
         self.ownership_rebind = OwnershipRebindStore(self._conn, self._lock, self.primary_admin_authority)

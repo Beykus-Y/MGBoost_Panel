@@ -55,6 +55,8 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "timeline.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin/device_ops.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "device_ops.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/expiry_ops.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "expiry_ops.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin.css":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.css").read_bytes(), "text/css")
         elif path == "/sub-admin-api/admin/session":
@@ -94,10 +96,11 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                 "account": {"id": 1, "public_id": "acct_technical", "status": "ACTIVE", "account_source": "DIRECT", "created_at": 100},
                 "display_identity": {"display_note": PAYLOAD, "display_note_source_alias": "client_alias", "primary_alias": "client_alias", "public_id": "acct_technical"},
                 "aliases": [{"legacy_username": "client_alias", "note": PAYLOAD, "alias_role": "PRIMARY", "ownership_provenance": "EVIDENCE_PROVEN", "legacy_status": "ACTIVE"}],
-                "subscription": {"status": "ACTIVE", "display_name": PAYLOAD, "current_expiry": None, "effective": {"device_limit_mode": "LIMITED", "device_limit": 3}},
+                "subscription": {"status": "ACTIVE", "display_name": PAYLOAD, "current_expiry": 1900000000, "effective": {"device_limit_mode": "LIMITED", "device_limit": 3}},
                 "credential": None,
                 "devices": [{"slot_number": 1, "slot_kind": "BASE", "desired_state": "ACTIVE", "observed_state": "ACTIVE", "hwid_masked": "hwid_fixture_mask", "child_observed_state": "ACTIVE", "migration_state": None, "real_migration_lineage": False, "proven_genesis_bootstrap": True,
-                             "actions": {"revoke": "available", "free": "unavailable", "rebind": "available"}}],
+                             "actions": {"revoke": "available", "free": "unavailable", "rebind": "available",
+                                         "disable": "available", "enable": "unavailable"}}],
                 "entitlement": {
                     "subscription": {"effective_status": "ACTIVE", "effective_expiry": 1900000000},
                     "plan": {"code": "BASIC", "version": 1, "display_name": PAYLOAD},
@@ -242,9 +245,19 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
             payments_text = page.locator("#account-tab-content").inner_text()
             assert "mpay_fixture_one" in payments_text and "169" in payments_text
             assert "fixture-ref-0001" in payments_text
-            # Device actions on Devices tab: revoke button present for available.
+            # PH7-01 expiry operations render server-formula presets on the
+            # Subscription tab; every action goes through the confirm flow.
+            page.locator('[data-account-tab="subscription"]').click()
+            subs_text = page.locator("#account-tab-content").inner_text()
+            # card titles render uppercase via CSS; compare case-insensitively.
+            assert "операции со сроком" in subs_text.lower()
+            assert page.locator("[data-expiry-op='EXTEND_DAYS']").count() >= 1
+            assert page.locator("[data-expiry-op='END_NOW']").count() == 1
+            # Device actions on Devices tab: pause + revoke buttons present.
             page.locator('[data-account-tab="devices"]').click()
             assert page.locator("[data-device-op='revoke']").count() == 1
+            assert page.locator("[data-device-op='disable']").count() == 1
+            assert page.locator("[data-device-op='enable']").count() == 0
             # Confirm-flow gating: disabled until checkbox; reason empty is refused locally.
             page.locator("[data-device-op='revoke']").click()
             overlay = page.locator(".ops-modal-overlay").last
@@ -257,6 +270,20 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
             # No request was fired without a reason (handler 404s would have errored).
             assert "Причина" in overlay.inner_text()
             overlay.locator(".ops-close").click()
+            # Reversible-pause dialog opens with its consequences + reason form
+            # and stays gated on the acknowledgement checkbox exactly like the
+            # destructive operations (owner instruction supersedes ADMIN-UX-02).
+            page.locator("[data-device-op='disable']").click()
+            pause_overlay = page.locator(".ops-modal-overlay").last
+            assert "пауза устройства" in pause_overlay.inner_text().lower()
+            pause_confirm = pause_overlay.locator("button.danger")
+            assert pause_confirm.is_disabled()
+            pause_overlay.locator("#ops-final-check").check()
+            assert not pause_confirm.is_disabled()
+            pause_confirm.click()
+            page.wait_for_timeout(200)
+            assert "Причина" in pause_overlay.inner_text()  # refused locally, no request
+            pause_overlay.locator(".ops-close").click()
             # Audit timeline tab renders entries from aggregated sources.
             page.locator('[data-account-tab="audit"]').click()
             audit_text = page.locator("#account-tab-content").inner_text()

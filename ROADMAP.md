@@ -1606,6 +1606,33 @@ explicitly out of this task's own scope.
 **Accept/tests:** preview/reason, all children converge, timezone/concurrent Stars/12 children.
 **Rollback:** audited compensating expiry, no raw DB edit.
 
+**Implemented locally (2026-08-27, checkpoint commit pending independent
+review + production deploy; status stays `[ ]` until that deploy):** the two
+new primary-admin routes (`POST /admin/accounts/{id}/expiry/preview` and
+`/adjust`) write exclusively through the new durable
+`SubscriptionAdminOpsStore` writer: +N reuses the documented DL-044 anchor
+(`max(current_expiry, now)`, so an expired subscription resumes from now), -N
+subtracts from the finite expiry, SET_EXACT takes a bounded UTC-epoch second,
+END_NOW pins the term to now — one optimistic-CAS update of ONLY
+`mgboost_subscriptions.current_expiry` per operation (concurrent Stars/manual
+renewals are detected via `row_version`, never silently overwritten), and an
+immutable actor/reason/before-after evidence row in the EXISTING PH3-09/PH7-08
+ledger (`ADMIN_EXPIRY_ADJUSTMENT`, mutation_source=ADMIN). WL periods, terms
+and packages are untouched ("no WL reset"); child convergence rides the
+existing PH3-08 `run_account_sync_cycle` (any expiry change bumps the
+desired-state revision through `refresh_desired_state`). Admin-granted
+UNLIMITED subscriptions and plan-less UNKNOWN_LEGACY subscriptions are
+refused. No raw SQL-edit expiry path exists anywhere in the UI or routes.
+Idempotent replays return the original audited result with
+`already_applied=true`; genuinely new keys are separate compensable
+adjustments (the roadmap's "audited compensating expiry" is exactly a
+reverse-direction adjustment through the same writer). Tests:
+`tests/test_admin_operational_admin.py` covers anchors active/expired,
+reduce-into-past child disabling then resume-from-now, END_NOW exactness
+with byte-identical WL-period rows, validation matrix, UNLIMITED refusal,
+replay/no-duplicate-evidence, compounding grants, sibling-convergence and a
+12-children FAMILY-account convergence run.
+
 ## [ ] PH7-02 — WL quota breakdown
 
 **Depends:** PH6-08. **Display:** base, purchased, grants, deductions, effective, consumed, remaining, period, desired/observed.
@@ -1652,6 +1679,32 @@ stay `[ ]` (PH5-07/PH7-06 territory). Generic delete does not exist (asserted
 by test over `_ROUTES`). Confirmation UX: preview consequences list,
 mandatory reason, typed acknowledgement checkbox (Rebind adds an extra
 compromise acknowledgement).
+
+**Disable/Enable implemented locally (2026-08-27, same pending-review
+checkpoint as PH7-01 above):** the previously missing standalone backend
+primitive is `src/device_slot_admin.py::DeviceSlotAdminStore` -- the only
+writer of the schema-blessed `mgboost_device_slots.desired_state='DISABLED'`
+value (already present in the PH3-02 CHECK since the beginning). Convergence
+decision comes from the slot's LIVE state read inside the store transaction
+(no hash-replay shortcut: Disable -> Enable -> Disable on the same generation
+performs a real second pause; this refuses the false-convergence defect class
+found in the a68e265 review by design). The pause narrows ONLY its own slot's
+child target inside `parent_sync.enqueue_current_children` (a structural
+join-level override like the REVOKED exclusion), commits flag+evidence+forced
+PH3-08 revision bump in ONE transaction, so no later renewal/expiry/parent
+transition can resurrect a paused device, while Enable restores the SAME
+generation/child/UUID narrowed by the parent state. Guards scope to the
+current generation/intent, not the slot's lifetime. Remote effect stays the
+typed `child.user.state.sync`; observed_state aligns only on IN_SYNC, and a
+`POST .../devices/{n}/sync` retry route converges crash-window toggles
+without inventing mutations. Evidence lands in the existing entitlement-
+mutations ledger (`SLOT_DISABLE`/`SLOT_ENABLE` incl. actor/reason/before-
+after) and renders in the deployed Audit timeline. Capacity accounting keeps
+counting a paused slot (`active_count` unchanged); Free after Revoke works on
+a paused slot via a widened release CAS (`ACTIVE|DISABLED`); Rebind consumes
+the pause and starts its successor enabled. Mandatory reason + confirm and
+UI wiring follow DL-055. Remaining unbuilt for PH7-05: add/remove slots &
+restore-baseline (explicitly PH5-07/PH7-06 territory).
 
 **Independent review (2026-08-27) found and fixed one P0 and one related P1/P2,
 both in the same root cause, before deploy:** `_existing_slot_op`
@@ -1714,8 +1767,13 @@ scrubbing layer that structurally excludes token/verifier/HWID/idempotency-key
 material and bounds every value; rendered by the new account `Audit` tab
 (`timeline.js`). No second audit framework or writer was created — this is the
 presentation aggregation the section above scoped, while the complete
-write-side emit-coverage goal stays `[ ]` until the remaining operation kinds
-(expiry ops PH7-01, WL override/reset, refunds/compensations) exist.
+write-side emit-coverage goal stays `[ ]` until the remaining operation kinds exist.
+As of the 2026-08-27 local checkpoint the two NEW admin mutation families --
+expiry ops (PH7-01) and slot pause (PH7-05 Disable/Enable) -- emit durable
+actor/reason/before-after/result evidence through this SAME existing ledger
+and render in this timeline without any second framework; what still keeps
+PH7-11 `[ ]` is the unified emit point covering every future kind (WL
+override/reset, refunds/compensations).
 Independent review confirmed: not a naive deny-list-over-`**dict` (every SQL
 query is an explicit column allow-list; the JSON-flatten path additionally
 type-filters to bounded scalars); no live secret (raw bearer token, HWID,
@@ -2907,6 +2965,30 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   несуществующую provider-модель ради scoping, который ничего не отличал бы
   внутри одного payment_channel.
 - **Связано:** DL-029/030/039, PH5-09/10.
+
+## DL-055 — PH7-05 Disable/Enable: обязательный reason/confirm поверх ADMIN-UX-02
+
+- **Дата:** 2026-08-27.
+- **Вопрос:** `docs/ADMIN_PANEL_REDESIGN.md` (ADMIN-UX-02) фиксирует для
+  reversible-pause «No mandatory reason» и лёгкую toggle-подачу, тогда как
+  инструкция владельца на срез operational-admin completion требует для
+  Disable/Enable тот же контракт, что у остальных device-мутаций: preview +
+  mandatory reason + confirmation.
+- **Выбрано пользователем:** приоритет у прямой инструкции владельца от
+  2026-08-27 — реализованные маршруты
+  `POST /admin/accounts/{id}/devices/{slot}/disable|enable` требуют reason
+  (3..300) и явного `confirm: true`, диалоги UI повторяют контракт
+  Revoke/Free/Rebind. Обратимость и семантика паузы при этом не меняются:
+  слот остаётся занятым, generation/UUID/HWID history не затрагиваются,
+  Enable возвращает ту же допустимую generation; от Revoke/Free/Rebind
+  операция не смешивается ни на уровне UX, ни на уровне backend-примитива
+  (`DeviceSlotAdminStore` — единственный writer значения
+  `mgboost_device_slots.desired_state='DISABLED'`).
+- **Кто:** пользователь (инструкция); в этот DL записано агентом как
+  единственное каноническое место правила.
+- **Почему:** устранить противоречие между дизайн-доком и живой инструкцией;
+  единый аудит-бар для всех административных мутаций устройств.
+- **Связано:** DL-049, ADMIN-UX-02, PH7-05, PH7-08.
 
 # Contradictions and migration hazards
 

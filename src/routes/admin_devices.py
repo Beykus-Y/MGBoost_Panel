@@ -1,11 +1,11 @@
 """Wave B device-slot administration routes (PH7-05) over the existing
 proven PH3-05 durable lifecycle primitives (`ChildLifecycleStore` +
-`process_revoke/process_free/process_rebind`). No new lifecycle semantics are
-invented here: revoke/free/rebind reuse the exact orchestration the PH3-05
-production canary used, with deterministic per-target idempotency keys so a
-double click or retry converges instead of duplicating. Disable/Enable
-deliberately do not exist at this layer -- no standalone slot-disable
-backend primitive exists yet, so nothing is offered.
+`process_revoke/process_free/process_rebind`) plus the reversible pause
+primitive (`DeviceSlotAdminStore`): revoke/free/rebind reuse the exact
+orchestration the PH3-05 production canary used, each with deterministic
+per-target idempotency keys so a double click or retry converges instead of
+duplicating. Disable/Enable toggle the schema-blessed per-slot pause state
+and converge remotely through the revision-stamped PH3-08 sync outbox.
 """
 
 from __future__ import annotations
@@ -21,13 +21,40 @@ from ..child_lifecycle import (
     process_rebind,
     process_revoke,
 )
+from ..device_slot_admin import SlotAdminConflict, SlotAdminError
 from ..http_utils import error_response, json_response
+from ..parent_sync import run_account_sync_cycle
 from ..security import require_admin_auth
 
 from .admin_support import account_or_404, read_json_body, require_primary_capability
 
 _HWID_RE = re.compile(r"^[A-Za-z0-9_.:@+-]{6,128}$")
 _WORKER_ID = "admin-wave-b"
+
+
+def _active_generation_or_error(handler, db, account_id: int, slot_number: int):
+    """Resolve ONLY the slot's currently-ACTIVE generation + its own child
+    intent. Scoping to the live generation (never "latest ever recorded") is
+    deliberate: every lifecycle guard here must bind to the exact entity it
+    mutates, not to the slot's history."""
+    row = db._conn.execute(
+        "SELECT g.id AS generation_row_id,g.generation FROM "
+        "mgboost_device_slots s JOIN mgboost_device_slot_generations g "
+        "ON g.slot_id=s.id AND g.account_id=s.account_id AND g.status='ACTIVE' "
+        "AND g.generation=s.current_generation WHERE s.account_id=? AND s.slot_number=?",
+        (int(account_id), int(slot_number)),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _drive_pause_convergence(db, account_id: int, *, worker_id: str, now: int) -> str:
+    """One inline convergence pass for the just-toggled slot's account.
+    Only PH3-08's IN_SYNC aggregate proves remote convergence; anything else
+    stays recoverably PENDING behind durable revision-stamped ops."""
+    result = run_account_sync_cycle(
+        db, int(account_id), sync_fn=_sync_fn, worker_id=worker_id, now=now,
+    )
+    return result.get("aggregate_state") or "PENDING"
 
 
 def _target_or_error(handler, db, account_id: int, slot_number: int):
@@ -309,6 +336,121 @@ def handle_device_rebind(handler, account_id, slot_number):
     })
 
 
+# --- reversible pause (Disable / Enable, PH7-05) -------------------------------
+
+def _handle_slot_pause(handler, account_id, slot_number, *, paused: bool):
+    action = "disable" if paused else "enable"
+    if not require_admin_auth(handler):
+        return
+    db = handler.server.db
+    account = account_or_404(handler, db, account_id)
+    if account is None:
+        return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason, reason_error = _reason(data)
+    if reason_error:
+        error_response(handler, 400, reason_error)
+        return
+    if data.get("confirm") is not True:
+        error_response(
+            handler, 409,
+            "Confirmation required: resubmit with confirm: true",
+        )
+        return
+    now = int(time.time())
+    # The convergence drive needs the LIVE generation for the idempotency
+    # scope; a paused slot keeps that generation, so the key stays stable
+    # across double-clicks/retries of the same toggle.
+    generation = _active_generation_or_error(handler, db, account["id"], int(slot_number))
+    if generation is None:
+        error_response(handler, 409,
+                       "This slot has no live provisioned generation to "
+                       f"{action}")
+        return
+    idempotency_key = _deterministic_key(f"admin-slot-{action}-v1", account["id"],
+                                         slot_number, generation["generation"])
+    try:
+        result = db.device_slot_admin.set_paused(
+            capability, account_id=account["id"], slot_number=int(slot_number),
+            paused=paused, reason=reason, idempotency_key=idempotency_key, now=now,
+        )
+    except SlotAdminConflict as exc:
+        error_response(handler, 409, str(exc))
+        return
+    except SlotAdminError as exc:
+        error_response(handler, 400, str(exc))
+        return
+    if result.get("converged"):
+        json_response(handler, 200, {
+            "operation": {"operation_kind": result.get("operation_kind")
+                          or ("SLOT_DISABLE" if paused else "SLOT_ENABLE"),
+                          "state": "APPLIED"},
+            "slot": db.device_slot_admin.current_pause_state(account["id"], int(slot_number)),
+            "converged": True, "pending_remote": False,
+        })
+        return
+    try:
+        aggregate = _drive_pause_convergence(db, account["id"],
+                                             worker_id=f"admin-slot-{action}", now=now)
+    except Exception:
+        aggregate = "PENDING"
+    in_sync = aggregate == "IN_SYNC"
+    if in_sync:
+        db.device_slot_admin.mark_observed(account["id"], int(slot_number), now=now)
+    state = "APPLIED" if in_sync else "PENDING"
+    json_response(handler, 200 if in_sync else 202, {
+        "operation": {"operation_kind": result["operation_kind"], "state": state},
+        "slot": db.device_slot_admin.current_pause_state(account["id"], int(slot_number)),
+        "mutation_id": result.get("mutation_id"),
+        "aggregate_state": aggregate,
+        "pending_remote": not in_sync,
+    })
+
+
+def handle_device_disable(handler, account_id, slot_number):
+    _handle_slot_pause(handler, account_id, slot_number, paused=True)
+
+
+def handle_device_enable(handler, account_id, slot_number):
+    _handle_slot_pause(handler, account_id, slot_number, paused=False)
+
+
+def handle_device_sync(handler, account_id, slot_number):
+    """Operator-driven retry of a slot's pending remote child convergence.
+    Drives the SAME revision-stamped PH3-08 cycle; never invents mutations."""
+    if not require_admin_auth(handler):
+        return
+    db = handler.server.db
+    account = account_or_404(handler, db, account_id)
+    if account is None:
+        return
+    if require_primary_capability(handler, db) is None:
+        return
+    data = read_json_body(handler, max_bytes=1024)
+    if data is None:
+        return
+    now = int(time.time())
+    try:
+        aggregate = _drive_pause_convergence(db, account["id"],
+                                             worker_id="admin-slot-sync", now=now)
+    except Exception as exc:
+        error_response(handler, 502, f"child sync failed: {type(exc).__name__}")
+        return
+    if aggregate == "IN_SYNC":
+        db.device_slot_admin.mark_observed(account["id"], int(slot_number), now=now)
+    slot = db.device_slot_admin.current_pause_state(account["id"], int(slot_number))
+    json_response(handler, 200, {
+        "aggregate_state": aggregate,
+        "slot": slot,
+        "aligned": bool(slot) and slot["slot_desired_state"] == slot["slot_observed_state"],
+    })
+
+
 # --- helpers -----------------------------------------------------------------
 
 def _reason(data: dict):
@@ -339,6 +481,16 @@ def _revoke_fn(payload: dict) -> dict:
     result = service_marzban().revoke_child_user(payload)
     if not isinstance(result, dict) or "outcome" not in result:
         raise ChildLifecycleError("invalid revoke outcome contract")
+    return result
+
+
+def _sync_fn(payload: dict) -> dict:
+    """The typed `child.user.state.sync` broker call, identical to the
+    canonical PH5-05/PH7-10 drivers."""
+    from .admin_support import service_marzban
+    result = service_marzban().sync_child_user_state(payload)
+    if not isinstance(result, dict) or "outcome" not in result:
+        raise ChildLifecycleError("invalid sync outcome contract")
     return result
 
 

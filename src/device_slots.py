@@ -494,7 +494,7 @@ class DeviceSlotStore:
                 updated = self._conn.execute(
                     "UPDATE mgboost_device_slots SET desired_state='FREE',"
                     "observed_state='FREE',updated_at=?,row_version=row_version+1 "
-                    "WHERE id=? AND account_id=? AND desired_state='ACTIVE' "
+                    "WHERE id=? AND account_id=? AND desired_state IN ('ACTIVE','DISABLED') "
                     "AND current_generation=?",
                     (timestamp, int(slot_id), int(account_id), int(expected_generation)),
                 )
