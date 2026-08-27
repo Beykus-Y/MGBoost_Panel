@@ -1628,10 +1628,11 @@ explicitly out of this task's own scope.
 **Ops:** unbind/disable/enable/revoke/free/rebind/add/remove/restore baseline.
 **Accept/tests:** old UUID fails all nodes; permissions/stale UUID/partial failure/12 slots.
 
-**Wave B slice implemented (2026-08-27), implementation-complete / pending
-independent review; NOT deployed:** Revoke / Free / Rebind wired as three
-distinct authenticated primary-admin routes
-(`src/routes/admin_devices.py`; DL-049 granularity preserved) over the
+**Wave B slice (Revoke/Free/Rebind) production-deployed (2026-08-27) after
+independent review; still `[~]` because Disable/Enable/add/remove/restore
+baseline remain unbuilt, not because the deployed slice itself is broken:**
+Revoke / Free / Rebind wired as three distinct authenticated primary-admin
+routes (`src/routes/admin_devices.py`; DL-049 granularity preserved) over the
 unchanged PH3-05 durable primitives (`prepare_*` + `process_*` +
 `DeviceSlotStore.release/rebind`), each with deterministic per-target
 idempotency keys so double-clicks/retries converge; remote broker failures
@@ -1641,14 +1642,47 @@ requires explicit `confirm:true` + a new-device HWID and creates the successor
 generation (new child provisioning via the existing PH3-03 outbox). Per-slot
 action availability is derived server-side from lifecycle tables into
 `account_detail.devices[].actions` (`src/admin_read_models.py`) and rendered
-as buttons in Devices. **Disable/Enable remain explicitly unavailable:** no
-standalone slot-disable backend primitive exists yet (no writer of a per-slot
-administrative pause anywhere), so nothing was offered rather than inventing a
-lifecycle; add/remove slots & restore-baseline stay `[ ]` (PH5-07/PH7-06
-territory). Generic delete does not exist (asserted by test over `_ROUTES`).
-Confirmation UX: preview consequences list, mandatory reason, typed
-acknowledgement checkbox (Rebind adds an extra compromise acknowledgement).
-Targeted coverage in `tests/test_admin_operational_admin.py`.
+as buttons in Devices; confirmed a UI-only hint -- mutation routes
+independently re-validate lifecycle state server-side, never trust it.
+**Disable/Enable remain explicitly unavailable:** independently re-confirmed
+during review (grepped every writer in the schema/lifecycle modules) that no
+standalone slot-disable backend primitive exists anywhere, so nothing was
+offered rather than inventing a lifecycle; add/remove slots & restore-baseline
+stay `[ ]` (PH5-07/PH7-06 territory). Generic delete does not exist (asserted
+by test over `_ROUTES`). Confirmation UX: preview consequences list,
+mandatory reason, typed acknowledgement checkbox (Rebind adds an extra
+compromise acknowledgement).
+
+**Independent review (2026-08-27) found and fixed one P0 and one related P1/P2,
+both in the same root cause, before deploy:** `_existing_slot_op`
+(`src/routes/admin_devices.py`) matched the latest lifecycle op of a kind by
+`slot_number` alone, independent of which generation/intent it was recorded
+against, while the underlying `ChildLifecycleStore._prepare` primitive was
+already correctly scoped by `old_child_intent_id`. Consequences: (1) REVOKE
+on a slot's current generation, issued after an earlier generation on the same
+slot had already been revoked, matched the OLD generation's APPLIED REVOKE row
+and returned `converged: true`/HTTP 200 without ever touching the current
+(possibly compromised) generation -- a false confirmation that an active
+device had been revoked; (2) REBIND permanently refused any second rebind of
+the same slot after the first one ever completed, with no recovery path other
+than a direct DB write, contradicting DL-049's "replacement flow" scoping
+(nothing limits Rebind to once per slot). Fixed by scoping `_existing_slot_op`
+to the current intent's `old_child_intent_id`, matching the primitive's own
+idempotency scope; true concurrent double-click safety is unaffected (it was
+always provided by `_prepare`'s own idempotency-key-hash dedup, covered by the
+pre-existing `test_repeated_rebind_request_is_idempotent_exactly_one_x_plus_1`
+in `tests/test_child_lifecycle.py`). Regression added: a legitimate second
+REBIND of the same slot succeeds and creates a real third generation; a
+REVOKE issued after a REBIND targets and actually revokes the *current*
+generation instead of false-converging on the stale one.
+Separately, `src/admin_audit_timeline.py` had 7 of its 8 SQL sections with no
+exception guard (only manual payments had one), so a single anomalous
+evidence row would raise out of `account_timeline()` -- called unconditionally
+by `account_detail()` -- and take down the whole account detail page, not
+just the Audit tab (P2, fixed with a shared `_rows()` helper; regression
+added simulating one corrupted source).
+Targeted coverage in `tests/test_admin_operational_admin.py` (24 checks after
+the review's additions).
 
 ## [ ] PH7-06 — Explicit conflict resolution on limit reduction
 
@@ -1669,8 +1703,9 @@ Targeted coverage in `tests/test_admin_operational_admin.py`.
 **Tests:** complete before/after for success/failure/partial/reconcile, redaction; rejected and successful rebind actor/target assertions; Telegram IDs absent from unrelated logs/exports.
 **Migration:** preserve current `audit_log` as legacy evidence.
 
-**Read-side aggregate implemented (2026-08-27), pending independent review;
-NOT deployed:** `src/admin_audit_timeline.py::account_timeline()` is a pure
+**Read-side aggregate production-deployed (2026-08-27) after independent
+review; still `[~]` because the write-side emit-coverage goal is not this
+slice's scope:** `src/admin_audit_timeline.py::account_timeline()` is a pure
 read-only join over the already-existing immutable evidence tables (entitlement
 mutations, canonical payment records, manual payments + edits/applications +
 sync state, child lifecycle operations, migration binding events, grace events,
@@ -1681,13 +1716,22 @@ material and bounds every value; rendered by the new account `Audit` tab
 presentation aggregation the section above scoped, while the complete
 write-side emit-coverage goal stays `[ ]` until the remaining operation kinds
 (expiry ops PH7-01, WL override/reset, refunds/compensations) exist.
+Independent review confirmed: not a naive deny-list-over-`**dict` (every SQL
+query is an explicit column allow-list; the JSON-flatten path additionally
+type-filters to bounded scalars); no live secret (raw bearer token, HWID,
+UUID verifier, idempotency key) reaches a real timeline entry against actual
+production data (verified read-only against 5 real accounts post-deploy, see
+"Production verification" below). One real robustness defect found and fixed
+before deploy: 7 of 8 sections had no exception guard, so a single anomalous
+row anywhere would have taken down the whole account-detail page, not just
+the Audit tab -- every section now degrades independently.
 
 ## [ ] PH7-09 — Safe plan/entitlement admin
 
 **Depends:** PH5-04/06 and admin ticket workflow. **Fixed policies:** approved OPD/DL decisions referenced by PH5-04/06 and PH7-06/07; no open plan/entitlement-transition decision remains for this task. **Scope:** preview effective change/conflicts/schedule/reasons/confirmations; no raw counters.
 **Tests:** plan matrix, invalid transition, concurrent payment. **Rollback:** compensation with snapshot.
 
-## [~] PH7-10 — Manual external-payment admin UI
+## [x] PH7-10 — Manual external-payment admin UI
 
 **Depends:** PH3-09, PH5-09; только основной admin.
 **Account UI:** payment channel, plan, expiry, WL/devices; first rollout фиксирует RUB и позволяет выбрать только versioned fixed RUB price, exact amount/method/reference/comment с preview entitlement change. Pending можно исправить до apply; applied record read-only, correction создаётся отдельной compensation action.
@@ -1695,8 +1739,9 @@ write-side emit-coverage goal stays `[ ]` until the remaining operation kinds
 **Controls:** backend проверяет admin session, target account и fixed catalog; confirmation/reason mandatory.
 **Tests:** account IDOR, masked fields, non-RUB/manipulated plan/price/days/GB, pending edit/apply race, applied edit denial, duplicate reference and confirmation.
 
-**Implemented (2026-08-27), implementation-complete / pending independent
-review; NOT deployed to production:** authenticated primary-admin HTTP surface
+**Production-deployed (2026-08-27) after independent review (no fix needed --
+this endpoint group reviewed clean, 3 non-blocking P3 notes only, see below):**
+authenticated primary-admin HTTP surface
 (`src/routes/admin_payments.py` + `admin_support.py`, registered in
 `src/server.py`) over the already-deployed PH5-09/10 `ManualPaymentStore`
 verbatim -- no payment logic in routes: `GET /admin/manual-payment-catalog`
@@ -1725,8 +1770,23 @@ to MANUAL_REVIEW. Targeted tests: `tests/test_admin_operational_admin.py`
 (22 checks incl. exact DL-040 price table, manipulated price/duration/product/
 account rejection, duplicate-submit convergence, edit/cancel/apply/immutability,
 drift→MANUAL_REVIEW→resolve, package grant, DL-054 reuse 409, auth matrix,
-no raw secrets in list/detail/timeline payloads). Production untouched this
-session (HEAD verified unchanged); deploy is application-code-only.
+no raw secrets in list/detail/timeline payloads). Independent review confirmed:
+no second billing/payment engine (routes are auth/validation/orchestration
+only over the existing PH5-09/10/PH5-02/03 stores); child-sync mapping in the
+apply route (`_drive_child_sync_once`) is a byte-for-byte structural copy of
+the already production-reviewed PH5-05 `stars.py::_sync_canonical_purchase_
+children` state mapping (`SYNCED` only on `aggregate_state=="IN_SYNC"`, never
+on PENDING/PARTIAL/0-children); DL-054 reuse enforced at the store layer with
+no route-level bypass; same-plan vs. other-plan correctly gated by
+`PLAN_SWITCH_REQUIRES_PH5_06`, never silently reinterpreted as a tariff
+change. Three non-blocking P3 notes (not fixed, tracked for the future
+PH7-11/compensation slice): `handle_manual_payment_sync`'s docstring implies
+it can retry a `MANUAL_REVIEW` job, but `pending_sync_jobs()` only ever
+returns `PENDING` (same inherited property as the already-deployed PH5-05
+driver, not a new defect); the sync-retry route has no UI button yet
+(backend-only in this slice); one route-level test accepts either
+`SYNCED`/`PENDING` as passing rather than forcing deterministic convergence.
+Deploy is application-code-only (no schema migration).
 
 ## [ ] PH7-11 — Immutable manual-payment mutation audit
 

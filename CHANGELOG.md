@@ -17,10 +17,13 @@
 
 ### Added
 
-- Operational admin completion over existing primitives (2026-08-27, `[~]`
-  implementation-complete / **pending independent review**, NOT deployed):
-  the account-centric admin panel becomes an actual operational tool without
-  any new domain engine. Manual external payments (PH7-10) are fully wired to
+- Operational admin completion over existing primitives (2026-08-27,
+  **independently reviewed, two real defects found and fixed
+  (`1854bb9`), production-deployed same day**; PH7-10 `[x]`, PH7-05/PH7-08
+  `[~]` -- Disable/Enable and the unified write-side audit remain future
+  scope, not this slice): the account-centric admin panel becomes an actual
+  operational tool without any new domain engine. Manual external payments
+  (PH7-10) are fully wired to
   the already-deployed PH5-09/10 store through new primary-admin routes:
   a server-provided RUB-only catalog endpoint (fixed DL-040 prices are the
   only purchasable facts), a server preview computing same-plan purchasability,
@@ -52,12 +55,51 @@
   every mutation: admin session + CSRF, sealed primary-admin capability,
   bounded bodies/strings/integers, IDOR-safe 404s, no trust in any client
   price/plan/account field, no generic delete route (test-asserted).
-  Targeted tests `tests/test_admin_operational_admin.py` (22) cover the auth
-  matrix, exact catalog prices, tamper rejections, duplicate/replay
-  convergence, immutability after apply, drift→MANUAL_REVIEW→resolve, package
-  grant, forever-reserved references (DL-054), compromise rotation and queue
-  surfacing; browser CSP/XSS gate extended to the new tabs. Production was not
-  touched in this session; deploy will be application-code-only.
+  Targeted tests `tests/test_admin_operational_admin.py` (24 after review's
+  additions) cover the auth matrix, exact catalog prices, tamper rejections,
+  duplicate/replay convergence, immutability after apply,
+  drift→MANUAL_REVIEW→resolve, package grant, forever-reserved references
+  (DL-054), compromise rotation and queue surfacing; browser CSP/XSS gate
+  extended to the new tabs.
+
+  **Independent review (2026-08-27) found and fixed two real defects before
+  deploy, everything else (manual payments/child-sync mapping vs. the PH5-05
+  precedent, ownership rebind CAS/COMPROMISE rotation, credential boundary,
+  read-models, dashboard queues, HTTP exception mapping, frontend security)
+  reviewed clean:**
+  - **P0 fixed** — `src/routes/admin_devices.py`: the route-level
+    `_existing_slot_op` guard matched the latest lifecycle op of a kind by
+    `slot_number` alone instead of the current generation's
+    `old_child_intent_id` (the underlying `ChildLifecycleStore._prepare`
+    primitive was already correctly scoped). This let a REVOKE issued after
+    an earlier generation on the same slot had already been revoked
+    false-converge on that stale REVOKE row (`converged: true`/200) without
+    ever touching the *current* generation — a false confirmation that an
+    active device had been revoked — and separately made REBIND permanently
+    refuse any second rebind of the same slot after the first one ever
+    completed. Fixed by scoping the guard to the current intent; regression
+    added for both scenarios.
+  - **P2 fixed** — `src/admin_audit_timeline.py`: 7 of 8 SQL sections in
+    `account_timeline()` had no exception guard (only manual payments did),
+    so one anomalous evidence row could take down the whole account-detail
+    page (not just the Audit tab), since `account_detail()` calls it
+    unconditionally. Every section now degrades independently; regression
+    added simulating a corrupted source.
+
+  **Production deploy (2026-08-27):** fresh encrypted backup create/restore
+  PASS; preflight `quick_check=ok`, 0 FK violations, cardinalities unchanged
+  (accounts=18, subscriptions=18, manual payments=0, ownership rebinds=0);
+  pushed reviewed HEAD `1854bb9` to `origin/main`; `git pull --ff-only` on
+  production; `mgboost-panel` restart only (no schema migration in this
+  slice); post-deploy invariants identical, zero errors in the panel journal,
+  all 4 services active; unauthenticated `/admin/accounts`/`/admin/dashboard`
+  still 401, bogus legacy `/sub` still 404, all 6 new/changed admin JS
+  modules load 200; read-only direct-call verification against 5 real
+  production accounts confirmed `account_detail`/`account_timeline`/
+  `dashboard_summary` run without error and that `account_timeline` (unlike
+  `account_detail`'s intentionally-technical payload) carries zero
+  `mgc_`/`sha256:`/`hmac-sha256:`/`Bearer ` markers. No real manual payment,
+  device mutation, ownership rebind or credential rotation was created.
 - PH5-09 manual external-payment record + PH5-10 same-parent renewal
   (2026-08-27, `[x]`, independently reviewed and **production-deployed**):
   additive migration `ph5_09_manual_payment_v1`

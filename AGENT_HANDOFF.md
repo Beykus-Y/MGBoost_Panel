@@ -1,4 +1,227 @@
-# AGENT_HANDOFF — Operational admin completion implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / no deploy this slice
+# AGENT_HANDOFF — Operational admin completion independently reviewed, two real defects fixed, production-deployed; PH7-10 `[x]`, PH7-05/PH7-08 stay `[~]` (Disable/Enable + unified write-side audit remain future scope)
+
+Updated: 2026-08-27 (independent review session, following directly from the
+implementation session recorded below at checkpoint `a68e265`). **This top
+section supersedes everything below.** Owner instruction: independently
+review `a68e265` against `origin/main`/production (`9d6ef28`), fix only real
+findings, add regression coverage, then decide on production rollout -- do
+not start any new phase afterward.
+
+## What this session did
+
+Read `AGENT_HANDOFF.md`/`ROADMAP.md`/`CHANGELOG.md` (PH7-01..12, DL-048..054,
+OPD-39) before touching anything; confirmed local HEAD `a68e265` was one
+commit ahead of `origin/main`/production (`9d6ef28`), working tree clean,
+production still read-only at `9d6ef28` with only the known untracked
+`extra_configs.json`. Reviewed the full `9d6ef28..a68e265` diff (21 files,
++3663/-20) across four parallel independent passes (manual payments +
+child-sync mapping; device lifecycle + the REBIND-guard hotspot GLM itself
+flagged; ownership rebind + credential boundary + audit-timeline scrubber;
+read-models + dashboard + frontend + authz), each cross-checked against the
+relevant already-production-deployed precedent (PH5-05 Stars state mapping,
+PH3-05 lifecycle primitives, OPD-39/DL-041 policy, DL-040 RUB catalog,
+DL-048 technical-identifier depth).
+
+**Verdict: APPROVED WITH FIXES.** Two real, independently-verified-by-reading-
+the-code (not just trusting a green test) defects, both fixed with regression
+coverage before deploy; everything else reviewed clean:
+
+- **P0** — `src/routes/admin_devices.py`: the route-level `_existing_slot_op`
+  guard matched the latest lifecycle op of a kind by `slot_number` alone,
+  independent of which generation/intent it was recorded against, while the
+  underlying `ChildLifecycleStore._prepare` primitive was already correctly
+  scoped by `old_child_intent_id` (confirmed by reading `_prepare` directly,
+  `src/child_lifecycle.py:99-111`). Consequences, both empirically reproduced
+  before fixing: (1) REVOKE on a slot's current generation, issued after an
+  earlier generation on the same slot had already been revoked, matched the
+  OLD generation's APPLIED REVOKE row and returned `converged: true`/HTTP 200
+  without ever touching the current (possibly compromised) generation — a
+  false confirmation that an active device had been revoked; (2) REBIND
+  permanently refused any second rebind of the same slot after the first one
+  ever completed, with no recovery path other than a direct DB write — this
+  contradicts DL-049's own "replacement flow" scoping (nothing in the policy
+  limits Rebind to once per slot's lifetime) and was independently determined
+  to be a scoping bug, not a deliberate product ambiguity requiring an owner
+  STOP. Fixed by scoping `_existing_slot_op` to the current intent's
+  `old_child_intent_id`, matching the primitive's own idempotency scope; true
+  concurrent double-click safety is unaffected (it was always provided by
+  `_prepare`'s own idempotency-key-hash dedup, already covered by
+  `test_repeated_rebind_request_is_idempotent_exactly_one_x_plus_1` in
+  `tests/test_child_lifecycle.py`, unrelated to this route-level guard).
+- **P2** — `src/admin_audit_timeline.py`: 7 of 8 SQL sections in
+  `account_timeline()` had no exception guard (only manual payments did), so
+  a single anomalous evidence row anywhere would raise out of
+  `account_timeline()` — called unconditionally by `account_detail()` — and
+  take down the *whole account detail page* (Overview/Devices/everything),
+  not just the Audit tab. Fixed with a shared `_rows()` helper so every
+  section degrades independently.
+
+Everything else reviewed clean, including GLM's own review-hotspot list:
+child-sync mapping in the payments apply route (`_drive_child_sync_once`) is
+a byte-for-byte structural copy of the already-production-reviewed PH5-05
+`stars.py::_sync_canonical_purchase_children` state mapping; the timeline
+secret scrubber is not a naive deny-list-over-`**dict` (every SQL query is an
+explicit column allow-list, the JSON-flatten path additionally type-filters
+to bounded scalars) and leaked no live secret against 5 real production
+accounts post-deploy; `_device_action_availability` is confirmed presentation-
+only everywhere it's used (mutation routes independently re-validate
+lifecycle state server-side); HTTP 409 mapping only reclassifies *within*
+already-typed store exceptions, never an unexpected bare exception; ownership
+rebind CAS/mandatory-reason/COMPROMISE-triggers-real-credential-rotation all
+verified by reading the code, not just the docstring; Disable/Enable's
+absence was independently re-confirmed as a genuine missing backend
+primitive (grepped every writer in the schema/lifecycle modules), not an
+oversight — no new lifecycle was invented. Three non-blocking P3 notes on the
+payments side (`handle_manual_payment_sync`'s docstring vs. its actual
+PENDING-only scope, the sync-retry route having no UI button yet, one route
+test accepting SYNCED-or-PENDING instead of forcing a deterministic
+convergence) are recorded in `ROADMAP.md`'s PH7-10 entry for the future
+PH7-11/compensation slice, not fixed here — none are blockers.
+
+**Tests:** targeted `tests/test_admin_operational_admin.py` 24 passed (was
+22, +2 regression tests for the P0/P2 fixes, one existing test corrected
+because it had encoded the P0 bug's behavior as expected). Browser E2E
+(Playwright venv) 2 passed. Full regression: **1251 passed, 0 failed, 0
+skipped** (own count, independently reproduced — GLM's claimed baseline of
+1249 verified correct before adding the 2 new tests). No schema/migration in
+this diff, independently confirmed (`git diff --stat 9d6ef28..a68e265 --
+'*schema*' '*migration*'` empty, no `CREATE TABLE`/migration registration in
+any new route file) — deploy is application-code-only, same class as prior
+UI slices.
+
+**Production rollout (2026-08-27), following this review's own approval
+gates:** fresh encrypted backup create/restore `PASS`
+(`/root/mgboost-preop-admin-backup`); preflight confirmed HEAD `9d6ef28`,
+only the known untracked `extra_configs.json` drift, `quick_check=ok`, 0 FK
+violations, cardinalities `18/18/0` (accounts/subscriptions/manual payments),
+`mgboost_ownership_rebind_operations=0`, all 4 services active; pushed
+reviewed HEAD (`1854bb9`) to `origin/main`; `git pull --ff-only` on
+production to `1854bb9`; `systemctl restart mgboost-panel` only (no
+migration to self-apply, confirmed above); post-deploy: `quick_check=ok`, 0
+FK violations, cardinalities unchanged (`accounts=18, subscriptions=18,
+manual_payment_records=0, child_lifecycle_operations=20` [pre-existing
+PH3-05 canary rows, not created by this deploy], `ownership_rebind_
+operations=0, stars_invoices=2`); zero errors/tracebacks in the
+`mgboost-panel` journal since restart; safe HTTP smoke unchanged
+(`/admin/accounts`/`/admin/dashboard` 401, bogus legacy `/sub` 404); all 6
+new/changed admin JS modules (`device_ops.js`/`modals.js`/`payments.js`/
+`timeline.js`/`accounts.js`/`core.js`) and `index.html` load 200; read-only
+direct-call verification (`Database()` + `admin_read_models.account_detail`
++ `admin_audit_timeline.account_timeline` + `admin_read_models.
+dashboard_summary`, no HTTP session forged, matching this project's own
+established read-only-verification precedent) against 5 real production
+accounts ran without exception and confirmed `account_timeline` — unlike
+`account_detail`'s intentionally-technical Technical-tab payload — carries
+zero `mgc_`/`sha256:`/`hmac-sha256:`/`Bearer ` markers. All four services
+active throughout. **No real manual payment, device mutation, ownership
+rebind or credential rotation was created at any point** — every production
+touch this session was read-only until the reviewed-and-fixed code deploy
+itself, and the deploy made zero data-row changes (all cardinalities
+identical before/after). Final HEAD: local/origin/production all `1854bb9`.
+
+**Roadmap status set by this session (never inflating partial acceptance to
+`[x]`):** PH7-10 (manual external-payment admin UI) → `[x]` — its own
+Accept/tests bullets are all genuinely covered (server catalog/price
+authority, same-plan-only enforcement, IDOR-safe preview/create, IDOR-safe
+edit/cancel/apply, DL-054 reuse rejection, auth matrix, no raw secrets).
+PH7-05 (device slot administration) stays `[~]` — Revoke/Free/Rebind are now
+production-deployed and reviewed-correct, but Disable/Enable/add/remove/
+restore-baseline remain unbuilt, so the task's own full Ops list is not yet
+satisfied. PH7-08 (immutable administrative audit trail) stays `[~]` — the
+read-side aggregate is production-deployed and reviewed-correct, but the
+complete write-side emit-coverage goal (a correlated unified audit framework
+covering every mutation kind, PH7-11) remains explicitly `[ ]` and out of
+this session's scope.
+
+## Agent comparison evidence (GLM-5.3-Flash as implementation agent, second
+data point)
+
+Requested by the owner as a second controlled comparison of GLM-5.3-Flash
+against Claude's own implementation quality, using this independent review as
+the evaluation instrument (not inflated, not deflated):
+
+- **Substantive defects found:** 2 (both fixed). Maximum severity: **P0**
+  (false-positive revoke confirmation — an operationally serious defect, a
+  destructive-action UI reporting success without performing the destructive
+  action on the intended target, though not itself a data-loss or auth-bypass
+  bug and confined to one narrow sequence: revoke → rebind → revoke again on
+  the same slot).
+- **Architecture defects:** 0. No second billing/payment/entitlement/audit
+  engine was introduced anywhere in 21 files and ~3700 new lines; every
+  mutation route is a thin auth/validation/orchestration layer over
+  already-production-reviewed primitives (PH5-09/10, PH5-02/03/04, PH3-05,
+  PH3-08, OPD-39/DL-041, PH4-04). This is the harder property to get right at
+  this scope and GLM got it right throughout.
+- **Security defects:** 0 exploitable. Authorization (session+CSRF+sealed
+  primary-admin capability), IDOR-safety, bounded inputs, and the secret
+  boundary (raw bearer/HWID/UUID verifier never reaching a client-facing
+  payload outside Technical) were all independently verified correct across
+  every new route and the audit-timeline scrubber.
+- **Durability/lifecycle defects:** 1 (the P0 above) plus 1 minor robustness
+  gap (the P2 timeline resilience issue — not a lifecycle-correctness bug,
+  but availability of a diagnostic surface).
+- **Frontend defects:** 0. CSP/no-inline/event-delegation discipline held;
+  no client-side entitlement/price computation; no raw secret rendering.
+- **Production-relevant lines/files actually changed by this review:** 4
+  files, 195 insertions / 28 deletions (`src/admin_audit_timeline.py`,
+  `src/routes/admin_devices.py`, plus test infrastructure) — roughly 5% of
+  the reviewed diff's size, concentrated in exactly the two real findings.
+- **GLM's own tests were insufficient exactly where the P0 lived:** its own
+  rebind test (`test_device_rebind_requires_confirmation_creates_new_
+  generation`) asserted a *second* rebind attempt returns 409 — i.e. it wrote
+  a test that encoded the bug's own behavior as the expected, intended
+  outcome, rather than testing the actual product requirement. No test
+  exercised "revoke → rebind → revoke the new generation," the exact
+  sequence that exposed the false-convergence defect.
+- **GLM's own listed review hotspots were substantially accurate self-
+  assessment:** it correctly flagged the REBIND guard as strict/worth a second
+  look (right instinct, wrong self-diagnosis — it described the behavior as
+  intentional replay protection rather than recognizing the slot-vs-intent
+  scoping bug); its child-sync-mapping, `_device_action_availability`,
+  timeline-scrubber, HTTP-409-string-mapping and `/tmp` hotspots were all
+  independently re-examined and found to be correctly implemented, i.e. GLM
+  correctly identified where the real risk in this diff was concentrated even
+  where it didn't itself find every defect there.
+- **Is `a68e265` a quality independent implementation?** Yes, with one
+  qualification: architecture, security boundary, and 5 of 6 reviewed domains
+  were correct and required zero changes; the one P0 found is a real,
+  narrow-scope idempotency-guard scoping error of exactly the kind an
+  independent review exists to catch, not a sign of broad unreliability.
+  Combined with the first PH5-09/10 review's finding (no code fix needed
+  there, only a genuine product-ambiguity STOP resolved as DL-054), GLM's
+  two-session track record on this codebase is: strong architectural
+  discipline and honest scope boundaries (Disable/Enable, PH7-11, PH5-06 all
+  correctly left unbuilt/`[ ]` both times), with narrow, findable-by-review
+  correctness gaps at the edges of destructive-operation idempotency.
+- **Would this reviewer trust GLM-5.3-Flash with the next large
+  implementation slice, gated on mandatory independent review before any
+  critical production deploy?** Yes — the pattern across two sessions is
+  consistent enough (sound architecture, honest scoping, isolated
+  destructive-action-idempotency defects) that the standing "implement, then
+  independently review, then deploy" workflow this project already uses is
+  the correct match for this agent's demonstrated risk profile, not a reason
+  to change how implementation work is assigned.
+
+## Exact next step
+
+PH7-10 is closed `[x]`. PH7-05/PH7-08 remain `[~]` — genuinely reviewed and
+production-correct for the slice each shipped, but each has explicitly
+out-of-scope remaining work (Disable/Enable + add/remove/restore-baseline for
+PH7-05; the unified write-side audit framework, PH7-11, for PH7-08). Do not
+start PH5-06/07/08, live Stars purchase flow, promo codes/grants/trial,
+PH6-05..09, WL enforcement, PH7-01 expiry ops, a new Disable/Enable backend
+lifecycle, PH4-06, or the reseller system without a fresh explicit owner
+decision — none of this session's findings create a new blocker on any of
+them, and none of them were touched. **Recommended next action:** owner
+decides between PH7-01 (expiry operations — the last major Phase 7 gap
+against real day-to-day support work) and starting the PH5-06 upgrade/
+downgrade design session (currently the single biggest "explicitly blocked"
+message users of this admin panel will see, per PH7-10's own
+`PLAN_SWITCH_REQUIRES_PH5_06` preview block).
+
+---
+
+# PRIOR HANDOFF — Operational admin completion implemented and fully tested locally (checkpoint commit, pending independent review); production NOT touched / no deploy this slice
 
 Updated: 2026-08-27 (new implementation session). **This top section
 supersedes everything below.** Owner instruction: complete the operational
