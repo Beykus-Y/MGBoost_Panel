@@ -155,26 +155,37 @@ def _preflight(db: Database, hmac_key: str) -> dict:
             f"a merge already exists for the absorbed account (status={existing_merge['status']!r})"
         )
 
-    non_terminal_children = conn.execute(
-        "SELECT id,slot_generation_id,child_username FROM mgboost_child_user_intents "
-        "WHERE account_id=? AND (desired_state!='REVOKED' OR observed_state NOT IN ('REVOKED','NOT_CREATED'))",
+    # Matched by keyed genesis-HWID proof, not by lifecycle state, so this
+    # preflight is safe to re-run after a partially-completed prior attempt
+    # (e.g. REVOKE already APPLIED, FREE not yet reached): the genesis
+    # child intent's row still exists and still matches, regardless of its
+    # current desired/observed state.
+    all_children = conn.execute(
+        "SELECT ci.id,ci.child_username,g.hwid_verifier FROM mgboost_child_user_intents ci "
+        "JOIN mgboost_device_slot_generations g ON g.id=ci.slot_generation_id "
+        "WHERE ci.account_id=?",
         (EXPECTED_ABSORBED_ACCOUNT_ID,),
     ).fetchall()
-    if len(non_terminal_children) != 1:
+    genesis_children = [
+        row for row in all_children
+        if is_genesis_hwid_verifier(EXPECTED_ABSORBED_ACCOUNT_ID, row["hwid_verifier"], hmac_key)
+    ]
+    if len(genesis_children) != 1:
         raise PreflightFailed(
-            f"expected exactly one non-terminal child intent on the absorbed account, found "
-            f"{len(non_terminal_children)} -- refusing to guess which one is the genesis placeholder"
+            f"expected exactly one genesis-HWID child intent on the absorbed account, found "
+            f"{len(genesis_children)} -- refusing to guess which one is the genesis placeholder"
         )
-    child = non_terminal_children[0]
+    child = genesis_children[0]
 
-    generation = conn.execute(
-        "SELECT hwid_verifier FROM mgboost_device_slot_generations WHERE id=?",
-        (child["slot_generation_id"],),
-    ).fetchone()
-    if not is_genesis_hwid_verifier(EXPECTED_ABSORBED_ACCOUNT_ID, generation["hwid_verifier"], hmac_key):
+    non_genesis_non_terminal = conn.execute(
+        "SELECT COUNT(*) FROM mgboost_child_user_intents WHERE account_id=? AND id!=? "
+        "AND (desired_state!='REVOKED' OR observed_state NOT IN ('REVOKED','NOT_CREATED'))",
+        (EXPECTED_ABSORBED_ACCOUNT_ID, child["id"]),
+    ).fetchone()[0]
+    if non_genesis_non_terminal:
         raise PreflightFailed(
-            "the absorbed account's only non-terminal child is NOT provably the synthetic "
-            "genesis placeholder -- refusing to revoke what may be a real customer device"
+            "absorbed account has another non-terminal, non-genesis child intent -- "
+            "refusing to proceed while a possibly-real device is still live"
         )
 
     sub = conn.execute(
