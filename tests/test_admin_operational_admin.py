@@ -24,6 +24,7 @@ from tests._ops_helpers import (
     build_topology_account,
     capability,
     db,  # pytest fixture
+    finish_child_provisioning,
     make_handler,
     paid_wl_subscription,
 )
@@ -419,11 +420,106 @@ def test_device_rebind_requires_confirmation_creates_new_generation(db):
     usernames = [row["child_username"] for row in lineage]
     assert len(set(usernames)) == len(usernames)
 
+    # A REBIND only durably queues the successor generation's provisioning
+    # (`CHILD_USER_ENSURE` outbox entry); it doesn't synchronously create it
+    # in Marzban. A second REBIND's own internal revoke step needs a real
+    # remote child, so drain that outbox entry exactly like the live
+    # `mgboost-child-worker` would before acting on the successor generation.
+    gen2_id = next(row["id"] for row in lineage
+                   if row["generation"] == old_generation_row["generation"] + 1)
+    finish_child_provisioning(db, db._fake_remote, gen2_id)
+
+    # A legitimate SECOND rebind of the same slot (different device, months
+    # later) must succeed -- the guard is scoped to the current generation's
+    # intent, not the slot forever. Regression for the P0 found in review:
+    # `_existing_slot_op` used to match by `slot_number` alone, so it kept
+    # matching the FIRST rebind's own APPLIED row and permanently refused any
+    # further rebind of this slot.
     done_again = make_handler(db, payload={"reason": "another device",
                                            "new_device_hwid": "raw-other-hwid-x",
                                            "confirm": True})
     AD.handle_device_rebind(done_again, str(account["id"]), "1")
-    assert done_again.status == 409
+    assert done_again.status == 200 and done_again.json()["state"] == "APPLIED"
+    assert done_again.json()["current_generation"] == old_generation_row["generation"] + 2
+
+    lineage2 = db._conn.execute(
+        "SELECT c.child_username,g.generation FROM mgboost_child_user_intents c "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+        "WHERE g.slot_id=(SELECT id FROM mgboost_device_slots WHERE account_id=? "
+        "AND slot_number=?) ORDER BY g.generation", (account["id"], 1)).fetchall()
+    assert len({row["child_username"] for row in lineage2}) == len(lineage2) == 3
+    # True concurrent double-click safety for REBIND (two requests racing to
+    # `prepare_rebind` against the SAME current generation before either
+    # commits, deduping via the store's own idempotency-key hash) is already
+    # covered at the primitive level by
+    # `test_repeated_rebind_request_is_idempotent_exactly_one_x_plus_1` in
+    # `tests/test_child_lifecycle.py`; this route-level fix only changes
+    # which *generation* a fresh request targets (see the assertion above),
+    # not that underlying dedup.
+
+
+def test_device_revoke_after_rebind_targets_current_generation_not_stale_one(db):
+    """Regression for the P0 found in independent review of a68e265:
+    `_existing_slot_op` matched the latest lifecycle op of a kind by
+    `slot_number` alone, independent of which generation/intent it was
+    recorded against. Revoke gen1 -> rebind (gen1->gen2) -> revoke again
+    (intending to revoke gen2) used to find the OLD gen1 REVOKE row (still
+    the most recently updated REVOKE op for that slot_number) and report
+    `converged: true` with HTTP 200 without ever touching gen2 -- a false
+    confirmation that a currently-active, possibly-compromised device had
+    been revoked when it had not."""
+    account, children = build_topology_account(db, tag="devrevrb", n_children=1)
+    gen1_intent_id = children[0]["prepared"]["child_intent_id"]
+
+    revoke1 = make_handler(db, payload={"reason": "gen1 compromised"})
+    AD.handle_device_revoke(revoke1, str(account["id"]), "1")
+    assert revoke1.status == 200 and revoke1.json()["state"] == "APPLIED"
+
+    rebind = make_handler(db, payload={"reason": "replacement device",
+                                       "new_device_hwid": "raw-gen2-hwid",
+                                       "confirm": True})
+    AD.handle_device_rebind(rebind, str(account["id"]), "1")
+    assert rebind.status == 200 and rebind.json()["state"] == "APPLIED"
+
+    gen2_intent = db._conn.execute(
+        "SELECT c.id,c.desired_state,c.observed_state FROM mgboost_child_user_intents c "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+        "WHERE g.slot_id=(SELECT id FROM mgboost_device_slots WHERE account_id=? "
+        "AND slot_number=?) ORDER BY g.generation DESC LIMIT 1",
+        (account["id"], 1)).fetchone()
+    assert gen2_intent["id"] != gen1_intent_id
+    assert gen2_intent["desired_state"] != "REVOKED"
+
+    # Drain gen2's queued `CHILD_USER_ENSURE` outbox entry (simulating the
+    # live child-worker) so it exists remotely with a real UUID before
+    # exercising a revoke against it -- REBIND only durably queues successor
+    # provisioning, it does not create it synchronously.
+    finish_child_provisioning(db, db._fake_remote, gen2_intent["id"])
+
+    revoke2 = make_handler(db, payload={"reason": "gen2 also compromised"})
+    AD.handle_device_revoke(revoke2, str(account["id"]), "1")
+    assert revoke2.status == 200
+    body = revoke2.json()
+    # Must be a REAL revoke of gen2, never a false `converged` off gen1's
+    # stale REVOKE row.
+    assert body["state"] == "APPLIED"
+    assert body.get("converged") is not True
+
+    gen2_after = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents "
+        "WHERE id=?", (gen2_intent["id"],)).fetchone()
+    assert gen2_after["desired_state"] == "REVOKED"
+
+    gen1_after = db._conn.execute(
+        "SELECT desired_state FROM mgboost_child_user_intents WHERE id=?",
+        (gen1_intent_id,)).fetchone()
+    assert gen1_after["desired_state"] == "REVOKED"
+
+    # Double-click of the SECOND revoke must converge idempotently against
+    # gen2's own REVOKE, not gen1's.
+    revoke2_again = make_handler(db, payload={"reason": "gen2 also compromised"})
+    AD.handle_device_revoke(revoke2_again, str(account["id"]), "1")
+    assert revoke2_again.status == 200 and revoke2_again.json().get("converged") is True
 
 
 def test_no_generic_delete_exists_in_admin_routes(db):
@@ -561,3 +657,27 @@ def test_timeline_aggregator_groups_sources_and_scrubs_secrets(db):
     blob = json.dumps(timeline)
     for banned in ("mgc_", "sha256:", "hmac-sha256:", HWID_KEY, "Bearer ", "raw-hwid"):
         assert banned not in blob
+
+
+def test_timeline_aggregator_survives_one_source_being_unreadable(db):
+    """Regression for the P2 found in independent review of a68e265:
+    7 of 8 SQL sections in `account_timeline` had no exception guard, so an
+    anomaly in a single evidence table (e.g. a future schema drift or bad
+    manual row) raised out of `account_timeline()` -- which `account_detail()`
+    calls unconditionally -- and took down the WHOLE account detail page
+    (Overview/Devices/everything), not just the Audit tab. Only the
+    manual-payments section had a try/except. Every section must now degrade
+    independently."""
+    from src.admin_audit_timeline import account_timeline
+    account, _ = build_topology_account(db, tag="tlbad")
+    _create(db, account["id"], ref="tlbad-ref-1", key="timeline-badkey-0000001")
+
+    # Break exactly one source's query (payment_records) while every other
+    # source stays intact, simulating an unexpected schema/data anomaly.
+    db._conn.execute("DROP TABLE mgboost_payment_records")
+
+    timeline = account_timeline(db, account["id"])  # must not raise
+    sources = {entry["source"] for entry in timeline["entries"]}
+    assert "PAYMENT_RECORD" not in sources
+    # Other sources (e.g. the manual payment created above) still surface.
+    assert "MANUAL_PAYMENT" in sources

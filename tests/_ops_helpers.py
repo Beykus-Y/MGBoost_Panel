@@ -140,6 +140,38 @@ def paid_wl_subscription(db, account_id, *, plan="WL", days=30, tg_suffix=1):
     return db.stars_purchases.apply_paid_invoice(invoice["id"], now=int(_time.time()))
 
 
+def finish_child_provisioning(db, remote, child_intent_id, *, worker_id="fixture-worker", now=None):
+    """Simulate the real `mgboost-child-worker` draining a pending
+    `CHILD_USER_ENSURE` outbox entry to completion -- the same claim/dispatch
+    /acknowledge sequence `build_topology_account` runs inline for a fresh
+    slot's first generation. A slot generation produced by admin REBIND is
+    only *prepared* (durably queued) by `process_rebind`, not synchronously
+    provisioned; tests that need to act on that successor generation as if it
+    were actually live in Marzban (e.g. revoking it) must drain its outbox
+    entry exactly like the real worker would before doing so.
+
+    `now` defaults to the real wall clock, matching the admin device routes
+    (`src/routes/admin_devices.py`) which stamp the outbox row's
+    `next_attempt_at` with real `time.time()`, not a small fixture tick --
+    a small `now` here would make the row look not-yet-claimable."""
+    import time as _time
+
+    from src.child_contract import derive_operation_id
+
+    if now is None:
+        now = int(_time.time())
+    intent = db._conn.execute(
+        "SELECT child_username FROM mgboost_child_user_intents WHERE id=?",
+        (child_intent_id,),
+    ).fetchone()
+    operation_id = derive_operation_id(intent["child_username"])
+    claim = db.child_provisioning.claim(operation_id, worker_id=worker_id, now=now, lease_seconds=60)
+    created = BrokerOperations(remote).dispatch("child.user.ensure", claim["payload"])
+    child_uuid = created.pop("uuid")
+    db.child_provisioning.acknowledge(operation_id, worker_id=worker_id, outcome=created["outcome"],
+                                      child_uuid=child_uuid, remote_result=created, now=now + 1)
+
+
 def build_topology_account(db, *, tag, n_children=1, plan="WL", days=30):
     """Account + paid subscription + provisioned children via the real
     PH3-03 chain (fixture-worker) — mirrors tests/test_manual_renewal_ph510."""

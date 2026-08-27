@@ -50,18 +50,23 @@ def _target_or_error(handler, db, account_id: int, slot_number: int):
     return {"slot_row": generation, "intent": dict(intent) if intent else None}
 
 
-def _existing_slot_op(db, *, account_id: int, slot_number: int, kind: str):
-    """Latest lifecycle op of this kind ever recorded against this SLOT
-    (independent of which generation/intent is currently latest) -- so an
-    already-applied operation can never be silently superseded by targeting
-    the successor generation."""
+def _existing_slot_op(db, *, account_id: int, intent_id: int, kind: str):
+    """Latest lifecycle op of this kind ever recorded against this exact
+    child intent/generation. Scoped by `old_child_intent_id` (not just the
+    slot) so an operation already applied against a superseded generation can
+    never be mistaken for convergence against the slot's *current* generation
+    -- matching `ChildLifecycleStore._prepare`'s own per-intent idempotency
+    scope. A slot-wide match here would let e.g. a REVOKE against the
+    successor generation silently report `converged: true` off a stale
+    REVOKE recorded against the predecessor generation instead of ever
+    revoking the current one, and would permanently refuse any REBIND of the
+    same slot after its first one ever completed."""
     row = db._conn.execute(
         "SELECT o.operation_id,o.state,o.last_error_class,o.reason "
         "FROM mgboost_child_lifecycle_operations o "
-        "JOIN mgboost_device_slots s ON s.id=o.slot_id "
-        "WHERE o.account_id=? AND s.slot_number=? AND o.operation_kind=? "
+        "WHERE o.account_id=? AND o.old_child_intent_id=? AND o.operation_kind=? "
         "ORDER BY o.updated_at DESC,o.id DESC LIMIT 1",
-        (int(account_id), int(slot_number), kind),
+        (int(account_id), int(intent_id), kind),
     ).fetchone()
     return dict(row) if row else None
 
@@ -95,7 +100,7 @@ def handle_device_revoke(handler, account_id, slot_number):
         error_response(handler, 409, "This slot has no provisioned child to revoke")
         return
     existing = _existing_slot_op(db, account_id=account["id"],
-                                 slot_number=int(slot_number), kind="REVOKE")
+                                 intent_id=intent["id"], kind="REVOKE")
     if existing and existing["state"] == "APPLIED":
         json_response(handler, 200, {"operation": existing, "converged": True})
         return
@@ -170,7 +175,7 @@ def handle_device_free(handler, account_id, slot_number):
                        "(hard PH3-05 ordering guarantee)")
         return
     existing = _existing_slot_op(db, account_id=account["id"],
-                                 slot_number=int(slot_number), kind="FREE")
+                                 intent_id=intent["id"], kind="FREE")
     if existing and existing["state"] == "APPLIED":
         json_response(handler, 200, {"operation": existing, "converged": True})
         return
@@ -246,7 +251,7 @@ def handle_device_rebind(handler, account_id, slot_number):
                        "provisions a new one; the old UUID never resurrects")
         return
     existing = _existing_slot_op(db, account_id=account["id"],
-                                 slot_number=int(slot_number), kind="REBIND")
+                                 intent_id=intent["id"], kind="REBIND")
     if existing:
         if existing["state"] == "APPLIED":
             error_response(handler, 409,

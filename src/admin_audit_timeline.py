@@ -73,13 +73,23 @@ def account_timeline(
 
     conn = db._conn
 
+    def _rows(sql, params):
+        # A malformed/unexpected row in one source must degrade that source
+        # only, never take down the whole account detail page (this powers
+        # account_detail(), not just the Audit tab) -- same discipline as the
+        # manual-payments section below.
+        try:
+            return conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
     # PH3-09 canonical entitlement mutations (incl. renewals/packages/admin).
-    for row in conn.execute(
+    for row in _rows(
         "SELECT created_at,operation,payment_channel,mutation_source,actor_type,"
         "actor_ref,reason,external_reference,before_json,after_json "
         "FROM mgboost_entitlement_mutations WHERE account_id=? "
         "ORDER BY created_at DESC,id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         detail = {
             "operation": row["operation"], "payment_channel": row["payment_channel"],
             "mutation_source": row["mutation_source"], "actor_type": row["actor_type"],
@@ -96,12 +106,12 @@ def account_timeline(
              f"Изменение entitlement · {row['mutation_source']}", detail)
 
     # Canonical payment records (provenance; covers Stars+external+grants).
-    for row in conn.execute(
+    for row in _rows(
         "SELECT created_at,payment_channel,record_status,amount_minor,currency,"
         "payment_method,external_reference,actor_type FROM mgboost_payment_records "
         "WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT ?",
         (account_id, limit_per_source),
-    ).fetchall():
+    ):
         amount = row["amount_minor"]
         label = row["currency"] and isinstance(amount, int) and f"{amount} {row['currency']}" or None
         emit(row["created_at"], "PAYMENT_RECORD", row["record_status"],
@@ -155,11 +165,11 @@ def account_timeline(
             emit(application.get("applied_at") if application else record.get("updated_at"),
                  "MANUAL_PAYMENT", "APPLIED", f"{label} · применён", detail)
 
-    for row in conn.execute(
+    for row in _rows(
         "SELECT e.created_at,e.edit_kind,e.reason,e.actor_ref,e.before_json,e.after_json "
         "FROM mgboost_manual_payment_edits e WHERE e.account_id=? "
         "ORDER BY e.created_at DESC,e.id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         before = _json_scalar_fields(row["before_json"])
         after = _json_scalar_fields(row["after_json"])
         changed = [
@@ -175,14 +185,14 @@ def account_timeline(
              })
 
     # Device revoke/free/rebind lifecycle operations.
-    for row in conn.execute(
+    for row in _rows(
         "SELECT o.updated_at,o.operation_kind,o.state,o.reason,o.attempts,"
         "o.last_error_class,g.slot_number FROM mgboost_child_lifecycle_operations o "
         "JOIN mgboost_child_user_intents c ON c.id=o.old_child_intent_id "
         "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
         "WHERE o.account_id=? ORDER BY o.updated_at DESC,o.id DESC LIMIT ?",
         (account_id, limit_per_source),
-    ).fetchall():
+    ):
         kind_ru = {"REVOKE": "Отзыв устройства", "FREE": "Освобождение слота",
                    "REBIND": "Перепривязка слота"}.get(row["operation_kind"], row["operation_kind"])
         emit(row["updated_at"], "DEVICE_LIFECYCLE", f"{row['operation_kind']}_{row['state']}",
@@ -193,11 +203,11 @@ def account_timeline(
              })
 
     # Migration binding events.
-    for row in conn.execute(
+    for row in _rows(
         "SELECT ev.created_at,ev.event_type,ev.from_state,ev.to_state,ev.safe_error_class,"
         "ev.reason FROM mgboost_migration_binding_events ev WHERE ev.account_id=? "
         "ORDER BY ev.created_at DESC,ev.id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         emit(row["created_at"], "MIGRATION_BINDING", row["event_type"],
              f"Миграция · {row['event_type']}", {
                  "from_state": row["from_state"], "to_state": row["to_state"],
@@ -205,11 +215,11 @@ def account_timeline(
              })
 
     # Legacy grace period events.
-    for row in conn.execute(
+    for row in _rows(
         "SELECT created_at,event_type,from_end_at,to_end_at,actor_ref,reason "
         "FROM mgboost_legacy_grace_events WHERE account_id=? "
         "ORDER BY created_at DESC,id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         emit(row["created_at"], "LEGACY_GRACE", row["event_type"],
              f"Grace-период · {row['event_type']}", {
                  "from_end_at": row["from_end_at"], "to_end_at": row["to_end_at"],
@@ -217,24 +227,24 @@ def account_timeline(
              })
 
     # Opaque subscription credential events (no verifier columns selected).
-    for row in conn.execute(
+    for row in _rows(
         "SELECT created_at,event_type,actor_ref,reason FROM "
         "mgboost_subscription_credential_events WHERE account_id=? "
         "ORDER BY created_at DESC,id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         emit(row["created_at"], "SUBSCRIPTION_CREDENTIAL", row["event_type"],
              f"Credential · {row['event_type']}", {
                  "actor_ref": row["actor_ref"], "reason": row["reason"],
              })
 
     # Telegram ownership rebind events.
-    for row in conn.execute(
+    for row in _rows(
         "SELECT ev.created_at,ev.event_type,ev.safe_error_class,o.mode,"
         "o.expected_old_telegram_id AS old_tg,o.new_telegram_id AS new_tg,o.reason "
         "FROM mgboost_ownership_rebind_events ev JOIN mgboost_ownership_rebind_operations o "
         "ON o.id=ev.rebind_operation_id WHERE ev.account_id=? "
         "ORDER BY ev.created_at DESC,ev.id DESC LIMIT ?", (account_id, limit_per_source),
-    ).fetchall():
+    ):
         emit(row["created_at"], "OWNERSHIP_REBIND", row["event_type"],
              f"Rebind владельца Telegram ({row['mode']}) · {row['event_type']}", {
                  "mode": row["mode"], "old_telegram_id": row["old_tg"],
