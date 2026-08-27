@@ -157,7 +157,11 @@ def _raw_legacy_request_seen(connection: sqlite3.Connection, account_id: int, *,
 
 
 ACTION_OK_MIGRATED = "OK_MIGRATED"
-ACTION_WAITING_FOR_REGISTRATION = "WAITING_FOR_REGISTRATION"
+# Device-migration semantics only: the account has no real-device migration
+# lineage yet (not a single `mgboost_migration_bindings` row), so it is
+# waiting for its first real device connection. Telegram ownership is NOT an
+# input to this state -- it is reported separately by `telegram_status()`.
+ACTION_WAITING_FIRST_DEVICE = "WAITING_FIRST_DEVICE"
 ACTION_CONTACT_USER = "CONTACT_USER"
 ACTION_MANUAL_REVIEW = "MANUAL_REVIEW"
 ACTION_COMPATIBILITY_BLOCK = "COMPATIBILITY_BLOCK"
@@ -169,7 +173,13 @@ CONTACT_USER_DAYS_REMAINING_THRESHOLD = 3
 def classify_action(snapshot: dict) -> str:
     """Pure decision over an already-assembled `account_grace_snapshot()`
     result -- no query, no mutation, trivially unit-testable. Order matters:
-    the most actionable/urgent category wins."""
+    the most actionable/urgent category wins. `OK_MIGRATED` means a real
+    device migration lineage exists at all (`MIGRATING`, `MIGRATED`,
+    `LEGACY_REVOKE_PENDING` or `LEGACY_REVOKED` -- the first connection
+    already happened and migration is proceeding normally); Telegram absence
+    never gates it and never produces its own pseudo migration state here --
+    AMBIGUOUS/CONTACT_USER below are the campaign's operational outreach
+    categories, not device-migration states."""
     migration_state = snapshot["migration_state"]
     if migration_state["ERROR_RECONCILE"] > 0:
         return ACTION_RECONCILE_REQUIRED
@@ -181,14 +191,14 @@ def classify_action(snapshot: dict) -> str:
         and snapshot["raw_legacy_request_seen_72h"]
     ):
         return ACTION_COMPATIBILITY_BLOCK
-    if snapshot["migrated_devices"] > 0 and snapshot["active_devices"] > 0:
+    if sum(migration_state.values()) > 0:
         return ACTION_OK_MIGRATED
     grace = snapshot["grace"]
     if grace is not None and grace["active"]:
         days_remaining = grace["seconds_remaining"] / 86400
         if days_remaining <= CONTACT_USER_DAYS_REMAINING_THRESHOLD and snapshot["telegram_status"] != "BOUND":
             return ACTION_CONTACT_USER
-    return ACTION_WAITING_FOR_REGISTRATION
+    return ACTION_WAITING_FIRST_DEVICE
 
 
 def account_grace_snapshot(db, account_id: int, *, now: int) -> dict:

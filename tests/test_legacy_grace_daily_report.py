@@ -12,7 +12,7 @@ from src.legacy_grace_observability import (
     ACTION_MANUAL_REVIEW,
     ACTION_OK_MIGRATED,
     ACTION_RECONCILE_REQUIRED,
-    ACTION_WAITING_FOR_REGISTRATION,
+    ACTION_WAITING_FIRST_DEVICE,
     account_grace_snapshot,
     classify_action,
     telegram_status,
@@ -102,15 +102,23 @@ def _snapshot_at(db, account_id, now):
     return account_grace_snapshot(db, account_id, now=now)
 
 
-def test_action_waiting_for_registration_default(db):
+def test_action_waiting_first_device_default_without_lineage(db):
+    """No real-device lineage yet => waiting for the first device connection.
+    This holds even when Telegram is bound -- ownership is reported by
+    `telegram_status` separately and never produces a migration action."""
     cap = _capability(db)
     result = _bootstrap(db, cap, "client064")
+    _tg_link(db, 1007, "client064")
+    bind_telegram_after_registration(db, legacy_username="client064", telegram_id=1007, actor="bot")
+    assert telegram_status(db, result["account_id"]) == "BOUND"
     start_grace_cohort(
         db, capability=cap, account_ids=[result["account_id"]], cohort_ref="PH4-05-ACTION-TEST",
         reason="test", cohort_start_at=2000,
     )
     snapshot = _snapshot_at(db, result["account_id"], 2000 + 86400)
-    assert classify_action(snapshot) == ACTION_WAITING_FOR_REGISTRATION
+    assert snapshot["migrated_devices"] == 0
+    assert sum(snapshot["migration_state"].values()) == 0
+    assert classify_action(snapshot) == ACTION_WAITING_FIRST_DEVICE
 
 
 def test_action_manual_review_for_ambiguous(db):

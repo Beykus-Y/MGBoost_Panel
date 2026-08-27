@@ -51,7 +51,7 @@ def _blocker(snapshot: dict, action: str) -> str:
         return "bridge enabled, legacy activity seen, but zero active devices"
     if action == "CONTACT_USER":
         return "grace ending soon and still unregistered"
-    if action == "WAITING_FOR_REGISTRATION":
+    if action == "WAITING_FIRST_DEVICE":
         return "-"
     return "-"
 

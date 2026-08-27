@@ -123,9 +123,13 @@ copy. It has no HTTP API and no UI.
 
 - `src/legacy_grace_observability.py::account_grace_snapshot(db, account_id,
   now)` + `classify_action(snapshot)` → already produces exactly the
-  `OK_MIGRATED|WAITING_FOR_REGISTRATION|CONTACT_USER|MANUAL_REVIEW|
+  `OK_MIGRATED|WAITING_FIRST_DEVICE|CONTACT_USER|MANUAL_REVIEW|
   COMPATIBILITY_BLOCK|RECONCILE_REQUIRED` classification the Migration/Grace
-  dashboard needs. Currently only consumed by the CLI script. **Wrap this in
+  dashboard needs (`WAITING_FIRST_DEVICE` — the former Telegram-named
+  `WAITING_FOR_REGISTRATION` fallback, renamed when it was fixed to carry
+  device-migration semantics: zero real-device lineage = waiting for the
+  first real device connection, independent of Telegram ownership).
+  Currently only consumed by the CLI script. **Wrap this in
   a read-only admin HTTP route — do not re-derive the classification
   logic in the frontend or in a new backend module.**
 - `src/internal_entitlements.py::effective_entitlements(account_id, now)` —
@@ -271,9 +275,10 @@ customer-facing work.
 Priority order, current state:
 
 1. **Grace campaign progress** (highest, while PH4 grace is active): Day
-   N/14, exact end/remaining, Telegram BOUND count, WAITING_FOR_REGISTRATION
-   count, real devices observed vs. real devices child-backed vs. still
-   legacy, reconcile/compatibility blockers. **Must not show a misleading
+   N/14, exact end/remaining, Telegram BOUND count, waiting-for-first-device
+   count (accounts with zero real-device lineage), real devices observed vs.
+   real devices child-backed vs. still legacy, reconcile/compatibility
+   blockers. **Must not show a misleading
    "17/17 MIGRATED"** when what is actually true is parent/genesis
    readiness — genesis placeholder ≠ real migrated customer device (see
    Section 5). This widget must be built as a **conditional block** (only

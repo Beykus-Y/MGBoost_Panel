@@ -1,3 +1,67 @@
+# AGENT_HANDOFF — account-centric migration action semantics fixed (Telegram ↔ device-lineage coupling removed); local checkpoint commit, NOT deployed, NOT pushed
+
+Updated: 2026-08-27 (bugfix session on stable `9b38c91`, owner-reported admin
+UI bug). **This top section supersedes everything below.**
+
+## What this session did
+
+Owner report: an account with Telegram ownership BOUND but
+`real_device_count == 0` showed «Ожидает Telegram» as its Статус/действие —
+as if Telegram registration gated technical migration. Root cause confirmed
+in backend derivation (frontend only renders server values; verified no
+client-side coupling): `legacy_grace_observability.classify_action()`'s
+terminal fallback returned the Telegram-named `WAITING_FOR_REGISTRATION`
+for EVERY account without real-device lineage regardless of ownership, and
+its `OK_MIGRATED` branch additionally required an active slot on top of
+migrated lineage. Checked first that the enum was used nowhere else with
+legitimate Telegram meaning (only definitions + the buggy fallback +
+tests/script/label-map references; `telegram_status()`'s own BOUND/
+UNREGISTERED/PENDING_LINK/AMBIGUOUS taxonomy untouched) — so the minimal fix
+was replacing the fallback concept, not a global rename elsewhere.
+
+Fix — pure read-model derivation, no schema/API shape changes:
+
+- zero real-device lineage → new `WAITING_FIRST_DEVICE`
+  («Ожидает первого подключения»); ANY `mgboost_migration_bindings`
+  lineage (`MIGRATING`/`MIGRATED`/`LEGACY_REVOKE_PENDING`/`LEGACY_REVOKED`)
+  → `OK_MIGRATED` («Миграция штатно»). Telegram never gates or defines these.
+  RECONCILE_REQUIRED / MANUAL_REVIEW / COMPATIBILITY_BLOCK / CONTACT_USER
+  precedence unchanged; CONTACT_USER thereby narrows to zero-lineage members,
+  its natural outreach audience.
+- `core.js` label map swaps «Ожидает Telegram» for the new label;
+  daily-report `_blocker()` string updated; normative ADMIN_PANEL_REDESIGN.md
+  taxonomy updated (dated historical evidence text deliberately left as-is);
+  CHANGELOG Fixed entry added per DoD.
+- Both mandatory regression cases pinned at every surface (list via
+  `account_summaries`, detail via `account_detail`, browser render):
+  BOUND + zero real devices → Привязан + Ожидает первого подключения with an
+  explicit "Ожидает Telegram nowhere" assertion; UNBOUND (`_reviewed_internal`
+  ABSENT ownership + `prepare_migration`) → Не привязан + Миграция штатно;
+  daily-report default-action test extended to pin BOUND-without-lineage.
+
+Production read-only preflight (local=origin=production all `9b38c91`,
+working tree clean except pre-existing untracked `extra_configs.json`,
+3 services active): DB-copy read gate over all 18 accounts reproduced the
+bug on account **6** (BOUND + zero lineage → `WAITING_FOR_REGISTRATION`
+today); the seven UNREGISTERED-with-lineage accounts (7/10/11/12/15/16/18)
+already read `OK_MIGRATED` and stay there; simulated new logic on the same
+data changes labels ONLY for 2/5/6/9/14/17 (all zero-lineage), and no
+account has lineage-but-zero-active-slots, so the OK_MIGRATED broadening is
+defensive against current prod data; copy `quick_check=ok`.
+
+Tests (fresh Playwright venv recreated at `/home/beykus/mgboost-pw-venv` —
+the prior session's venv was absent from this box): targeted
+read-models+daily-report **21 passed**; browser e2e **2 passed** (fixture
+updated to `WAITING_FIRST_DEVICE`, plus Russian-label presence/absence
+assertions in table and Migration tab); FULL REGRESSION **1268 passed,
+0 failed, 0 skipped** (= recorded baseline 1266 + exactly the 2 new tests);
+`git diff --check` clean. Local checkpoint commit only — origin NOT pushed,
+production NOT modified beyond the read-only preflight above. Next deploy
+will again be application-code-only (no schema diff), same class as every
+prior slice.
+
+---
+
 # AGENT_HANDOFF — PH7-01 + PH7-05 Disable/Enable independently reviewed (APPROVED, no code defects, one product ambiguity resolved as DL-056); production deploy in progress this session
 
 Updated: 2026-08-27 (independent review session, following directly from the

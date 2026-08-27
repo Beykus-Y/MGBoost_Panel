@@ -89,7 +89,7 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                 "subscription": {"status": "ACTIVE", "display_name": PAYLOAD},
                 "telegram_status": "BOUND", "active_devices": 1,
                 "migrated_devices": 0, "parent_ready": True,
-                "grace": None, "migration_action": "WAITING_FOR_REGISTRATION",
+                "grace": None, "migration_action": "WAITING_FIRST_DEVICE",
             }]})
         elif path == "/sub-admin-api/admin/accounts/1":
             self._send(200, {
@@ -130,7 +130,7 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
                      "label": "Отзыв устройства (слот 1) · APPLIED", "detail": {"slot_number": 1, "state": "APPLIED"}},
                 ]},
                 "telegram": {"status": "BOUND", "identities": [{"telegram_id": 12345678, "role": "OWNER", "provenance": "MIGRATION", "linked_at": 100, "revoked_at": None}]},
-                "migration_grace": {"action": "WAITING_FOR_REGISTRATION", "bridge_enabled": True, "active_devices": 1, "migrated_devices": 0, "migration_state": {"MIGRATING": 0, "MIGRATED": 0, "LEGACY_REVOKE_PENDING": 0, "LEGACY_REVOKED": 0, "ERROR_RECONCILE": 0}, "grace": None},
+                "migration_grace": {"action": "WAITING_FIRST_DEVICE", "telegram_status": "BOUND", "bridge_enabled": True, "active_devices": 1, "migrated_devices": 0, "migration_state": {"MIGRATING": 0, "MIGRATED": 0, "LEGACY_REVOKE_PENDING": 0, "LEGACY_REVOKED": 0, "ERROR_RECONCILE": 0}, "grace": None},
                 "technical": {"account_public_id": "acct_technical", "device_lineage": [{"slot_number": 1, "generation": 1, "generation_status": "ACTIVE", "slot_generation_id": 91, "child_intent_id": 92, "child_username": "mgc_technical_only", "hwid_verifier": "hmac-sha256:technical-only", "uuid_verifier": "sha256:technical-only", "outbox_id": 93, "operation_id": "op_technical_only", "outbox_state": "APPLIED", "child_desired_state": "ACTIVE", "child_observed_state": "ACTIVE"}]},
                 "presentation_metadata_available": True,
             })
@@ -238,6 +238,13 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
             # Account detail: payments tab lists lifecycle + immutable refs.
             page.locator('.nav-item[data-page="accounts"]').click()
             page.wait_for_function("payload => document.querySelector('#accounts-tbody').innerText.includes(payload)", arg=PAYLOAD)
+            # Mandatory regression rendering: BOUND ownership column shows
+            # "Привязан" while zero real devices yields "Ожидает первого
+            # подключения" -- never the old "Ожидает Telegram" pseudo state.
+            accounts_text = page.locator("#accounts-tbody").inner_text()
+            assert "Ожидает первого подключения" in accounts_text
+            assert "Привязан" in accounts_text
+            assert "Ожидает Telegram" not in accounts_text
             page.locator('#accounts-tbody [data-action="open-account"]').click()
             page.wait_for_selector("#page-account-detail.active")
             page.wait_for_timeout(150)
@@ -288,6 +295,11 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
             page.locator('[data-account-tab="audit"]').click()
             audit_text = page.locator("#account-tab-content").inner_text()
             assert "Ручной платёж mpay_fixture_one" in audit_text
+            # Migration tab: the action badge follows device-migration state.
+            page.locator('[data-account-tab="migration"]').click()
+            migration_text = page.locator("#account-tab-content").inner_text()
+            assert "Ожидает первого подключения" in migration_text
+            assert "Ожидает Telegram" not in migration_text
             # Ownership rebind card exists with its explicit confirm gate stub.
             page.locator('[data-account-tab="telegram"]').click()
             assert page.locator("#ops-tg-old").count() == 1

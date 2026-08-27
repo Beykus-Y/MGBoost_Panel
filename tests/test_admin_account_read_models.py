@@ -110,7 +110,7 @@ def test_summary_keeps_parent_readiness_separate_from_real_device_migration(db):
     assert row["parent_ready"] is True
     assert row["active_devices"] == 1
     assert row["migrated_devices"] == 0
-    assert row["migration_action"] == "WAITING_FOR_REGISTRATION"
+    assert row["migration_action"] == "WAITING_FIRST_DEVICE"
 
     verifier = db._conn.execute(
         "SELECT hwid_verifier FROM mgboost_device_slot_generations WHERE id=?",
@@ -124,7 +124,9 @@ def test_summary_keeps_parent_readiness_separate_from_real_device_migration(db):
     after = account_summaries(db, now=302)[0]
     assert after["parent_ready"] is True
     assert after["migrated_devices"] == 0
-    assert after["migration_action"] == "WAITING_FOR_REGISTRATION"
+    # Real device lineage exists (MIGRATING) => normal migration course,
+    # independent of Telegram readiness or active-slot count.
+    assert after["migration_action"] == "OK_MIGRATED"
 
 
 def test_detail_exposes_masked_operational_device_and_keeps_internal_ids_technical(db):
@@ -315,8 +317,56 @@ def test_telegram_aggregate_explains_cohort_and_does_not_use_action(db):
     assert counts == {"BOUND": 1, "UNREGISTERED": 1, "PENDING_LINK": 0, "AMBIGUOUS": 1}
     assert sum(counts.values()) == model["summary"]["cohort_accounts"] == 3
     actions = {row["account_id"]: row["action"] for row in model["accounts"]}
-    assert actions[unbound["account_id"]] == "WAITING_FOR_REGISTRATION"
+    assert actions[unbound["account_id"]] == "WAITING_FIRST_DEVICE"
     assert actions[ambiguous["account_id"]] == "MANUAL_REVIEW"
+
+
+def test_regression_bound_telegram_with_zero_real_devices_waits_for_first_connection(db):
+    """Mandatory regression case 1: Telegram BOUND + zero real-device lineage
+    must render the device-migration state (`WAITING_FIRST_DEVICE`) on every
+    admin surface, never the old Telegram-waiting pseudo-migration state."""
+    account, _alias_id, _slot = _account(
+        db, mapping="REGRESSION_BOUND_NO_DEVICE", alias="bound-no-device",
+    )
+    account_id = account["account_id"]
+
+    listed = {row["id"]: row for row in account_summaries(db, now=300)}[account_id]
+    assert listed["telegram_status"] == "BOUND"
+    assert listed["migrated_devices"] == 0
+    assert listed["migration_action"] == "WAITING_FIRST_DEVICE"
+    assert "WAITING_FOR_REGISTRATION" not in str(listed)
+
+    detail = account_detail(db, account_id, now=300)
+    assert detail["telegram"]["status"] == "BOUND"
+    assert detail["migration_grace"]["action"] == "WAITING_FIRST_DEVICE"
+
+
+def test_regression_unbound_telegram_with_real_lineage_is_ok_migrated(db):
+    """Mandatory regression case 2: missing Telegram ownership must neither
+    block nor redefine technical migration status -- a real device lineage
+    alone yields `OK_MIGRATED` while Telegram reads `Не привязан` separately."""
+    created = _reviewed_internal(
+        db, suffix="REGRESSION_UNBOUND_LINEAGE", aliases=["unbound-real-lineage"],
+        ownership="ABSENT",
+    )
+    account_id = created["account_id"]
+    alias_row = db._conn.execute(
+        "SELECT id FROM mgboost_legacy_account_aliases WHERE account_id=? AND legacy_username='unbound-real-lineage'",
+        (account_id,),
+    ).fetchone()
+    db.migration_lifecycle.prepare_migration(
+        account_id=account_id, legacy_alias_id=alias_row["id"],
+        hwid_verifier="hmac-sha256:" + "c" * 64, actor_ref="test",
+        reason="unbound owner with real device lineage", idempotency_key="regression-unbound-lineage-001", now=250,
+    )
+
+    listed = {row["id"]: row for row in account_summaries(db, now=300)}[account_id]
+    assert listed["telegram_status"] == "UNREGISTERED"
+    assert listed["migration_action"] == "OK_MIGRATED"
+
+    detail = account_detail(db, account_id, now=300)
+    assert detail["telegram"]["status"] == "UNREGISTERED"
+    assert detail["migration_grace"]["action"] == "OK_MIGRATED"
 
 
 def test_real_lineage_denominator_and_genesis_proof_are_separate(db):
