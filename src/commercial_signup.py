@@ -189,14 +189,20 @@ class CommercialSignupStore:
                 self._conn.rollback()
                 raise
 
-        # Outside the transaction above (the identity store opens its own):
-        # idempotent, reached by EVERY caller including the one that found
-        # the binding already filled, so the owner link always converges.
-        # Uniqueness is enforced by partial unique indexes.
-        self._accounts.link_telegram_owner(
-            account_id, int(telegram_id), provenance="DIRECT_BIND", actor=_ACTOR,
-            now=timestamp,
-        )
+            # The identity store manages its own BEGIN/COMMIT, but this call
+            # MUST stay under the same held process lock as the account
+            # creation commit above: releasing the lock in between would let
+            # a concurrent ensure_signup_account() for a DIFFERENT invoice of
+            # the SAME brand-new telegram_id observe "no OWNER yet" and
+            # create a second, permanently-orphaned account before this call
+            # claims ownership. Idempotent for every caller, including the
+            # one that found the binding already filled, so the owner link
+            # always converges. Uniqueness is enforced by partial unique
+            # indexes.
+            self._accounts.link_telegram_owner(
+                account_id, int(telegram_id), provenance="DIRECT_BIND", actor=_ACTOR,
+                now=timestamp,
+            )
         return account_id
 
     # --- system-owned provisioning template ----------------------------------

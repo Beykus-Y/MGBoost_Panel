@@ -358,3 +358,84 @@ def test_routing_mutation_reason_is_mandatory(db, fake_topology):
     }).encode())
     handle_routing_host_add(handler)
     assert handler.status == 400
+
+
+# --- scripts/seed_delivery_routing.py: no hardcoded-baseline eternal constant -----
+
+def _load_seed_script():
+    import importlib.util
+    script_path = os.path.join(
+        os.path.dirname(__file__), "..", "scripts", "seed_delivery_routing.py"
+    )
+    spec = importlib.util.spec_from_file_location("ph5_12_seed", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_seed_script_derives_baseline_from_fresh_live_topology(db, monkeypatch):
+    """The seed script must classify STANDARD membership from a live
+    topology read at run time -- never from a tag list baked into the
+    script's source. A brand-new host that did not exist on any historical
+    snapshot must still be seeded, and any exact WL tag must never be."""
+    from src.wl_topology import WL_INBOUND_TAGS, WL_NODES
+
+    live_standard_tags = {"tcp-smart", "grpc-direct", "brand-new-standard-host"}
+
+    class FakeService:
+        def get_nodes(self, token=None):
+            return [
+                {"id": n["id"], "name": n["role"], "address": n["address"],
+                 "usage_coefficient": n["usage_coefficient"], "status": "connected"}
+                for n in WL_NODES
+            ]
+
+        def get_inbounds(self, token=None):
+            return {"vless": [{"tag": t, "protocol": "vless", "port": 443,
+                               "network": "tcp", "tls": "none"}
+                              for t in sorted(WL_INBOUND_TAGS | live_standard_tags)]}
+
+    from src.routes import admin_support
+    admin_support.set_service_marzban(FakeService())
+    try:
+        module = _load_seed_script()
+        monkeypatch.setattr(sys, "argv", ["seed_delivery_routing.py", "--seed-verified-baseline"])
+        rc = module.main()
+        assert rc == 0
+    finally:
+        admin_support.set_service_marzban(None)
+
+    members = set(db.delivery_routing.membership("STANDARD"))
+    assert members == live_standard_tags
+    assert members.isdisjoint(WL_INBOUND_TAGS)
+
+    # Re-running is idempotent: no duplicate membership rows, same result.
+    admin_support.set_service_marzban(FakeService())
+    try:
+        rc = module.main()
+        assert rc == 0
+    finally:
+        admin_support.set_service_marzban(None)
+    assert set(db.delivery_routing.membership("STANDARD")) == live_standard_tags
+
+
+def test_seed_script_fails_closed_on_topology_mismatch(db, monkeypatch):
+    """A stale/unhealthy topology observation must abort the seed with no
+    mutation at all -- never fall back to any hardcoded tag list."""
+    class BrokenService:
+        def get_nodes(self, token=None):
+            return []
+
+        def get_inbounds(self, token=None):
+            return {"vless": []}
+
+    from src.routes import admin_support
+    admin_support.set_service_marzban(BrokenService())
+    try:
+        module = _load_seed_script()
+        monkeypatch.setattr(sys, "argv", ["seed_delivery_routing.py", "--seed-verified-baseline"])
+        rc = module.main()
+        assert rc != 0
+    finally:
+        admin_support.set_service_marzban(None)
+    assert db.delivery_routing.membership("STANDARD") == []

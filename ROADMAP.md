@@ -1256,9 +1256,17 @@ invoice → confirmed payment → self-service DIRECT account → subscription �
 opaque credential → first device → child Marzban user → рабочий STANDARD
 config. Повторная покупка того же plan — существующая PH5-02 renewal
 semantics; другой plan — контролируемый отказ (PH5-06 не начат).
-**Implemented locally (2026-08-27), pending independent review + deploy;
-production read-only preflight verified compatible; NOT pushed, NOT
-deployed, canary NOT started.**
+**Implemented locally (2026-08-27); independent review (2026-08-28) —
+implementation-level defects found and closed with regression tests (see
+the review note under PH5-12 below), but the review is APPROVED WITH FIXES
+for those defects ONLY. Deploy is BLOCKED pending an owner decision on the
+`tpl-<public_id>` per-account provisioning-template architecture: two
+independent reviews of this same diff reached opposite conclusions on
+whether it is technically required or an avoidable per-customer cost, and
+neither is authorized to decide unilaterally (see the PH5-12 review note).
+Local checkout has no production/SSH access in this session, so production
+HEAD/`OPAQUE_SUBSCRIPTION_ENABLED`/live-topology could NOT be independently
+re-verified here; NOT pushed, NOT deployed, canary NOT started.**
 
 - **Additive checksum-pinned migration `ph5_11_commercial_signup_v1`**
   (requires PH3-01 + PH5-05 exact checksums): `mgboost_provisioning_templates`
@@ -1337,7 +1345,11 @@ data: replacing Germany/Estonia/etc. never requires a new plan version or a
 repurchase. STANDARD/WL delivery composition becomes explicit admin-managed
 state with a hard backend guarantee that the STANDARD profile can never
 contain an exact WL host.
-**Implemented locally (2026-08-27), pending independent review + deploy.**
+**Implemented locally (2026-08-27); independent review (2026-08-28) —
+implementation-level defects APPROVED WITH FIXES (see the review note at
+the end of this section), but deploy is BLOCKED pending an owner decision
+on the `tpl-<public_id>` architecture question, which two independent
+reviews of this diff could not resolve in agreement.**
 
 - **Additive checksum-pinned migration `ph5_12_delivery_routing_v1`:**
   `mgboost_delivery_profiles` (CAS `row_version`),
@@ -1393,6 +1405,83 @@ contain an exact WL host.
   audit + replay, store-level serialization, corrupted-storage template
   guard, and the route authz matrix (401/403/CSRF/400 WL refusal/409 stale
   CAS/roundtrip).
+- **Independent review (2026-08-28) of both PH5-11 and PH5-12 against
+  `f228b46..b22e5f8`: verdict APPROVED WITH FIXES for the implementation
+  defects below; deploy BLOCKED on the open `tpl-<public_id>` architecture
+  question (see the last item).** Real defects found and closed (not
+  hypothetical, each with a regression test):
+  - **P0** — the Telegram bot layer (`src/bot_support.py::on_pre_checkout`/
+    `on_successful_payment`) special-cased only `invoice_kind ==
+    "CANONICAL_PLAN"`; a real `CANONICAL_SIGNUP` payment either failed at
+    pre-checkout (the placeholder `signup-<tg_id>` "Marzban username" isn't
+    a real user) or, if accepted, would have been captured through the
+    legacy `mark_invoice_paid` path instead of `capture_paid`, never
+    creating an account. The entire commercial signup purchase was
+    non-functional end-to-end despite 35 green store-level tests, because
+    none of them drove the real dispatcher handlers. Fixed by routing both
+    `CANONICAL_PLAN` and `CANONICAL_SIGNUP` through the same canonical
+    path; proven with new tests exercising the real handlers directly.
+  - **P1** — `CommercialSignupStore.ensure_signup_account` called
+    `link_telegram_owner` AFTER releasing the shared process lock; two
+    different signup invoices for the same brand-new Telegram payer could
+    race into two independently-created orphan accounts. Fixed by keeping
+    the owner-link call inside the same locked section as the account
+    commit; deterministic repro test
+    (`test_owner_link_lock_scope_prevents_orphan_account_race`) forces the
+    exact interleaving.
+  - **P1** — `scripts/seed_delivery_routing.py` originally shipped a
+    hardcoded 13-tag `VERIFIED_STANDARD_BASELINE` tuple ("STANDARD is these
+    tags because that's what live topology looked like on 2026-08-27") —
+    exactly the eternal-constant anti-pattern the design explicitly forbids.
+    Rewritten to derive the baseline from a fresh live topology observation
+    every run (`classify_inbound_tag(tag) == "STANDARD"`), fail-closed on
+    topology mismatch; regression test includes a brand-new host tag absent
+    from the old hardcoded list.
+  - **P2** — a failed initial opaque-credential delivery (`_deliver_signup_
+    credential`) logged an error but told neither the customer nor the
+    admin; the customer had no way to know `/newsub` exists. Added an admin
+    alert mirroring the existing `OPAQUE_SUBSCRIPTION_ENABLED=off` pattern.
+  - **P3** — `test_first_rollout_purchase_gate_rejects_non_standard_plans`
+    passed vacuously (a `plan=` kwarg typo raised `TypeError` before the
+    real gate ever ran). Fixed to call with the correct kwarg and assert
+    the specific `PlanNotSellable` exception.
+  - A minor `DeliveryRoutingStore._replay` read was moved inside the store's
+    lock (was reading `self._conn` before acquiring it).
+  - **`tpl-<public_id>` architecture verdict: UNRESOLVED — two independent
+    reviews of this same diff disagree, and per the review brief neither
+    is authorized to decide unilaterally; this is an owner decision.**
+    Reading A (technically necessary / "Variant A"): the pre-existing
+    (pre-PH5-11) `ChildProvisioningStore.prepare_child_ensure` contract
+    hard-requires `source_alias_id` to belong to the SAME `account_id`
+    being provisioned (`child_provisioning.py`, the alias lookup is scoped
+    `WHERE id=? AND account_id=?`) — with that interface unmodified, a
+    single shared template is impossible, so per-account is what the
+    current code forces. Reading B (avoidable per-customer cost / "Variant
+    B"): that scoping check exists to stop cross-tenant cloning of
+    DIFFERENTIATED legacy content (e.g. account A must never clone account
+    B's real legacy alias, which might carry WL inbounds) — a system-owned
+    STANDARD template carries no differentiated, account-specific content
+    at all (every commercial account is entitled to the identical STANDARD
+    membership), so sharing it doesn't reintroduce the risk that check
+    defends against; the 1:1 requirement is then a consequence of reusing
+    the existing per-account alias table rather than adding a small
+    system-scoped source path (the same shape as the already-existing
+    `system_actor` parameter in `delivery_routing.py`), not a security
+    necessity. Reading B is reinforced by a confirmed-by-code fact: the
+    account-closure path (`src/account_consolidation.py::close_account`,
+    exercised for real by DL-057) has no awareness of
+    `mgboost_provisioning_templates` at all, so every closed/absorbed
+    commercial account's per-account `tpl-<public_id>` Marzban user is left
+    permanently active with no cleanup/reversal policy — a real, not
+    hypothetical, operational-debt surface that scales with customer count.
+    Both readings agree on everything checkable by code: template UUID/URL
+    never reach the customer, `derive_template_username` never accepts an
+    arbitrary username, remote drift never silently re-pins, and template
+    create-retry converges via get→create→reread. **Recommendation: do not
+    treat this as settled either way; put both readings to the owner before
+    deploying this slice.**
+  - Full regression after fixes: 1396 passed, 0 failed. `git diff --check`
+    clean; touched JS/Python compile clean.
 
 # Phase 6 — WL quota
 

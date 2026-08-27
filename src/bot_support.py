@@ -338,6 +338,9 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         return
 
     from .stars import _check_stars_eligibility
+    from .commercial_signup import SIGNUP_INVOICE_KIND
+
+    _CANONICAL_INVOICE_KINDS = ("CANONICAL_PLAN", SIGNUP_INVOICE_KIND)
 
     class SupportStates(StatesGroup):
         waiting_link = State()
@@ -431,7 +434,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         if int(time.time()) >= row["expires_at"]:
             await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
             return
-        if row.get("invoice_kind") == "CANONICAL_PLAN":
+        if row.get("invoice_kind") in _CANONICAL_INVOICE_KINDS:
             try:
                 db.stars_purchases.validate_invoice_for_checkout(
                     invoice_id, query.from_user.id, now=int(time.time())
@@ -517,7 +520,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             )
             return
 
-        if row.get("invoice_kind") == "CANONICAL_PLAN":
+        if row.get("invoice_kind") in _CANONICAL_INVOICE_KINDS:
             try:
                 outcome = db.stars_purchases.capture_paid(
                     invoice_id, charge_id=sp.telegram_payment_charge_id,

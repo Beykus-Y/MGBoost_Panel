@@ -907,3 +907,64 @@ def test_stars_menu_shows_unavailable_when_no_tariffs_even_if_enabled(db):
     msg = FakeMessage()
     asyncio.run(handler(msg, FakeState()))
     assert "недоступн" in msg.sent[0]
+
+
+# --- CANONICAL_SIGNUP invoices must use the same canonical dispatch as -----
+# --- CANONICAL_PLAN, never the pre-PH5-11 legacy renewal fallback ----------
+
+class _BoomIfCalledMarzban:
+    """Any call proves the legacy renewal fallback was reached instead of
+    the canonical validate_invoice_for_checkout/capture_paid path -- a
+    signup invoice's marzban_username is a placeholder (``signup-<tg_id>``),
+    not a real Marzban user, so the legacy path would 404 in production."""
+
+    def get_admin_token_from_env(self):
+        raise AssertionError("legacy renewal fallback reached for a signup invoice")
+
+    def get_user(self, *a, **kw):
+        raise AssertionError("legacy renewal fallback reached for a signup invoice")
+
+
+def _signup_invoice(db, telegram_id, plan_code="BASIC", duration_days=30, now=None):
+    now = int(time.time()) if now is None else now
+    from src.plan_catalog import seed_plan_catalog
+    seed_plan_catalog(db.plan_catalog, now=now)
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=telegram_id, plan_code=plan_code, duration_days=duration_days,
+        ttl_seconds=3600, now=now,
+    )
+    assert invoice["invoice_kind"] == "CANONICAL_SIGNUP"
+    return invoice
+
+
+def test_pre_checkout_routes_signup_invoice_through_canonical_validation(db):
+    handlers = _payment_handlers_for_marzban(db, _BoomIfCalledMarzban())
+    telegram_id = 555444333
+    invoice = _signup_invoice(db, telegram_id=telegram_id)
+    q = FakePreCheckoutQuery(str(invoice["id"]), "XTR", invoice["stars_price"])
+    q.from_user = FakeFromUser(telegram_id)
+    asyncio.run(handlers["pre_checkout"](q))
+    assert q.answers == [(True, None)]
+
+
+def test_successful_payment_routes_signup_invoice_through_capture_paid(db):
+    handlers = _payment_handlers_for_marzban(db, _BoomIfCalledMarzban())
+    telegram_id = 555444222
+    invoice = _signup_invoice(db, telegram_id=telegram_id)
+    sp = FakeSuccessfulPayment(
+        str(invoice["id"]), total_amount=invoice["stars_price"], charge_id="signup-charge-1",
+    )
+    msg = FakeSuccessfulPaymentMessage(sp, payer_id=telegram_id, bot=FakeBot())
+
+    class FakeState:
+        pass
+
+    asyncio.run(handlers["successful_payment"](msg, FakeState()))
+
+    row = db.get_invoice(invoice["id"])
+    assert row["status"] == "paid"
+    account = db.accounts.get_active_account_by_telegram_id(telegram_id)
+    assert account is not None, "legacy mark_invoice_paid fallback never creates the DIRECT account"
+    assert row["account_id"] == account["id"]
+    assert db.list_stars_orphan_payments() == []
+    assert handlers["trigger"].is_set()

@@ -3,18 +3,28 @@
 
 Creates the STANDARD delivery profile shell, the plan -> profile mapping for
 the three first-rollout sellable plans, and -- only with
-``--seed-verified-baseline`` -- the STANDARD host membership, using the
-EXACT non-WL inbound tag set verified read-only against live production
-Marzban on 2026-08-27 (every tag confirmed present in ``GET /api/inbounds``
-and absent from the PH0-05 WL allowlist). Without the flag, membership is
-left empty and the admin adds hosts through the panel UI.
+``--seed-verified-baseline`` -- the STANDARD host membership.
+
+The membership baseline is NEVER a hardcoded tag list. It is derived, every
+time this script runs, from a FRESH live Marzban topology observation
+(same broker path every admin route uses) that must first pass
+``require_topology_ok()`` (exact PH0-05 allowlist/version match) --
+otherwise the script exits non-zero without touching the database. The
+seeded set is exactly "every live inbound tag `classify_inbound_tag()`
+calls STANDARD" (i.e. live minus exact-WL minus wl-shaped-unverified) at
+run time, so a host added or removed on the real server after this script
+was written changes what gets seeded on the next run -- there is no
+"STANDARD is these N tags because that's what live topology looked like on
+some past date" constant anywhere in this file.
 
 Safe to run repeatedly: existing rows are reused, never duplicated; every
 seeded membership tag gets its own audited HOST_ADDED event (SYSTEM actor)
 with a deterministic idempotency key, so re-runs replay instead of
 duplicating.
 
-This script never talks to Marzban and never mutates anything remote.
+This script never mutates anything remote (Marzban reads only, via the
+existing read-only get_nodes/get_inbounds broker calls); the only writes
+are to the local `mgboost_delivery_profile*` tables.
 """
 
 from __future__ import annotations
@@ -25,34 +35,17 @@ import sys
 sys.path.insert(0, ".")
 
 from src.database import Database
-from src.delivery_routing import STANDARD_PROFILE_CODE
-from src.wl_topology import WL_INBOUND_TAGS
-
-# Verified live 2026-08-27 (read-only production preflight): the exact set
-# of live inbound tags minus the exact PH0-05 WL allowlist.
-VERIFIED_STANDARD_BASELINE = (
-    "de-grpc-smart",
-    "de-tcp-smart",
-    "grpc-direct",
-    "grpc-smart",
-    "nl-grpc-smart",
-    "nl-tcp-smart",
-    "tcp-direct",
-    "tcp-smart",
-    "vless-grpc-cdn",
-    "vless-ws-cdn",
-    "vless-xhttp-cdn",
-    "xhttp-direct",
-    "xhttp-smart",
-)
+from src.delivery_routing import STANDARD_PROFILE_CODE, classify_inbound_tag
+from src.routes.admin_support import service_marzban
+from src.wl_topology_guard import fetch_live_topology_observation
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--seed-verified-baseline", action="store_true",
-        help="also seed STANDARD membership with the 2026-08-27 verified "
-             "live non-WL inbound tag set",
+        help="also seed STANDARD membership from a fresh live topology "
+             "observation (every currently-live non-WL inbound tag)",
     )
     args = parser.parse_args()
 
@@ -63,12 +56,27 @@ def main() -> int:
         print("profile shell + plan mapping ensured (membership untouched)")
         return 0
 
-    if any(tag in WL_INBOUND_TAGS for tag in VERIFIED_STANDARD_BASELINE):
-        print("FATAL: verified baseline unexpectedly contains an exact WL tag", file=sys.stderr)
+    client = service_marzban()
+    try:
+        observed_tags, observed_nodes = fetch_live_topology_observation(client, None)
+        db.wl_topology_guard.run_assertion(observed_tags, observed_nodes)
+        db.wl_topology_guard.require_topology_ok()
+    except Exception as exc:
+        print(f"FATAL: live topology assertion failed, no mutation performed: {exc}",
+              file=sys.stderr)
         return 1
 
+    baseline = sorted(
+        tag for tag in observed_tags if classify_inbound_tag(tag) == "STANDARD"
+    )
+    if not baseline:
+        print("FATAL: fresh topology observation yields zero STANDARD-classified "
+              "hosts; refusing to seed an empty baseline", file=sys.stderr)
+        return 1
+    print(f"live_verified_baseline={baseline}")
+
     added, replayed = [], []
-    for tag in VERIFIED_STANDARD_BASELINE:
+    for tag in baseline:
         idem_key = f"ph5-12-seed-standard-v1:{tag}"
         existing = db._conn.execute(
             "SELECT 1 FROM mgboost_delivery_profile_hosts h "
@@ -78,8 +86,8 @@ def main() -> int:
         ).fetchone()
         result = db.delivery_routing.apply_host_change(
             None, profile_code=STANDARD_PROFILE_CODE, inbound_tag=tag,
-            operation="ADD", reason="seed: 2026-08-27 verified live non-WL baseline",
-            idempotency_key=idem_key, observed_live_tags=VERIFIED_STANDARD_BASELINE,
+            operation="ADD", reason="seed: fresh live-topology-verified non-WL baseline",
+            idempotency_key=idem_key, observed_live_tags=observed_tags,
             system_actor=True,
         )
         if existing is not None:

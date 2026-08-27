@@ -86,10 +86,14 @@ def test_first_purchase_snapshots_product_evidence_and_entitlement(db):
 
 @pytest.mark.parametrize("plan_code,amount", [("WL", 349), ("EXTENDED", 249), ("FAMILY", 299)])
 def test_first_rollout_purchase_gate_rejects_non_standard_plans(db, plan_code, amount):
+    """Independent-review fix: this previously passed vacuously via a
+    ``plan=`` kwarg typo (TypeError before the gate ever ran), not because
+    PlanNotSellable was actually raised."""
+    from src.commercial_signup import PlanNotSellable
     account = _account(db)
-    with pytest.raises(Exception):
+    with pytest.raises(PlanNotSellable):
         db.stars_purchases.create_invoice(
-            telegram_id=account["telegram_id"], plan=plan_code, duration_days=30,
+            telegram_id=account["telegram_id"], plan_code=plan_code, duration_days=30,
             ttl_seconds=3600, now=100,
         )
     assert db._conn.execute("SELECT COUNT(*) FROM stars_invoices").fetchone()[0] == 0

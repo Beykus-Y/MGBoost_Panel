@@ -43,6 +43,57 @@
   STANDARD (три независимых слоя — профиль, пиннинг шаблона, render-
   boundary; corrupted state → fail-closed MANUAL_REVIEW/ERROR, никогда не
   partial-выдача).
+  **Независимый review этого среза (2026-08-28): APPROVED WITH FIXES для
+  найденных implementation-дефектов; deploy BLOCKED отдельным
+  архитектурным вопросом (`tpl-<public_id>`, см. ниже) — требуется owner
+  decision, самостоятельно не решался.**
+  Найдены и исправлены реальные дефекты (не гипотетические):
+  P0 — `src/bot_support.py::on_pre_checkout`/`on_successful_payment`
+  проверяли только `invoice_kind == "CANONICAL_PLAN"`, поэтому реальный
+  Telegram-платёж нового клиента (`CANONICAL_SIGNUP`) либо отклонялся на
+  pre-checkout (несуществующий `signup-<tg_id>` Marzban-юзер), либо (если
+  бы прошёл) уходил через legacy `mark_invoice_paid` мимо `capture_paid`,
+  никогда не создавая аккаунт — вся коммерческая покупка была нерабочей
+  end-to-end несмотря на зелёные store-level тесты; воспроизведено и
+  закрыто регресс-тестами, дублирующими реальный `on_pre_checkout`/
+  `on_successful_payment` диспатч. P1 — `CommercialSignupStore.
+  ensure_signup_account` вызывал `link_telegram_owner` ПОСЛЕ освобождения
+  общего lock; два разных signup-инвойса одного нового Telegram-плательщика
+  могли создать два независимых orphan-аккаунта (детерминированный
+  repro-тест `test_owner_link_lock_scope_prevents_orphan_account_race`).
+  P1 — `scripts/seed_delivery_routing.py` изначально содержал захардкоженный
+  список из 13 тегов ("STANDARD = эти теги, потому что 27.08 их было 13") —
+  переписан на честный live-topology-minus-exact-WL вывод с fail-closed
+  topology-assertion; regression-тест включает свежий тег, которого не было
+  в старом списке. P2 — провал доставки первого opaque-credential не
+  уведомлял ни клиента, ни админа (только тихий лог); добавлен admin-алерт,
+  зеркалящий существующий паттерн для `OPAQUE_SUBSCRIPTION_ENABLED=off`.
+  P3 — тест `test_first_rollout_purchase_gate_rejects_non_standard_plans`
+  проходил вхолостую из-за опечатки в kwarg (`plan=` вместо `plan_code=`),
+  маскируя `TypeError` под ожидаемый reject; исправлен на точный
+  `PlanNotSellable`. **Архитектурный вопрос "`tpl-<public_id>` —
+  system-owned template или скрытый source-user-per-customer костыль"
+  ОСТАЁТСЯ ОТКРЫТЫМ — два независимых review этого diff'а дали
+  противоположные выводы, и ни один не принимает решение самостоятельно.**
+  Один прочтения (Вариант A) указывает, что текущий (до PH5-11)
+  `child_provisioning.py::prepare_child_ensure` требует, чтобы
+  `source_alias_id` принадлежал ТОМУ ЖЕ `account_id` — с этим конкретным
+  интерфейсом, без изменений, общий template невозможен. Другое прочтение
+  (Вариант B) возражает: это ограничение защищает от кросс-tenant утечки
+  ДИФФЕРЕНЦИРОВАННОГО контента (например, WL-инбаунды одного legacy-клиента
+  не должны клонироваться в child другого) — а не различающийся,
+  одинаковый для всех STANDARD-клиентов system-template этому risk-модели
+  не подвержен в принципе, поэтому требование 1:1 — не security-необходимость,
+  а следствие переиспользования существующей per-account alias-таблицы
+  вместо небольшого дополнения интерфейса (в духе уже существующего
+  `system_actor` паттерна из `delivery_routing.py`). Дополнительный
+  подтверждённый по коду факт: `close_account()`
+  (`src/account_consolidation.py`) не знает о `mgboost_provisioning_
+  templates` вообще — при закрытии/consolidation аккаунта (уже реальная
+  операция, см. DL-057) per-account `tpl-<public_id>` Marzban-пользователь
+  остаётся бессрочно, без cleanup/reversal политики. **Решение — за
+  владельцем; до тех пор production deploy этого среза не рекомендуется.**
+  Полный regression: 1396 passed, 0 failed (после фиксов).
 - PH6-06 exact inbound-only WL quota-enforcement state machine
   (2026-08-27, **independently reviewed, one real P0 found and fixed
   (`apply_decision` could orphan a sibling's still-open op on a

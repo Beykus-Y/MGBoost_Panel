@@ -188,6 +188,12 @@ async def _deliver_signup_credential(bot, db, row: dict):
         delivered = True
     except Exception as e:
         logger.error(f"signup credential delivery failed for account {account_id}: {type(e).__name__}")
+        await _notify_admin_signup_issue(
+            bot, db,
+            f"signup invoice #{row['id']} applied, but initial credential delivery to "
+            f"account #{account_id} failed ({type(e).__name__}) -- recoverable via /newsub, "
+            f"but the customer was not told to use it",
+        )
     if delivered:
         try:
             await _run_sync(

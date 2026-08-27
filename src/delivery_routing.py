@@ -167,10 +167,11 @@ class DeliveryRoutingStore:
         return dict(row)
 
     def _replay(self, idem_hash: str) -> dict | None:
-        row = self._conn.execute(
-            "SELECT event_type,profile_code,inbound_tag,after_json FROM mgboost_delivery_profile_events "
-            "WHERE idempotency_key_hash=?", (idem_hash,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT event_type,profile_code,inbound_tag,after_json FROM mgboost_delivery_profile_events "
+                "WHERE idempotency_key_hash=?", (idem_hash,),
+            ).fetchone()
         if row is None:
             return None
         try:

@@ -259,6 +259,88 @@ def test_concurrent_capture_races_converge_to_one_account(db):
     assert db._conn.execute("SELECT COUNT(*) FROM mgboost_entitlement_mutations").fetchone()[0] == 0
 
 
+def test_owner_link_lock_scope_prevents_orphan_account_race(db, monkeypatch):
+    """Deterministic reproduction of an independent-review P1: two DIFFERENT
+    signup invoices for the SAME brand-new telegram_id (e.g. the payer
+    opened checkout twice before paying either). Before the fix,
+    `link_telegram_owner()` ran AFTER `ensure_signup_account()` released the
+    shared process lock, so a second concurrent capture for the OTHER
+    invoice could observe "no OWNER yet" and create its own orphan account
+    before the first call claimed ownership -- permanently stuck (every
+    retry hits IdentityConflict), wasting a real infrastructure template job
+    on a telegram-ownerless account. This test forces the exact interleaving
+    deterministically instead of hoping a real race lands: it pauses
+    invoice A's owner-link call mid-flight and, while paused, starts invoice
+    B's capture on another thread. With the fix, B must block on the shared
+    lock (proven by a bounded join) instead of running to completion and
+    minting a second account."""
+    telegram_id = 555000222
+    invoice_a = db.stars_purchases.create_invoice(
+        telegram_id=telegram_id, plan_code="BASIC", duration_days=30, ttl_seconds=3600, now=100,
+    )
+    invoice_b = db.stars_purchases.create_invoice(
+        telegram_id=telegram_id, plan_code="BASIC_PLUS", duration_days=30, ttl_seconds=3600, now=100,
+    )
+
+    reached = threading.Event()
+    release = threading.Event()
+    real_link = db.accounts.link_telegram_owner
+    state = {"paused_once": False}
+
+    def paused_link(*args, **kwargs):
+        if not state["paused_once"]:
+            state["paused_once"] = True
+            reached.set()
+            release.wait(timeout=5)
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(db.accounts, "link_telegram_owner", paused_link)
+
+    result_a, result_b = {}, {}
+
+    thread_a = threading.Thread(target=lambda: result_a.__setitem__(
+        "outcome", _capture(db, invoice_a, telegram_id, charge_id=f"charge-{invoice_a['id']}", now=110)
+    ))
+    thread_a.start()
+    assert reached.wait(timeout=5), "owner-link call was never reached"
+
+    thread_b = threading.Thread(target=lambda: result_b.__setitem__(
+        "outcome", _capture(db, invoice_b, telegram_id, charge_id=f"charge-{invoice_b['id']}", now=110)
+    ))
+    thread_b.start()
+    # While A is paused mid-owner-link, B must still be blocked on the same
+    # process lock, not free to resolve-or-create its own account.
+    thread_b.join(timeout=0.5)
+    assert thread_b.is_alive(), (
+        "capture of invoice B ran to completion while invoice A's owner "
+        "link was still pending -- the shared lock no longer spans "
+        "account-creation + owner-link, reopening the orphan-account race"
+    )
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts").fetchone()[0] == 1
+
+    release.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert {result_a.get("outcome"), result_b.get("outcome")} <= {"paid", "manual_review"}
+    accounts = db._conn.execute("SELECT id FROM mgboost_accounts").fetchall()
+    assert len(accounts) == 1, "a second, independently-created account was orphaned by the race"
+    account_id = accounts[0]["id"]
+    for invoice in (invoice_a, invoice_b):
+        bound = db._conn.execute(
+            "SELECT account_id FROM stars_invoices WHERE id=?", (invoice["id"],)
+        ).fetchone()["account_id"]
+        assert bound == account_id
+    owners = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_telegram_identities "
+        "WHERE telegram_id=? AND role='OWNER' AND revoked_at IS NULL",
+        (telegram_id,),
+    ).fetchone()[0]
+    assert owners == 1
+    jobs = db.commercial_signup.pending_template_jobs()
+    assert {job["account_id"] for job in jobs} == {account_id}
+
+
 def test_apply_grants_subscription_and_schedules_template_job(db, broker):
     invoice, account, applied = _run_signup(db, broker, 555000111)
     assert applied["already_applied"] is False
@@ -497,6 +579,34 @@ def test_worker_lost_credential_delivery_stays_recoverable(db, broker, monkeypat
     assert states.count("REVOKED") == 1  # the abandoned pending generation
 
 
+def test_worker_lost_credential_delivery_alerts_admin(db, broker, monkeypatch):
+    """A failed initial delivery must not fail silently: the paying customer
+    already saw 'activated!' and has no way to know /newsub exists, so the
+    admin must be told (mirrors the OPAQUE_SUBSCRIPTION_ENABLED=off alert)."""
+    import src.config as config
+    import src.stars as stars
+    monkeypatch.setattr(config, "OPAQUE_SUBSCRIPTION_ENABLED", True, raising=False)
+    db.set_setting("bot:admin_tg_id", "999")
+    invoice, account, _applied = _run_signup(db, broker, 555000111)
+    row = _invoice_row(db, invoice["id"])
+
+    class FailOnlyForCustomer(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            if chat_id == 555000111:
+                raise RuntimeError("telegram down for this customer")
+            return await super().send_message(chat_id, text, **kwargs)
+
+    bot = FailOnlyForCustomer()
+    asyncio.run(stars._deliver_signup_credential(bot, db, row))
+    admin_texts = [t for chat_id, t in bot.messages if chat_id == 999]
+    assert any("delivery" in t for t in admin_texts), bot.messages
+    pending = db._conn.execute(
+        "SELECT status FROM mgboost_subscription_credentials WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()
+    assert pending["status"] == "PENDING_DELIVERY"
+
+
 def test_worker_never_rotates_an_existing_active_credential(db, broker, monkeypatch):
     import src.config as config
     import src.stars as stars
@@ -586,13 +696,17 @@ def buy_handlers(db):
     from src.bot_support import setup_support_handlers
 
     dp = Dispatcher()
-    setup_support_handlers(dp, db, marzban=None, stars_trigger=asyncio.Event())
+    trigger = asyncio.Event()
+    setup_support_handlers(dp, db, marzban=None, stars_trigger=trigger)
     return {
         "buy": _handler(dp.message, "msg_buy_vpn"),
         "buy_plan": _handler(dp.callback_query, "cb_buy_plan"),
         "buy_duration": _handler(dp.callback_query, "cb_buy_duration"),
         "buy_pay": _handler(dp.callback_query, "cb_buy_pay"),
         "stars_menu": _handler(dp.message, "msg_stars_menu"),
+        "pre_checkout": _handler(dp.pre_checkout_query, "on_pre_checkout"),
+        "successful_payment": _handler(dp.message, "on_successful_payment"),
+        "trigger": trigger,
     }
 
 
@@ -683,6 +797,92 @@ def test_bot_buy_pay_rejects_tampered_plan_callback(db, buy_handlers):
     assert any("нельзя оформить" in t for t in call.message.answers)
     assert db._conn.execute("SELECT COUNT(*) FROM stars_invoices").fetchone()[0] == 0
     assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts").fetchone()[0] == 0
+
+
+class FakePreCheckoutQuery:
+    def __init__(self, invoice_payload, currency, total_amount, uid=555000111):
+        self.invoice_payload = invoice_payload
+        self.currency = currency
+        self.total_amount = total_amount
+        self.from_user = FakeUser(uid)
+        self.answers = []
+
+    async def answer(self, ok, error_message=None):
+        self.answers.append((ok, error_message))
+
+
+class FakeSuccessfulPayment:
+    def __init__(self, invoice_payload, currency="XTR", total_amount=99,
+                 charge_id="signup-charge-1", provider_charge_id=None):
+        self.invoice_payload = invoice_payload
+        self.currency = currency
+        self.total_amount = total_amount
+        self.telegram_payment_charge_id = charge_id
+        self.provider_payment_charge_id = provider_charge_id
+
+
+class FakeSuccessfulPaymentMessage:
+    def __init__(self, sp, payer_id, bot=None):
+        self.successful_payment = sp
+        self.from_user = FakeUser(payer_id)
+        self.bot = bot or FakeBot()
+        self.answers = []
+
+    async def answer(self, text, **kw):
+        self.answers.append(text)
+
+
+def test_bot_signup_purchase_survives_real_telegram_pre_checkout_and_payment(db, buy_handlers):
+    """Regression for a real end-to-end defect: the plan-selection callback
+    (cb_buy_pay) creates a CANONICAL_SIGNUP invoice, but on_pre_checkout and
+    on_successful_payment only special-cased invoice_kind=='CANONICAL_PLAN'.
+    A brand-new customer's pre_checkout_query fell through to the legacy
+    branch, which calls marzban.get_user(row['marzban_username']) -- for a
+    signup invoice marzban_username is the synthetic 'signup-<tg_id>'
+    placeholder, not a real Marzban user, so pre_checkout always answered
+    ok=False and Telegram would never even charge the customer. Even if it
+    had, on_successful_payment would have routed the paid money through the
+    legacy mark_invoice_paid() path instead of capture_paid(), leaving the
+    invoice 'paid' with no bound account (later caught only by the worker
+    as 'missing_signup_account'). This test drives the REAL dispatcher
+    handlers (not the store layer directly) end to end."""
+    _enable_stars(db)
+    bot = FakeBot()
+    call = FakeCall(555000111, "buy_pay:BASIC:30", bot=bot)
+    asyncio.run(buy_handlers["buy_pay"](call, FakeState()))
+    invoice = db._conn.execute(
+        "SELECT id, invoice_kind, stars_price FROM stars_invoices ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert invoice["invoice_kind"] == "CANONICAL_SIGNUP"
+
+    pre_checkout = FakePreCheckoutQuery(str(invoice["id"]), "XTR", invoice["stars_price"])
+    asyncio.run(buy_handlers["pre_checkout"](pre_checkout))
+    assert pre_checkout.answers == [(True, None)], pre_checkout.answers
+
+    sp = FakeSuccessfulPayment(str(invoice["id"]), total_amount=invoice["stars_price"])
+    message = FakeSuccessfulPaymentMessage(sp, payer_id=555000111, bot=bot)
+    asyncio.run(buy_handlers["successful_payment"](message, FakeState()))
+
+    row = db.get_invoice(invoice["id"])
+    assert row["status"] == "paid"
+    assert row["account_id"] is not None
+    account = db.accounts.get_account(row["account_id"])
+    assert account is not None and account["status"] == "ACTIVE"
+    assert buy_handlers["trigger"].is_set()
+
+
+def test_bot_signup_pre_checkout_rejects_tampered_amount(db, buy_handlers):
+    _enable_stars(db)
+    bot = FakeBot()
+    call = FakeCall(555000111, "buy_pay:BASIC:30", bot=bot)
+    asyncio.run(buy_handlers["buy_pay"](call, FakeState()))
+    invoice = db._conn.execute(
+        "SELECT id, stars_price FROM stars_invoices ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    pre_checkout = FakePreCheckoutQuery(str(invoice["id"]), "XTR", invoice["stars_price"] + 1)
+    asyncio.run(buy_handlers["pre_checkout"](pre_checkout))
+    assert pre_checkout.answers[0][0] is False
+    assert db.get_invoice(invoice["id"])["status"] == "created"
 
 
 def test_bot_renewal_menu_shows_only_sellable_same_plan(db, buy_handlers):
