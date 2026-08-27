@@ -1638,9 +1638,75 @@ EXCLUDED-with-baseline), schema trigger guards.
 `Rollback:` line honored by design (compensating desired transitions are
 new epochs; never a blind full-object restore).
 
+**Independent review (2026-08-27, against `14bdbcf..5dabafb`): APPROVED WITH
+FIXES, one P0 found and corrected before deploy.** `apply_decision`'s
+late-arrival path (a new/rebound child appearing while the account was
+already mid-transition, `*_PENDING`/`ERROR_RECONCILE`, same direction as
+before) unconditionally opened a FRESH epoch even though the current epoch
+still had a genuinely unsettled sibling op (`PENDING`/`RETRY`/expired
+`IN_FLIGHT`). Bumping the epoch there made that sibling op permanently
+unreachable: `claim()`'s epoch-supersede guard refuses to dispatch an
+op whose epoch no longer matches the live state, and `finalize_account`
+only ever inspects the CURRENT epoch's ops — so the account could
+terminal-flip to `DISABLED` (or back to `ACTIVE`) while a sibling child's
+own WL inbound mutation had never actually been applied or verified
+remotely, silently masking a partial success as a full one. Reproduced
+deterministically with a new regression test before the fix, then fixed to
+match the behavior the module's own docstring already promised ("truly
+missing children get minted into it" — the SAME epoch, no bump) for the
+same-direction/non-terminal case; the epoch bump stays reserved for a
+genuine direction flip and for late arrivals discovered after the account
+already reached a terminal state (safe there by construction: every op of
+a terminal epoch is already `APPLIED`, so nothing outstanding can be
+orphaned). New regression test:
+`test_late_arrival_mid_transition_never_orphans_a_pending_sibling_op`.
+Also removed dead/unreachable code left after a `return` in
+`_derive_freeze_and_dispatch` (cosmetic, never executed). No other P0/P1
+found across the crash/retry, exact-inbound-mutation, and topology-gate
+hotspots; `resolve_current_parent_wl_pool()` is NOT actually called (the
+cycle re-derives the identical 3-line sequence inline via
+`compute_parent_wl_pool` instead) — behaviorally identical, a P3
+duplication worth collapsing later, not a second accounting path.
+Verified: targeted suite 32 passed (was 31 + 1 new), full regression 1334
+passed (was 1333 + 1 new) via the Playwright venv, `git diff --check`
+clean. Production-deployed application-code-only; see the deploy evidence
+entry for exact HEAD/service/backup facts.
+
 ## [ ] PH6-07 — Transactional outbox/reconciliation
 
-**Depends:** PH6-06. **Scope:** local transaction writes quota desired+event; worker calls/rereads/verifies/observed/retries; periodic reconciliation.
+**Depends:** PH6-06. **Scope narrowed by PH6-06's independent review
+(2026-08-27):** PH6-06 already built the durable local-transaction
+desired+event writes, the per-op outbox with lease/attempts/manifest-freeze,
+and the observe→freeze→dispatch→verify worker loop with bounded retry —
+this is NOT a second outbox for PH6-07 to duplicate; PH6-07 wraps the
+EXISTING `run_wl_enforcement_cycle`/`WLEnforcementStore`, it does not
+reimplement them. What genuinely remains, confirmed against the actual
+code (not assumed from the roadmap text alone):
+- **Scheduler/worker lifecycle** — turning the on-demand
+  `python -m scripts.run_wl_quota_enforcement` invocation into an actually
+  running process (systemd service/timer or equivalent cadence loop).
+  Nothing in this repo schedules it today.
+- **Periodic reconciliation** — calling the cycle on a recurring cadence at
+  all; today it only ever runs when a human/script invokes it once.
+- **Post-terminal / remote drift detection and recovery** — PH6-06's own
+  reread/verify only ever fires while driving a NEWLY minted op (a fresh
+  decision or a late-arriving child); an already-terminal account with no
+  new decision is deliberately never re-observed
+  (`test_zero_effect_input_changes_do_not_reopen_the_machine` pins this).
+  A manually reverted remote mutation, or Marzban's own persistent
+  `excluded_inbounds` silently re-including a NEWLY ADDED WL inbound tag
+  for an already-suspended user (the documented known limitation), is
+  real drift PH6-06 structurally cannot and does not see. PH6-07 owns
+  scanning already-converged children on a cadence independent of any new
+  decision.
+- **Backlog/observability** — today the only signal is the on-demand
+  script's aggregate JSON summary and the per-account `ERROR_RECONCILE`
+  flag readable straight from the DB; no dashboard/alerting/backlog-depth
+  reporting exists.
+- **Desired/observed convergence beyond decision-triggered dispatch** —
+  PH6-06 already achieves this exactly at dispatch/finalize time; PH6-07's
+  job is making that check happen continuously, not building a second
+  convergence mechanism.
 **Tests:** crash before/after DB/remote/ACK, duplicates/restart/outage.
 **Rollback:** worker pause leaves pending events; no blind rollback when remote succeeded.
 

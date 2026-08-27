@@ -1,4 +1,88 @@
-# AGENT_HANDOFF — PH6-06 exact inbound-only WL enforcement state machine implemented and fully tested locally; dormant, no push, NO deploy; production verified read-only compatible
+# AGENT_HANDOFF — PH6-06 independent review APPROVED WITH FIXES (one real P0 found, fixed, regression-tested); deploy in progress this session
+
+Updated: 2026-08-27 (independent-review session, starting from local
+`5dabafb` / origin+production `14bdbcf`). **This top section supersedes
+everything below.** Owner asked for an independent review of the PH6-06
+checkpoint left by the prior (GLM) session, explicit instruction not to
+trust its self-report without independent verification, plus a
+conditional production deploy authorization if the verdict came back
+APPROVED or APPROVED WITH FIXES.
+
+## Verdict: APPROVED WITH FIXES
+
+Read `AGENT_HANDOFF.md`/`ROADMAP.md` PH0-05/PH6-01..07 sections, then the
+full diff `14bdbcf..5dabafb` line by line (schema, machine, contract,
+broker branch, client wrapper, runner, tests) before touching anything.
+
+**One real P0 found and fixed** — see the PH6-06 roadmap entry's own
+"Independent review" note for the full mechanism: `apply_decision`'s
+late-arrival path could bump the enforcement epoch while a sibling child's
+op in the SAME epoch was still genuinely unsettled (RETRY/PENDING/expired
+lease), silently orphaning it past `claim()`'s epoch-supersede guard and
+letting `finalize_account` terminal-flip the account on an incomplete op
+set. Reproduced deterministically first (a temporary probe test), then
+fixed in `src/wl_enforcement.py::apply_decision` to mint late arrivals into
+the SAME epoch whenever the state is already mid-transition and the
+direction hasn't changed — matching what the function's own docstring
+already promised. Kept as a permanent regression test:
+`test_late_arrival_mid_transition_never_orphans_a_pending_sibling_op` in
+`tests/test_wl_enforcement.py`. Also deleted dead/unreachable code after a
+`return` in `_derive_freeze_and_dispatch` (cosmetic).
+
+**Everything else independently verified, not just re-read:** exact
+inbound-only mutation semantics (only `inbounds.vless` ever moves; static
+PH0-05 allowlist only; no fuzzy matching; UUID/status/expire/data_limit
+byte-stable; empty-remainder EXCLUDE refused; INCLUDE baseline restricted
+to the allowlist), the topology fail-closed gate
+(`require_topology_ok()` before any decision, zero transitions on
+mismatch/unreachable/stale-version), the crash/retry lease mechanics
+(restart before mutation, restart after remote success before ACK,
+manifest first-writer-wins, attempt-cap → permanent `ERROR`, exactly-once
+by observation not bookkeeping), and `ERROR_RECONCILE` recovery being
+verification-only (never a blind inverse mutation). One documentation
+mismatch caught along the way (not a defect): the module's own docstring
+says decisions come from PH6-04's `resolve_current_parent_wl_pool()`, but
+the actual code re-derives the identical 3-line sequence inline via
+`compute_parent_wl_pool` instead of calling it — behaviorally identical,
+a P3 duplication-cleanup opportunity, not a second accounting path.
+
+**PH6-07 boundary — roadmap updated, not just re-confirmed:** PH6-06
+already contains everything the old PH6-07 roadmap text described as its
+own scope ("local transaction writes quota desired+event; worker
+calls/rereads/verifies/observed/retries"). `ROADMAP.md`'s PH6-07 entry is
+now rewritten to name only what's genuinely still missing: scheduler/
+worker lifecycle (nothing runs the cycle automatically today), periodic
+reconciliation cadence, post-terminal/remote drift detection and recovery
+(the documented `excluded_inbounds` known-limitation is real and
+untouched — confirmed deliberately NOT auto-repaired by
+`test_zero_effect_input_changes_do_not_reopen_the_machine`), and backlog/
+observability. PH6-06 is not a hidden PH6-07 and PH6-07 was not started.
+
+## Tests
+
+Targeted `tests/test_wl_enforcement.py`: **32 passed** (GLM's 31 + 1 new
+regression for the P0 above). Related suites re-run green (wl topology/
+topology-guard/usage-ledger/parent-pool/period-admin-reset/packages,
+marzban broker, child provisioning/lifecycle/retention, parent sync,
+device slots, admin operational admin): **286 passed**. Full regression
+via the Playwright venv (`/home/beykus/mgboost-pw-venv`, all suites):
+**1334 passed, 0 failed, 0 skipped** (GLM's claimed 1333 independently
+reproduced almost exactly — +1 for the new regression test; the number
+itself was NOT trusted blind, it was re-run from scratch in a separate
+venv). Hit the same `/tmp`-quota failure class GLM's own handoff already
+documented (~3400 fresh anonymous `tmp*` dirs, tmpfs 80% full, each holding
+only an empty per-test `db.sqlite3`, zero owning processes running) —
+confirmed with the owner before deleting, then deleted only that exact
+anonymous pattern; venvs/caches/repo untouched, matching the established
+precedent. `git diff --check` clean; all changed/new python files compile.
+
+## Exact next step
+
+[[UPDATED BELOW ONCE DEPLOY COMPLETES THIS SAME SESSION]]
+
+---
+
+# PRIOR HANDOFF — PH6-06 exact inbound-only WL enforcement state machine implemented and fully tested locally; dormant, no push, NO deploy; production verified read-only compatible
 
 Updated: 2026-08-27 (implementation session, starting from local = origin =
 production `14bdbcf`, working tree clean). **This top section supersedes

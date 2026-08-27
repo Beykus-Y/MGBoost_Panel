@@ -302,23 +302,38 @@ class WLEnforcementStore:
                         self._conn.commit()
                         return {"state": state, "prepared": prepared}
                     mintable = children if not direction_matches else missing
+                    epoch_opened = True
                 elif state["last_direction"] == direction:
                     if not missing:
                         self._conn.commit()
                         return {"state": state, "prepared": prepared}
+                    # Late arrival mid-transition (PENDING/ERROR_RECONCILE,
+                    # same direction): mint into the SAME epoch, never bump
+                    # it. Bumping here would supersede any still-open
+                    # sibling op of this epoch (PENDING/RETRY/IN_FLIGHT) via
+                    # claim()'s epoch guard, letting finalize_account
+                    # terminal-flip on a smaller op set than the one that
+                    # must actually converge -- a real defect caught by
+                    # `test_late_arrival_mid_transition_never_orphans_...`.
                     mintable = missing
+                    epoch_opened = False
                 else:
                     mintable = children
+                    epoch_opened = True
 
-                self._open_epoch_locked(state, direction=direction, pool=pool, now=timestamp)
-                state = self.get_state(account_id)
+                if epoch_opened:
+                    self._open_epoch_locked(state, direction=direction, pool=pool, now=timestamp)
+                    state = self.get_state(account_id)
                 prepared += [
                     self._prepare_op_locked(state, child, now=timestamp)
                     for child in mintable
                 ]
                 self._conn.commit()
                 refreshed = self.get_state(account_id)
-                return {"state": refreshed, "prepared": prepared, "epoch_opened": True}
+                result = {"state": refreshed, "prepared": prepared}
+                if epoch_opened:
+                    result["epoch_opened"] = True
+                return result
             except Exception:
                 self._conn.rollback()
                 raise
@@ -826,12 +841,6 @@ def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzb
     store.record_manifest(operation_id, worker_id=worker_id, manifest=manifest, now=now)
     return _dispatch_frozen_manifest(store, claimed, payload, manifest,
                                      service_marzban, worker_id=worker_id, now=now)
-    if result["outcome"] == "REMOTE_MISSING":
-        store.record_error(operation_id, error_class="REMOTE_MISSING", now=now)
-        return None
-    return store.acknowledge(
-        operation_id, worker_id=worker_id, outcome=result["outcome"], now=now,
-    )
 
 
 # ----------------------------------------------------------------------

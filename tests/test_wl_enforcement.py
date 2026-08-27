@@ -1196,3 +1196,49 @@ def test_zero_effect_input_changes_do_not_reopen_the_machine(db):
     assert state["epoch"] == disabled_state["epoch"]
     # converged no-op evaluations don't churn the machine row either
     assert state["row_version"] <= row_version + 3  # only finalize CAS bumps are absent
+
+
+def test_late_arrival_mid_transition_never_orphans_a_pending_sibling_op(db, monkeypatch):
+    """A late-arriving child while an existing sibling op of the SAME epoch
+    is still outstanding (RETRY, not APPLIED, not ERROR) must be minted into
+    the SAME epoch -- never a bumped one. Bumping here would let the sibling
+    op's epoch mismatch claim()'s live-epoch check (silently superseded,
+    never retried) while finalize_account only inspects the NEW epoch's
+    ops, terminal-flipping the account to DISABLED even though the original
+    child's WL exclusion was never actually applied/verified remotely."""
+    import src.wl_enforcement as wl_mod
+    monkeypatch.setattr(wl_mod, "RETRY_DELAY_SECONDS", 0)
+    fx = _enforce_fixture(db, mapping="WL_LATE_MIDXN")
+    account_id = fx["account"]["account_id"]
+    original = fx["children"][0]
+    period = _seed_limited_period(db, account_id=account_id, now=NOW)
+    _burn_quota(db, account_id=account_id, child_intent_id=original["fx_child"],
+                period_id=period, total_bytes=2_000_000_000)
+
+    fx["remote"].outage = True
+    run_wl_enforcement_cycle(db=db, service_marzban=fx["client"], worker_id="mid-0",
+                             now=NOW, topology_observer=_ok_observer())
+    op1 = db.wl_enforcement.epoch_ops(account_id, 1)[0]
+    assert op1["state"] == "RETRY"  # original child's op did NOT converge yet
+
+    fx["remote"].outage = False
+    joiner = _ensure_extra_child(db, fx["account"], fx["alias_id"], fx["remote"],
+                                 hwid="privacy-safe-mid-transition-joiner")
+    _give_child_wl_tags(fx["remote"], joiner["child_username"])
+
+    run_wl_enforcement_cycle(db=db, service_marzban=fx["client"], worker_id="mid-1",
+                             now=NOW + 1, topology_observer=_ok_observer())
+
+    state = db.wl_enforcement.get_state(account_id)
+    # Same-direction late arrival mid-transition must NOT bump the epoch.
+    assert state["epoch"] == 1
+    op1_after = db.wl_enforcement.get_op(op1["operation_id"])
+    assert op1_after["state"] == "APPLIED"
+    joiner_op = next(
+        o for o in db.wl_enforcement.epoch_ops(account_id, 1)
+        if o["child_intent_id"] != op1["child_intent_id"]
+    )
+    assert joiner_op["state"] == "APPLIED"
+    assert state["state"] == "DISABLED"
+    assert _inbounds_of(fx["remote"], original["username"]) == [NON_WL_A]
+    assert _inbounds_of(fx["remote"], joiner["child_username"]) == [NON_WL_A]

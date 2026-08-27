@@ -18,8 +18,11 @@
 ### Added
 
 - PH6-06 exact inbound-only WL quota-enforcement state machine
-  (2026-08-27, implemented and fully tested locally; **NOT deployed,
-  dormant, no scheduler/route/UI wiring**): per-account
+  (2026-08-27, **independently reviewed, one real P0 found and fixed
+  (`apply_decision` could orphan a sibling's still-open op on a
+  same-direction late arrival mid-transition, masking partial success as a
+  terminal state), production-deployed application-code-only; dormant, no
+  scheduler/route/UI wiring**): per-account
   `ACTIVE -> DISABLE_PENDING -> DISABLED` /
   `DISABLED -> ENABLE_PENDING -> ACTIVE` /
   `ERROR_RECONCILE` machine over a new additive checksum-pinned schema
