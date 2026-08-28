@@ -1,0 +1,34 @@
+[Unit]
+Description=MGBoost WL quota enforcement + reconciliation cycle (PH6-07)
+After=local-fs.target mgboost-panel.service
+Documentation=file:/opt/MGBoost_Panel/ROADMAP.md
+
+[Service]
+Type=oneshot
+User=mgboost
+Group=mgboost
+UMask=0077
+WorkingDirectory=/opt/MGBoost_Panel
+ExecStart=/opt/mgboost-venvs/ph1-07/bin/python /opt/MGBoost_Panel/scripts/run_wl_quota_enforcement.py --db /opt/MGBoost_Panel/data/db.sqlite3 --trigger SCHEDULED
+Environment=PYTHONPATH=/opt/MGBoost_Panel
+Environment=PYTHONDONTWRITEBYTECODE=1
+# One bounded cycle; overlap with another invocation is impossible both at
+# the systemd level (oneshot) and at the process level (non-blocking flock).
+TimeoutStartSec=900
+# Clean exit codes: 0 = cycle finished (any recorded outcome), no secrets in
+# argv, journald gets only the aggregate identifier-free JSON summary.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/opt/MGBoost_Panel/data
+
+[Install]
+WantedBy=multi-user.target

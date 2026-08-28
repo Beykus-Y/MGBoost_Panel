@@ -543,6 +543,47 @@
 - PH1-07 dependency hardening развёрнут на production без обновления Marzban application/schema: immutable Marzban 0.8.4 base использует hash-pinned `python-multipart 0.0.32`, а MGBoost — изолированный hash-locked Python runtime с `aiohttp 3.14.3`/`aiogram 3.30.0`/`aiohttp-socks 0.12.0`. Masked semantic pre/post gate подтвердил нулевые изменения UUID, legacy token/URL, expiry, HWID/device bindings, tariffs и рабочих VPN-конфигураций.
 - PH1-08 Marzban login-notification hardening развёрнут на production: failed-login Telegram/Discord report получает фиксированный `🔒` вместо введённого пароля. Узкий AST-validated build patch не меняет password validation, login HTTP contract или пользовательские VPN credentials; production canary при включённых notifications не появился в report/response/container/journal/nginx logs.
 
+### Operations
+
+- PH6-07 production WL enforcement runtime (2026-08-28, реализовано локально
+  от `4c9d832`; checkpoint only — НЕ запушено, НЕ задеплоено, production
+  read-only): существующий on-demand PH6-06 enforcement превращён в
+  постоянно работающий, crash-safe и наблюдаемый runtime БЕЗ второго
+  enforcement engine и без второго outbox. Новый systemd timer
+  `mgboost-wl-enforcement.timer` + hardened oneshot
+  `mgboost-wl-enforcement.service` запускают единственный оркестрированный
+  цикл (`src/wl_reconciliation.py::run_wl_reconciliation_cycle` через
+  `scripts/run_wl_quota_enforcement.py`): overlap запрещён non-blocking
+  flock-локом (параллельный timer/manual запуск → `SKIPPED_BUSY`), crash
+  между шагами восстанавливается по durable op-rows, `TimeoutStartSec=900`,
+  в journald только агрегатный JSON без идентификаторов; cadence —
+  технические настраиваемые 15 минут, БЕЗ claims о максимальном overshoot
+  (PH6-09 отдельно). Каждый цикл: fresh PH6-01 topology assertion
+  (fail-closed блокирует весь цикл), canonical PH6-04 pool
+  (`resolve_current_parent_wl_pool`, inline-дублирование в engine убрано),
+  штатный decision/dispatch/finalize pass, затем post-terminal drift scan:
+  уже ACTIVE/DISABLED аккаунты пере-наблюдаются на каждом цикле;
+  `WL_PRESENT_WHILE_EXCLUDED`/`WL_MISSING_WHILE_INCLUDED` чинятся через
+  СУЩЕСТВУЮЩУЮ машину (новый same-direction epoch только по реально
+  drift-нутым детям, exactly-once by observation, non-WL membership
+  byte-stable); `REMOTE_MISSING`/`UUID_MISMATCH`/`NON_WL_MEMBERSHIP_LOST`/
+  `WL_UNEXPECTED_WHILE_INCLUDED` → `ERROR_RECONCILE` без единой мутации,
+  без auto-create, без угадываний; transient-сбоны наблюдения не считаются
+  drift. Документированный gap «newly-added approved WL inbound» закрыт
+  (только после operator-approved versioned baseline update; unknown
+  wl-like теги по-прежнему fail-closed). Legacy UNLIMITED/STANDARD
+  структурно невидимы (P0 abstain contract сохранён). Наблюдаемость:
+  additive миграция `ph6_07_wl_reconciliation_v1` — append-only таблицы
+  cycles (heartbeat) + drift evidence и identifier-free read model
+  `backlog_snapshot()` (last/ok cycle, topology, состояния аккаунтов,
+  op/backlog counts, oldest backlog age, drift counters, last error class).
+  Ожидаемый steady-state после deploy на текущем production (0 ACTIVE
+  WL-периодов, enforcement таблицы пусты): timer работает, cycles `OK`,
+  remote WL mutations = 0, drift = 0 — до создания LIMITED WL canary.
+  Regression: новый suite `tests/test_wl_reconciliation.py` 18 passed;
+  targeted PH6-01..06 + P0 hotfix + broker 190 passed; full regression —
+  см. AGENT_HANDOFF.
+
 ### Changed
 
 - После обновления администратору потребуется войти заново: legacy `mz_token` очищается, а admin asset использует новый cache-buster. Текущие admin sessions являются process-local и завершаются при перезапуске MGBoost.

@@ -89,9 +89,13 @@ from .wl_enforcement_contract import (
     normalize_observed_vless,
     validate_wl_set_request,
 )
-from .wl_topology import WL_INBOUND_TAGS
+from . import wl_topology as _wl_topology
 from .wl_topology_guard import fetch_live_topology_observation
-from .wl_parent_pool import compute_parent_wl_pool
+from .wl_parent_pool import resolve_current_parent_wl_pool
+
+# Kept as a module-level name so the versioned PH0-05 baseline stays
+# patchable/visible at this layer exactly as before.
+WL_INBOUND_TAGS = _wl_topology.WL_INBOUND_TAGS
 
 
 class WLEnforcementError(RuntimeError):
@@ -198,6 +202,79 @@ class WLEnforcementStore:
         if not rows:
             return None
         return sorted(json.loads(rows[0]["manifest_json"])["baseline_full"])
+
+    def latest_include_baseline(self, child_intent_id: int) -> list[str] | None:
+        """The frozen baseline_full of the most recent prior INCLUDED op for
+        this child (PH6-07 drift repair): a child that was INCLUDED from its
+        very first epoch has no prior disable, so its own frozen pre-include
+        observation is the only durable evidence of its legitimate full
+        membership. Still only ever filtered through the static allowlist
+        before anything is restored."""
+        rows = self._conn.execute(
+            "SELECT manifest_json FROM mgboost_wl_enforcement_ops "
+            "WHERE child_intent_id=? AND direction='INCLUDED' AND manifest_json IS NOT NULL "
+            "ORDER BY epoch DESC, id DESC LIMIT 1",
+            (int(child_intent_id),),
+        ).fetchall()
+        if not rows:
+            return None
+        return sorted(json.loads(rows[0]["manifest_json"])["baseline_full"])
+
+    def unsettled_ops(self, account_id: int, epoch: int, *, now: int) -> list[dict]:
+        """Every non-terminal op of the given epoch: PENDING/RETRY, plus
+        leases whose owner died mid-flight. The exact set the full cycle
+        drives; PH6-07 repair reuses it verbatim."""
+        return [
+            dict(row) for row in self._conn.execute(
+                "SELECT * FROM mgboost_wl_enforcement_ops "
+                "WHERE account_id=? AND epoch=? "
+                "AND (state IN ('PENDING','RETRY') "
+                "     OR (state='IN_FLIGHT' AND lease_expires_at<=?))",
+                (int(account_id), int(epoch), int(now)),
+            )
+        ]
+
+    def open_repair_epoch(self, account_id: int, *, direction: str, children: list[dict],
+                          pool: dict | None, now: int) -> dict:
+        """PH6-07 post-terminal drift repair (driven by
+        `src.wl_reconciliation`, NOT a second engine): open a fresh epoch for
+        the account's CURRENT desired direction and mint ops ONLY for the
+        provably-drifted children (the late-arrival shape over a terminal
+        state). Refuses anything but a terminal state already matching the
+        direction with zero unsettled ops -- a mid-transition or errored
+        account is the regular machine's business, never a repair's."""
+        if direction not in ("EXCLUDED", "INCLUDED"):
+            raise WLEnforcementError("invalid repair direction")
+        if not children:
+            raise WLEnforcementError("repair requires at least one drifted child")
+        account_id = int(account_id)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                state = self.get_state(account_id)
+                if state is None or state["state"] not in ("ACTIVE", "DISABLED"):
+                    raise WLEnforcementConflict(
+                        "drift repair requires a terminal machine state"
+                    )
+                if state["last_direction"] != direction:
+                    raise WLEnforcementConflict(
+                        "drift repair direction must match the terminal state"
+                    )
+                if self.unsettled_ops(account_id, state["epoch"], now=now):
+                    raise WLEnforcementConflict(
+                        "drift repair refused while the live epoch has unsettled ops"
+                    )
+                self._open_epoch_locked(state, direction=direction, pool=pool, now=int(now))
+                state = self.get_state(account_id)
+                prepared = [
+                    self._prepare_op_locked(state, child, now=int(now))
+                    for child in children
+                ]
+                self._conn.commit()
+                return {"state": self.get_state(account_id), "prepared": prepared}
+            except Exception:
+                self._conn.rollback()
+                raise
 
     # ------------------------------------------------------------------
     # Decision application -- the only place epochs/states are opened
@@ -811,6 +888,13 @@ def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzb
     else:
         baseline_full_prior = store.latest_exclude_baseline(claimed["child_intent_id"])
         if baseline_full_prior is None:
+            # PH6-07 repair path for a child that was INCLUDED from its very
+            # first epoch (no prior disable exists): the child's own frozen
+            # INCLUDED observation is the only durable evidence of its
+            # legitimate membership. Same discipline as the EXCLUDED baseline:
+            # frozen evidence + allowlist filter, never live-derived trust.
+            baseline_full_prior = store.latest_include_baseline(claimed["child_intent_id"])
+        if baseline_full_prior is None:
             store.record_error(
                 operation_id, error_class="NO_BASELINE_FOR_INCLUDE", now=now,
             )
@@ -869,6 +953,42 @@ def _op_target(op: dict) -> list[str]:
     return sorted(manifest.get("target", []))
 
 
+def drive_account_ops(db, service_marzban, account_id: int, *, worker_id: str,
+                      now: int) -> dict:
+    """Dispatch every unsettled op of the account's LIVE epoch and drive the
+    machine row to terminal (or ERROR_RECONCILE) with the usual independent
+    live reread. The full cycle uses this after each account decision; PH6-07
+    drift repair reuses it verbatim so repaired accounts converge through the
+    EXACT same engine path (same claim guard, same manifest discipline, same
+    verify) instead of a parallel one."""
+    store: WLEnforcementStore = db.wl_enforcement
+    result = {"ops_applied": 0, "ops_errored": 0, "flipped": None}
+
+    def verify_one(op: dict) -> bool:
+        try:
+            observed = observe_child_vless(service_marzban, _op_username(op))
+        except Exception:  # noqa: BLE001 -- unverifiable is not convergence
+            return False
+        return observed == _op_target(op)
+
+    state = store.get_state(account_id)
+    if state is None:
+        return result
+    for op in store.unsettled_ops(account_id, state["epoch"], now=now):
+        process_wl_op(
+            db, op["operation_id"], worker_id=worker_id,
+            service_marzban=service_marzban, now=now,
+        )
+        fresh = store.get_op(op["operation_id"])
+        if fresh and fresh["state"] == "APPLIED":
+            result["ops_applied"] += 1
+        elif fresh and fresh["state"] == "ERROR":
+            result["ops_errored"] += 1
+    finalized = store.finalize_account(account_id, verify_fn=verify_one, now=now)
+    result["flipped"] = finalized.get("flipped")
+    return result
+
+
 def run_wl_enforcement_cycle(
     *,
     db,
@@ -907,41 +1027,23 @@ def run_wl_enforcement_cycle(
     }
     store: WLEnforcementStore = db.wl_enforcement
 
-    def verify_one(op: dict) -> bool:
-        try:
-            observed = observe_child_vless(service_marzban, _op_username(op))
-        except Exception:  # noqa: BLE001 -- unverifiable is not convergence
-            return False
-        return observed == _op_target(op)
-
     for account_id in _accounts_in_scope(db._conn):
         summary["accounts_evaluated"] += 1
         try:
-            db.wl_usage_ledger.sync_wl_period_statuses(account_id=account_id, now=timestamp)
-            wl_period_id = db.wl_usage_ledger.resolve_active_wl_period(account_id, timestamp)
-            pool = (
-                None if wl_period_id is None
-                else compute_parent_wl_pool(db._conn, account_id=account_id, wl_period_id=wl_period_id)
-            )
+            pool = resolve_current_parent_wl_pool(db, account_id=account_id, now=timestamp)
             decision = store.apply_decision(account_id, pool=pool, now=timestamp)
             if decision is None:
                 summary["accounts_abstained"] += 1
                 continue
             if decision.pop("epoch_opened", False):
                 summary["epochs_opened"] += 1
-            for op in decision["prepared"]:
-                summary["ops_prepared"] += 1
-                process_wl_op(
-                    db, op["operation_id"], worker_id=worker_id,
-                    service_marzban=service_marzban, now=timestamp,
-                )
-                fresh = store.get_op(op["operation_id"])
-                if fresh and fresh["state"] == "APPLIED":
-                    summary["ops_applied"] += 1
-                elif fresh and fresh["state"] == "ERROR":
-                    summary["ops_errored"] += 1
-            finalized = store.finalize_account(account_id, verify_fn=verify_one, now=timestamp)
-            flipped = finalized.get("flipped")
+            summary["ops_prepared"] += len(decision["prepared"])
+            driven = drive_account_ops(
+                db, service_marzban, account_id, worker_id=worker_id, now=timestamp,
+            )
+            summary["ops_applied"] += driven["ops_applied"]
+            summary["ops_errored"] += driven["ops_errored"]
+            flipped = driven["flipped"]
             if flipped == "DISABLED":
                 summary["accounts_disabled"] += 1
             elif flipped == "ACTIVE":

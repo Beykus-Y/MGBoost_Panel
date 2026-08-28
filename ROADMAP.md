@@ -1908,43 +1908,77 @@ passed (was 1333 + 1 new) via the Playwright venv, `git diff --check`
 clean. Production-deployed application-code-only; see the deploy evidence
 entry for exact HEAD/service/backup facts.
 
-## [ ] PH6-07 — Transactional outbox/reconciliation
+## [x] PH6-07 — Production WL enforcement runtime: scheduler / reconciliation / drift / backlog — implemented locally 2026-08-28, checkpoint only (NO push, NO deploy)
 
 **Depends:** PH6-06. **Scope narrowed by PH6-06's independent review
 (2026-08-27):** PH6-06 already built the durable local-transaction
 desired+event writes, the per-op outbox with lease/attempts/manifest-freeze,
 and the observe→freeze→dispatch→verify worker loop with bounded retry —
-this is NOT a second outbox for PH6-07 to duplicate; PH6-07 wraps the
-EXISTING `run_wl_enforcement_cycle`/`WLEnforcementStore`, it does not
-reimplement them. What genuinely remains, confirmed against the actual
-code (not assumed from the roadmap text alone):
-- **Scheduler/worker lifecycle** — turning the on-demand
-  `python -m scripts.run_wl_quota_enforcement` invocation into an actually
-  running process (systemd service/timer or equivalent cadence loop).
-  Nothing in this repo schedules it today.
-- **Periodic reconciliation** — calling the cycle on a recurring cadence at
-  all; today it only ever runs when a human/script invokes it once.
-- **Post-terminal / remote drift detection and recovery** — PH6-06's own
-  reread/verify only ever fires while driving a NEWLY minted op (a fresh
-  decision or a late-arriving child); an already-terminal account with no
-  new decision is deliberately never re-observed
-  (`test_zero_effect_input_changes_do_not_reopen_the_machine` pins this).
-  A manually reverted remote mutation, or Marzban's own persistent
-  `excluded_inbounds` silently re-including a NEWLY ADDED WL inbound tag
-  for an already-suspended user (the documented known limitation), is
-  real drift PH6-06 structurally cannot and does not see. PH6-07 owns
-  scanning already-converged children on a cadence independent of any new
-  decision.
-- **Backlog/observability** — today the only signal is the on-demand
-  script's aggregate JSON summary and the per-account `ERROR_RECONCILE`
-  flag readable straight from the DB; no dashboard/alerting/backlog-depth
-  reporting exists.
-- **Desired/observed convergence beyond decision-triggered dispatch** —
-  PH6-06 already achieves this exactly at dispatch/finalize time; PH6-07's
-  job is making that check happen continuously, not building a second
-  convergence mechanism.
-**Tests:** crash before/after DB/remote/ACK, duplicates/restart/outage.
-**Rollback:** worker pause leaves pending events; no blind rollback when remote succeeded.
+PH6-07 wraps the EXISTING `run_wl_enforcement_cycle`/`WLEnforcementStore`
+(the same epoch/op/lease/manifest mechanics), it does NOT reimplement them;
+there is no second enforcement engine and no second outbox.
+
+**Done (local checkpoint `ph6-07-wl-runtime` off `4c9d832`):**
+- **Scheduler/worker lifecycle** — `mgboost-wl-enforcement.timer` +
+  `mgboost-wl-enforcement.service` (hardened oneshot, telemetry-cleanup unit
+  shape): one cycle = one bounded invocation of the new orchestrator
+  `run_wl_reconciliation_cycle` (`src/wl_reconciliation.py`), shared by the
+  timer (`--trigger SCHEDULED`) and manual runs (`--trigger MANUAL`) through
+  the single existing entry point `scripts/run_wl_quota_enforcement.py`.
+  Overlap forbidden via a non-blocking `flock` cycle lock (concurrent
+  timer/manual invocation → `SKIPPED_BUSY`, never queued); crash/restart-safe
+  (lock dies with the process; pending work is durable op rows);
+  `TimeoutStartSec=900`; clean exit codes; no secrets in argv/logs; pause of
+  the timer loses nothing. **Cadence is a technical configurable default
+  (15 min) — NOT a product SLA, no maximum-overshoot claim; PH6-09 owns
+  overshoot/outage policy.**
+- **Periodic reconciliation** — fresh PH6-01 topology assertion per cycle
+  (fail-closed blocks the WHOLE cycle before any observation); canonical
+  PH6-04 pool via `resolve_current_parent_wl_pool` (the inline 3-line
+  duplication in the engine cycle was removed — identical semantics, PH6-06
+  suite green); the existing decision/dispatch/finalize pass; then the
+  post-terminal drift scan.
+- **Post-terminal drift detection + safe repair** (`scan_terminal_drift`) —
+  already-terminal accounts are re-observed each cycle (read-only
+  `legacy.user.get` + local UUID-verifier check). Exact classification only:
+  `WL_PRESENT_WHILE_EXCLUDED` / `WL_MISSING_WHILE_INCLUDED` → repair through
+  the EXISTING machinery (`WLEnforcementStore.open_repair_epoch` mints a
+  fresh same-direction epoch over ONLY the drifted children; convergence via
+  the engine's own `drive_account_ops` — claim guard, manifest freeze,
+  exactly-once by observation); `WL_UNEXPECTED_WHILE_INCLUDED` /
+  `NON_WL_MEMBERSHIP_LOST` / `REMOTE_MISSING` / `UUID_MISMATCH` /
+  `REMOTE_UNREADABLE` → `ERROR_RECONCILE`, ZERO mutation, never auto-create,
+  never guess; any flagged finding suppresses repair for that account this
+  cycle. Repair requires the fresh canonical decision to still prove the
+  frozen direction — no invented entitlements. The documented
+  newly-added-WL-inbound gap is closed for operator-APPROVED versioned
+  baseline updates (unknown tags still fail closed — PH6-01 contract kept).
+- **Backlog/observability** — additive checksum-pinned migration
+  `ph6_07_wl_reconciliation_v1`: append-only `mgboost_wl_reconciliation_cycles`
+  (heartbeat: outcome/topology/engine summary/drift counters/last error class)
+  + `mgboost_wl_reconciliation_drift` (one row per REAL finding) +
+  `backlog_snapshot()` identifier-free operator read model. No telemetry DB;
+  no UUID/HWID/token/username anywhere.
+- **Legacy UNLIMITED / STANDARD invariants intact** — no-signal accounts stay
+  structurally invisible (no rows/ops/scan actions); the P0 abstain contract
+  held; only LIMITED accounts with a real ACTIVE canonical WL period
+  participate.
+
+**Tests:** new suite `tests/test_wl_reconciliation.py` (18 tests): steady-state
+zero-write rereads, manual WL re-add repair (exactly once, non-WL byte-stable),
+entitled restore / no-entitlement refusal, remote-missing/UUID-mismatch/
+non-WL-loss flagging with zero mutations, partial child outage isolation,
+newly-added approved WL inbound cleanup, unknown wl-like tag fail-closed
+whole-cycle block, legacy-UNLIMITED no-op, crash after repair-epoch before
+dispatch, expired-lease reclaim, duplicate-trigger lock, cycles+backlog read
+model. Targeted regression (PH6-01..06, P0 hotfix, broker, provisioning):
+190 passed. Full regression: see AGENT_HANDOFF.
+**Rollback:** `systemctl disable --now mgboost-wl-enforcement.timer` stops the
+runtime with zero durable loss; no blind rollback when remote succeeded.
+**Deploy acceptance expectation:** on the current production shape (0 ACTIVE
+`mgboost_wl_periods`, enforcement tables empty) the post-deploy steady state
+must be: timer active, cycles `OK`, remote WL mutations = 0, drift rows = 0 —
+until a LIMITED WL canary is deliberately created.
 
 ## [ ] PH6-08 — Effective quota/adjustment ledger
 

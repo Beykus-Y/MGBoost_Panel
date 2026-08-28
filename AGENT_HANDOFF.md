@@ -1,4 +1,128 @@
-# AGENT_HANDOFF — bot `/start` canonical-owner fix deployed to production (`7f5b18f`)
+# AGENT_HANDOFF — PH6-07 WL enforcement runtime (scheduler / reconciliation / drift / backlog) implemented and fully tested locally; local checkpoint ONLY — NO push, NO deploy, production READ-ONLY
+
+Updated: 2026-08-28 (PH6-07 implementation session, starting from local =
+origin = production `4c9d832`, working tree had only the unrelated untracked
+`scripts/support_goodwill_extend_5d_20260828.py`, which was NOT touched, NOT
+committed, NOT deleted). **This top section supersedes everything below.**
+Work done on branch `ph6-07-wl-runtime` (single local checkpoint commit off
+`4c9d832`). Production was read-only over SSH (HEAD/tables/units/counts
+verified; zero writes, zero restarts, zero unit installations).
+
+## Root cause / gap
+
+PH6-06 shipped a proven, crash-safe, exact inbound-only enforcement MACHINE
+but nothing ever ran it: no scheduler, no periodic reconciliation, no
+post-terminal drift detection (a terminal ACTIVE/DISABLED account was
+deliberately never re-observed, so a manual WL re-add or Marzban's persistent
+`excluded_inbounds` re-including a NEWLY-ADDED approved WL inbound for a
+suspended child was invisible forever), and no operator-grade backlog view.
+PH6-07 adds ONLY that continuous-convergence wrapper around the EXISTING
+engine — no second enforcement engine, no second outbox, no second quota
+calculation.
+
+## Architecture (see `docs/PHASE6_07_WL_RUNTIME.md` for the full runbook)
+
+- **Scheduler lifecycle**: `mgboost-wl-enforcement.timer` (technical
+  configurable 15-min `OnUnitActiveSec` cadence — NOT a product SLA, NO
+  overshoot claims; PH6-09 untouched) + hardened oneshot
+  `mgboost-wl-enforcement.service` (telemetry-cleanup unit shape,
+  `TimeoutStartSec=900`). Both the timer and manual runs use the ONE existing
+  entry point `scripts/run_wl_quota_enforcement.py` (new `--trigger
+  SCHEDULED|MANUAL`) → the new orchestrator
+  `src/wl_reconciliation.py::run_wl_reconciliation_cycle`. Overlap is
+  forbidden via a non-blocking `flock` cycle lock (concurrent invocation →
+  `SKIPPED_BUSY`, never queued; crash releases the lock; pause of the timer
+  loses nothing — pending work is durable op rows). No secrets in argv/logs.
+- **Per cycle**: fresh PH6-01 topology assertion (fail-closed blocks the
+  WHOLE cycle), canonical PH6-04 pool via `resolve_current_parent_wl_pool`
+  (the engine's inline 3-line duplication removed — identical semantics,
+  proven by the PH6-06 suite staying green), the existing
+  decision/dispatch/finalize pass, then `scan_terminal_drift`:
+  already-terminal accounts re-observed read-only each cycle with a local
+  UUID-verifier check; exact classification only —
+  `WL_PRESENT_WHILE_EXCLUDED`/`WL_MISSING_WHILE_INCLUDED` repaired through
+  the EXISTING machinery (`WLEnforcementStore.open_repair_epoch` mints a
+  fresh same-direction epoch over ONLY the drifted children; convergence via
+  the extracted `drive_account_ops`, same claim guard / manifest freeze /
+  exactly-once-by-observation / bounded retry); `WL_UNEXPECTED_WHILE_INCLUDED`,
+  `NON_WL_MEMBERSHIP_LOST`, `REMOTE_MISSING`, `UUID_MISMATCH`,
+  `REMOTE_UNREADABLE` → `ERROR_RECONCILE` with ZERO mutation (never
+  auto-create, never guess); any flagged finding suppresses repair for that
+  account that cycle. Repair requires the fresh canonical decision to still
+  prove the frozen direction. The newly-added-WL-inbound gap is closed for
+  operator-APPROVED versioned baseline updates; unknown wl-like tags still
+  fail closed whole-cycle (PH6-01 contract kept).
+- **Backlog/observability**: additive checksum-pinned migration
+  `ph6_07_wl_reconciliation_v1` — append-only
+  `mgboost_wl_reconciliation_cycles` (heartbeat: outcome/topology/engine
+  summary/drift counters/last error class) + `mgboost_wl_reconciliation_drift`
+  (one row per REAL finding) + identifier-free `backlog_snapshot()` read
+  model. No telemetry DB; no UUID/HWID/token/username anywhere.
+- **Invariants**: legacy UNLIMITED / no-signal accounts stay structurally
+  invisible (no rows/ops/scan actions — the P0 abstain contract held);
+  STANDARD never enters scope; only LIMITED with a real ACTIVE canonical WL
+  period participates. The PH6-05/08/09/10 boundaries were not touched.
+
+## Verification
+
+- RED first: `tests/test_wl_reconciliation.py` failed on clean `4c9d832`
+  (module absent; suite could not even collect — the genuinely missing
+  functions). After implementation: **18 passed** — steady-state zero-write
+  rereads over 3 cycles; manual WL re-add detected + repaired exactly once
+  (non-WL byte-stable); entitled WL restore / no-entitlement refusal;
+  remote-missing / UUID-mismatch / non-WL-loss flagging with zero mutations
+  and no auto-create; partial child outage isolation (transient read failure
+  ≠ drift, sibling still repaired); newly-added APPROVED WL inbound cleans the
+  suspended child (only the new tag removed); unknown wl-like tag blocks the
+  whole cycle (`BLOCKED_TOPOLOGY`, 0 mutations); legacy-UNLIMITED no-op;
+  crash after repair-epoch before dispatch converges next cycle with exactly
+  one mutation; expired lease reclaimed once; duplicate trigger lock-safe;
+  cycles + snapshot read model with no identifiers.
+- Targeted regression (PH6-01 topology guard/topology, PH6-02/03 ledger+schema,
+  PH6-04 pool, PH6-06 enforcement, P0 legacy WL provisioning hotfix, child
+  provisioning, Marzban broker + client policies, WL period lifecycle/admin
+  reset/packages): **190 passed**.
+- **Full regression: 1453 passed, 0 failed** (solo run, dedicated TMPDIR
+  `/home/beykus/mgboost-ph607-tmp`, Playwright venv).
+- `git diff --check` clean; all touched python compiles.
+- `systemd-analyze verify` on the two new units: parses clean; the only
+  complaint is the same environmental one the EXISTING production units also
+  produce on the dev machine (`/opt/mgboost-venvs/...` not present locally).
+
+## Production read-only preflight (SSH, ZERO writes/restarts/installs)
+
+HEAD `4c9d832` == local baseline == origin; `quick_check=ok`; 3 services
+active; `mgboost_wl_enforcement_states/ops` = 0/0 (PH6-06 dormant, no
+scheduler exists today); topology assertions: latest `2026-08-26-v1 ok=1`
+(3 recorded); **0 ACTIVE `mgboost_wl_periods`**; accounts=19; only the known
+untracked drift (`extra_configs.json`, `scripts/support_goodwill_...py`).
+
+## Deployment acceptance expectation (for the FUTURE owner-authorized deploy)
+
+Current production shape = legacy mostly UNLIMITED, one STANDARD canary, ZERO
+real LIMITED commercial WL accounts ⇒ expected steady state after deploy:
+**timer active, cycles recorded `OK`, remote WL mutations = 0, drift rows =
+0**, until a LIMITED WL canary is deliberately created. Deploy plan (backup →
+push/ff-pull → install the two new units → restart `mgboost-panel` (additive
+self-applying migration) → `enable --now` the timer → verify steady state) is
+in `docs/PHASE6_07_WL_RUNTIME.md`. Rollback: `systemctl disable --now
+mgboost-wl-enforcement.timer` — zero durable loss; no blind rollback when the
+remote already succeeded.
+
+## Honest boundaries
+
+- Cadence is a technical default; PH6-09 (overshoot/outage SLA policy), PH6-08
+  (package/adjustment ledger), PH6-10 (exhaustion UX), WL sales gate are NOT
+  started and NOT declared ready. PH6-09/10 remain `[ ]` in ROADMAP.
+- `WL_UNEXPECTED_WHILE_INCLUDED` / `NON_WL_MEMBERSHIP_LOST` findings are
+  flagged-only by design (this machinery can never restore non-WL inbounds;
+  ambiguous membership is never guessed at).
+- Included-baseline fallback (`latest_include_baseline`) only ever applies to
+  children with a prior frozen INCLUDED manifest (drift repair for a child
+  INCLUDED from its first epoch); the normal first-epoch INCLUDED path is
+  byte-identical to PH6-06.
+
+---
 
 Updated: 2026-08-28T12:13Z (deploy follow-up to the review/rebase session
 below). **This top section supersedes everything below.** `origin/main`

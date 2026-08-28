@@ -1,0 +1,16 @@
+[Unit]
+Description=Periodic MGBoost WL enforcement/reconciliation cadence (PH6-07)
+
+[Timer]
+# TECHNICAL default cadence only (configurable here): frequent enough for
+# regular reconciliation and bounded backlog drain. This is NOT a product
+# SLA and makes NO maximum-overshoot claim -- PH6-09 owns overshoot/outage
+# policy separately.
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=90s
+Persistent=true
+Unit=mgboost-wl-enforcement.service
+
+[Install]
+WantedBy=timers.target
