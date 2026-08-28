@@ -17,6 +17,27 @@
 
 ### Added
 
+- Commercial WL wiring (2026-08-28, implemented locally, checkpoint only —
+  NO push/deploy, реальная покупка не выполнялась): тарифы WL 199/349⭐,
+  Расширенный 249/399⭐ и Семейный 299/449⭐ (30/60 дней, device limit
+  3/6/12, quota 100/150/150 GB на каждый 30-дневный период) стали
+  purchasable через существующий canonical Telegram Stars signup/renewal
+  flow — без нового payment flow. 30d = один immutable WL period, 60d =
+  ровно два последовательных периода по полной quota (remainder не
+  переносится, история не мутируется); delivery LIMITED-аккаунта =
+  STANDARD + точная PH0-05 WL topology (посредством per-account
+  `tpl-<public_id>` шаблона; BASIC остаётся STANDARD-only с нулевым
+  WL-пересечением); packages (`WL_PACKAGE_*`) остаются server-side
+  непокупаемыми (PH6-08 отсутствует); upgrade/downgrade по-прежнему
+  контролируемый отказ (PH5-06). Минимальное расширение PH6-06: первый
+  INCLUDED-оп свежего LIMITED-аккаунта выводит baseline из pinned
+  provisioning-шаблона (hash-verify + allowlist-фильтр, fail closed)
+  вместо прежнего `NO_BASELINE_FOR_INCLUDE`. UI-каталог показывает
+  квоту per-period («100 GB каждые 30 дней (2 периода по 100 GB)»),
+  никогда как удвоенный общий лимит. Новый suite
+  `tests/test_commercial_wl_wiring.py` (27 тестов, включая сквозной
+  runtime-путь convergence/disable/restore и dispatcher successful_payment
+  path); обновлены тесты, пинившие прежний 3-SKU sellable gate.
 - PH6-09 overshoot/outage fail-safe поверх production PH6-07 (2026-08-28,
   implemented locally, checkpoint only — NO push/deploy): new systemd-юниты
   `mgboost-wl-usage-collector.{service,timer}` (канонический PH6-03

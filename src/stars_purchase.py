@@ -24,7 +24,7 @@ import sqlite3
 import time
 
 from .commercial_signup import (
-    SELLABLE_STANDARD_PLAN_CODES, SIGNUP_INVOICE_KIND, assert_plan_sellable,
+    SELLABLE_PLAN_CODES, SIGNUP_INVOICE_KIND, assert_plan_sellable,
 )
 from .entitlement_engine import calculate_effective_entitlement
 from .subscription_renewal import (
@@ -76,9 +76,11 @@ class StarsPurchaseStore:
         return self._plan_catalog.active_catalog("TELEGRAM_STARS")
 
     def sellable_catalog(self) -> list[dict]:
-        """The first-rollout purchasable SKUs: only the three STANDARD
-        plans, every duration the active catalog sells for them."""
-        sellable = set(SELLABLE_STANDARD_PLAN_CODES)
+        """The purchasable SKUs: the three STANDARD plans plus the three WL
+        plans (WL / EXTENDED / FAMILY), every duration the active catalog
+        sells for them. Packages are NOT plan SKUs and stay unpurchasable
+        (PH6-08 absent)."""
+        sellable = set(SELLABLE_PLAN_CODES)
         return [item for item in self.catalog() if item["plan_code"] in sellable]
 
     def create_invoice(self, *, telegram_id: int, plan_code: str, duration_days: int,

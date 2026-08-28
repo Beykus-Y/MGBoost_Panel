@@ -40,10 +40,14 @@ from .delivery_routing import STANDARD_PROFILE_CODE, DeliveryRoutingError
 from .wl_topology import WL_INBOUND_TAGS
 
 
-# First-rollout sellable plans: exactly the three non-WL STANDARD tariffs.
-# WL / EXTENDED / FAMILY are not purchasable in this rollout and are gated
-# here as well as in the catalog/UI layers.
+# First-rollout sellable plans: the three non-WL STANDARD tariffs. From the
+# commercial WL wiring rollout, the three LIMITED WL tariffs (WL / EXTENDED /
+# FAMILY) are sellable through the SAME canonical flow; the BASIC family
+# remains STANDARD-only and packages (WL_PACKAGE_*, PH6-08 absent) stay
+# structurally unpurchasable.
 SELLABLE_STANDARD_PLAN_CODES = ("BASIC", "BASIC_PLUS", "BASIC_PRO")
+SELLABLE_WL_PLAN_CODES = ("WL", "EXTENDED", "FAMILY")
+SELLABLE_PLAN_CODES = SELLABLE_STANDARD_PLAN_CODES + SELLABLE_WL_PLAN_CODES
 
 SIGNUP_INVOICE_KIND = "CANONICAL_SIGNUP"
 
@@ -83,10 +87,10 @@ def derive_template_username(account_public_id: str) -> str:
 
 
 def assert_plan_sellable(plan_code: str) -> None:
-    if plan_code not in SELLABLE_STANDARD_PLAN_CODES:
+    if plan_code not in SELLABLE_PLAN_CODES:
         raise PlanNotSellable(
-            "only the BASIC / BASIC_PLUS / BASIC_PRO STANDARD tariffs are "
-            "purchasable in this rollout"
+            "only the BASIC / BASIC_PLUS / BASIC_PRO STANDARD tariffs and the "
+            "WL / EXTENDED / FAMILY WL tariffs are purchasable"
         )
 
 
@@ -259,22 +263,55 @@ class CommercialSignupStore:
         if alias is None:
             raise CommercialSignupError("account has no provisioning alias")
 
+        # The paid signup invoice is the immutable authority for what this
+        # account's template must deliver: the BASIC family gets the STANDARD
+        # profile membership only; a WL tariff additionally gets the EXACT
+        # PH0-05 approved WL topology (never a per-tariff host list -- the
+        # tariff version stores only wl_mode; the tag set comes from the
+        # topology authority, and the STANDARD profile itself can never
+        # contain a WL tag). The signup job's invoice is the primary source;
+        # the account's current subscription plan is the fallback; anything
+        # unresolvable defaults to the (safe) STANDARD-only shape.
+        plan_row = self._conn.execute(
+            "SELECT pv.wl_mode FROM mgboost_signup_template_jobs j "
+            "JOIN stars_invoices i ON i.id=j.invoice_id "
+            "JOIN mgboost_plan_versions pv ON pv.id=i.plan_version_id "
+            "WHERE j.account_id=?",
+            (account_id,),
+        ).fetchone()
+        if plan_row is None:
+            plan_row = self._conn.execute(
+                "SELECT pv.wl_mode FROM mgboost_subscriptions s "
+                "JOIN mgboost_plan_versions pv ON pv.id=s.current_plan_version_id "
+                "WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        include_wl = bool(plan_row and plan_row["wl_mode"] == "LIMITED")
+
         membership = self._delivery_routing.membership(STANDARD_PROFILE_CODE)
         if not membership:
             return {"state": "MANUAL_REVIEW", "error_class": "empty_standard_delivery_profile"}
         if any(tag in WL_INBOUND_TAGS for tag in membership):
             # Corrupted routing storage must never reach the remote template.
             return {"state": "MANUAL_REVIEW", "error_class": "wl_tag_in_standard_profile"}
+        if include_wl:
+            delivery_membership = sorted(set(membership) | set(WL_INBOUND_TAGS))
+        else:
+            delivery_membership = sorted(membership)
 
         payload = {
             "username": template_username,
             "proxies": {"vless": {"flow": TEMPLATE_VLESS_FLOW}},
-            "inbounds": {"vless": sorted(membership)},
+            "inbounds": {"vless": delivery_membership},
             "expire": 0,
             "data_limit": None,
             "data_limit_reset_strategy": "no_reset",
             "status": "active",
-            "note": "MGBoost infrastructure provisioning template (STANDARD)",
+            "note": (
+                "MGBoost infrastructure provisioning template (STANDARD+WL)"
+                if include_wl
+                else "MGBoost infrastructure provisioning template (STANDARD)"
+            ),
         }
 
         existing = None

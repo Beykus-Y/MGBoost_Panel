@@ -875,6 +875,37 @@ def _dispatch_frozen_manifest(store, claimed, payload, manifest, service_marzban
     return service_marzban.set_child_wl_state(request)
 
 
+def _commercial_template_include_baseline(store, account_id, service_marzban):
+    """Commercial-signup fallback for a child INCLUDED from birth: a freshly
+    purchased LIMITED account's children are provisioned with the STANDARD +
+    exact WL template membership, so the FIRST INCLUDED op of the account has
+    no disable/include history to derive a baseline from. The durable evidence
+    of that child's legitimate full membership is its account's pinned
+    provisioning template: reread live, hash-verified against the pin, and
+    filtered through the static PH0-05 allowlist -- the same fail-closed
+    discipline as every other baseline source. Any unreadable/mismatched
+    state yields None (the NO_BASELINE_FOR_INCLUDE error stays)."""
+    from .child_contract import source_contract, source_contract_hash
+    row = store._conn.execute(
+        "SELECT t.template_username,t.source_contract_hash "
+        "FROM mgboost_provisioning_templates t JOIN mgboost_accounts a ON a.id=t.account_id "
+        "WHERE t.account_id=? AND t.state='ACTIVE'",
+        (int(account_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        raw = service_marzban.get_user(row["template_username"])
+        contract = source_contract(raw)
+    except Exception:  # noqa: BLE001 -- unreadable/mismatched = no evidence
+        return None
+    if source_contract_hash(raw) != row["source_contract_hash"]:
+        return None
+    return sorted(
+        set(contract["inbounds"]["vless"]) & set(_wl_topology.WL_INBOUND_TAGS)
+    ) or None
+
+
 def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzban, *,
                                 worker_id, now) -> dict | None:
     """Fresh-dispatch path: derive the target from live observation + the
@@ -906,6 +937,16 @@ def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzb
                 store.latest_include_baseline(claimed["child_intent_id"])
                 or (None, None)
             )
+        if baseline_full_prior is None:
+            # Commercial-signup path: a child INCLUDED from birth has its
+            # account's pinned (hash-verified, allowlist-filtered) template
+            # contract as the only durable baseline evidence.
+            template_baseline = _commercial_template_include_baseline(
+                store, claimed["account_id"], service_marzban,
+            )
+            if template_baseline is not None:
+                baseline_full_prior = template_baseline
+                prior_topology_version = _wl_topology.WL_TOPOLOGY_VERSION
         if baseline_full_prior is None:
             store.record_error(
                 operation_id, error_class="NO_BASELINE_FOR_INCLUDE", now=now,

@@ -1,3 +1,89 @@
+# AGENT_HANDOFF — Commercial WL wiring implemented on top of deployed PH6-09: WL/EXTENDED/FAMILY 30/60d sellable through the canonical Stars flow; local checkpoint only, NO push, NO deploy, NO production mutation
+
+Updated: 2026-08-28 (commercial WL wiring session from local = origin =
+production = `7d3ef06`). **This top section supersedes everything below.**
+
+**COMMERCIAL WL WIRING CHECKPOINT: READY FOR INDEPENDENT REVIEW** (local
+commit only; origin and production remain at `7d3ef06`). The next session
+MUST start with an independent review of this diff before any deploy
+authorization is even discussed.
+
+## What was wired (and what was deliberately NOT)
+
+- **Sellable gate widened, not a new payment flow.** The six WL-family SKUs
+  (WL 199/349⭐, EXTENDED 249/399⭐, FAMILY 299/449⭐; device limit 3/6/12;
+  100/150/150 GB per 30-day period, headroom = 0) flow through the EXISTING
+  PH5-11 signup → PH5-05 capture/apply → PH5-02 renewal backend unchanged.
+  `SELLABLE_PLAN_CODES = SELLABLE_STANDARD_PLAN_CODES +
+  SELLABLE_WL_PLAN_CODES` in `src/commercial_signup.py`, enforced at
+  `create_invoice` / `validate_invoice_for_checkout` / `capture_paid`.
+  Package SKUs (`WL_PACKAGE_*`) stay structurally unpurchasable
+  (PH6-08 absent) — pinned at store AND real-dispatcher level.
+- **Periods**: untouched PH5-02 engine — 30d = 1 immutable period,
+  60d = exactly 2 sequential UTC-hour-aligned full-quota periods, renewal
+  appends (`max(current_expiry, now) + duration`), chronology contiguous,
+  history never mutated, no remainder carry. No engine changes at all.
+- **Delivery = STANDARD + exact approved WL.** The per-account
+  `tpl-<public_id>` template for a LIMITED-plan signup gets membership
+  `STANDARD ∪ WL_INBOUND_TAGS`; BASIC stays STANDARD-only; the
+  `wl_tag_in_standard_profile` guard is preserved (the STANDARD profile
+  itself still can never hold a WL tag). No host list is hardcoded in any
+  tariff version — the tag set comes from the PH0-05/PH6-01 topology
+  authority. Bootstrap guarantees unchanged (template never a customer
+  identity, template UUID/sub URL never issued, child gets its own UUID,
+  pinned source contract, drift fail closed).
+- **One minimal PH6-06 runtime extension** (the only engine change):
+  a fresh LIMITED account's FIRST INCLUDED op used to die with
+  `NO_BASELINE_FOR_INCLUDE` (the machine assumed children born with WL tags
+  have op history — true only for legacy). New fail-closed fallback
+  `_commercial_template_include_baseline` derives the INCLUDE baseline from
+  the account's pinned provisioning template: live reread, hash-verified
+  against `source_contract_hash`, allowlist-filtered; anything
+  unreadable/mismatched keeps the old NO_BASELINE error. Purchase path
+  still never touches the enforcement state machine — runtime convergence
+  (collector → ledger → pool → enforcement) picks the account up on its own
+  (proven end-to-end: born-INCLUDED zero-mutation convergence → quota
+  exceeded → EXCLUDED → renewal → INCLUDED restore).
+- **UI**: bot catalog shows all six plans; 60d is always phrased per
+  30-day period («100 GB каждые 30 дней (2 периода по 100 GB)»), never as
+  a doubled total. PH6-10 exhaustion UX not started.
+- **Explicitly not done**: PH6-05/06/08/10, PH5-06 upgrade/downgrade
+  (different-plan purchase still fails closed `PlanChangeRequired`),
+  package sales, PH4-06, refund redesign (refund stays money-only,
+  regression green), legacy/UNLIMITED anything. No production writes of
+  any kind.
+
+## Tests
+
+- New `tests/test_commercial_wl_wiring.py` (27): exact 12-SKU sellable
+  matrix, prices/limits/quotas, package fail-closed, LIMITED entitlement +
+  1/2-period semantics, renewal 30→30 / 30→60 / 60→60 chronology, duplicate
+  callback + apply replay, BASIC-buying-WL fail closed, template
+  STANDARD-only vs STANDARD+exact-WL, outage/idempotent template
+  convergence, end-to-end PH6 runtime convergence/disable/restore,
+  real-dispatcher pre_checkout + successful_payment path for a WL signup
+  invoice (past-P0 class regression), package-SKU callback rejection.
+- Updated the tests that pinned the old 3-SKU gate
+  (`tests/test_commercial_signup.py`, `tests/test_stars_purchase.py`) —
+  the rejection pins moved to package SKUs.
+- Full local regression + `py_compile` + `git diff --check` clean at the
+  checkpoint commit; `scripts/support_goodwill_extend_5d_20260828.py`
+  untouched, uncommitted.
+
+## Production READ-ONLY facts (this session, zero writes)
+
+HEAD `7d3ef06` (= origin); enforcement + collector timers active
+(last triggers 2026-08-28 19:42 / 19:52 MSK); last reconciliation cycle #12
+OK; topology assertion `2026-08-26-v1` ok; collector lease fresh/OK;
+entitlement wl_mode counts NONE=2 / UNLIMITED=17 / **LIMITED=0**;
+`mgboost_wl_periods` = 0; all six commercial plans already in the
+immutable catalog with correct LIMITED terms; Stars catalogs ACTIVE
+(STARS-2026-08-26-v1, RUB-2026-08-23-v1); STANDARD canary child #48
+ACTIVE; `stars:enabled`=1. A future real LIMITED canary therefore starts
+from a clean LIMITED=0 state.
+
+## Previous checkpoint (PH6-09)
+
 # AGENT_HANDOFF — PH6-09 overshoot/outage fail-safe implemented on top of deployed PH6-07: collector scheduler closed, freshness contract, DL-059 auto-add; local checkpoint only, NO push, NO deploy, NO production mutation
 
 Updated: 2026-08-28 (PH6-09 implementation session from local = origin =

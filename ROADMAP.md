@@ -1337,6 +1337,56 @@ re-verified here; NOT pushed, NOT deployed, canary NOT started.**
   membership changes onto existing children is PH6-adjacent remote-mutation
   territory and deliberately not built here.
 
+## [~] Commercial WL wiring — WL / EXTENDED / FAMILY 30/60d sellable через canonical Stars flow
+
+**Depends:** PH5-01/02/04/05/11, PH6-06/07/09. **Local checkpoint 2026-08-28
+(`src/commercial_signup.py`, `src/stars_purchase.py`, `src/bot_support.py`,
+`src/wl_enforcement.py`, `tests/test_commercial_wl_wiring.py`): NOT pushed,
+NOT deployed, реальная Stars-покупка и LIMITED canary НЕ начинались.**
+
+Собственно «WL sales gate» из PH5-11: три LIMITED-тарифа (WL 199/349⭐,
+EXTENDED 249/399⭐, FAMILY 299/449⭐ — по 100/150/150 GB за каждый 30-дневный
+период, device limit 3/6/12) стали purchasable через СУЩЕСТВУЮЩИЙ canonical
+signup/renewal backend, без нового payment flow:
+
+- **Sellable gate widened, channel-level как раньше**:
+  `SELLABLE_PLAN_CODES = SELLABLE_STANDARD_PLAN_CODES + SELLABLE_WL_PLAN_CODES`
+  в `src/commercial_signup.py`, enforced в `create_invoice`,
+  `validate_invoice_for_checkout`, `capture_paid`. BASIC-семейство не менялось;
+  packages (`WL_PACKAGE_*`) и при новом wiring структурно непокупаемы
+  (PH6-08 отсутствует) — pin тестами на store и на dispatcher-уровне.
+- **Upgrade/downgrade не изобретался**: existing account на другом плане
+  при покупке WL-SKU — прежний контролируемый отказ `PlanChangeRequired`
+  (PH5-06 не начат); same-plan renewal разрешён.
+- **Immutable WL periods**: 30d = один период, 60d = ровно два
+  последовательных UTC-hour-aligned периода по полной quota, chronology
+  contiguous (без overlap/gap), история не мутируется, remainder не
+  переносится — всё существующей PH5-02 `schedule_wl_period_windows`
+  (никаких изменений движка).
+- **Delivery = STANDARD + exact approved WL**: per-account
+  `tpl-<public_id>` template для LIMITED-аккаунта получает membership
+  `STANDARD ∪ WL_INBOUND_TAGS` (точная PH0-05 topology authority; списки
+  хостов в тарифную версию не зашиты), BASIC-шаблон остаётся
+  STANDARD-only; guard `wl_tag_in_standard_profile` сохранён — сам STANDARD
+  profile по-прежнему не может содержать WL inbound.
+- **PH6-06 runtime extension (минимальный)**: первый INCLUDED-оп нового
+  LIMITED-аккаунта ранее падал `NO_BASELINE_FOR_INCLUDE` (машина проектировалась
+  вокруг legacy-детей, уже носивших WL). Добавлен fail-closed fallback:
+  baseline для INCLUDE может быть выведен из pinned provisioning-шаблона
+  аккаунта (live reread + hash-verify против `source_contract_hash` +
+  allowlist-фильтр); unreadable/mismatched = прежний NO_BASELINE-ошибка.
+  Покупка при этом НЕ дёргает enforcement напрямую: periods/entitlement
+  создаёт canonical purchase transaction, схождение делает существующий
+  collector → ledger → pool → enforcement цикл (доказано end-to-end тестом:
+  born-INCLUDED → zero-mutation convergence → quota-exceeded → EXCLUDED →
+  renewal → restore).
+- **UI**: каталог бота показывает все 6 тарифов; 60d формулируется как
+  «100/150 GB каждые 30 дней (2 периода по N GB)», никогда как удвоенный
+  общий лимит. PH6-10 exhaustion UX не начинался.
+- **Legacy/STANDARD regression**: цены/signup/renewal BASIC не изменены,
+  WL intersection STANDARD = 0, legacy UNLIMITED не переводится, P0 legacy
+  WL hotfix suite зелёный, refund flow (money-only) не менялся.
+
 ## [~] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
 
 **Depends:** PH0-05, PH3-01, PH6-01.

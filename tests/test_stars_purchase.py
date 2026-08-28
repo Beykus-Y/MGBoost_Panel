@@ -84,8 +84,25 @@ def test_first_purchase_snapshots_product_evidence_and_entitlement(db):
     ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("plan_code,amount", [("WL", 349), ("EXTENDED", 249), ("FAMILY", 299)])
-def test_first_rollout_purchase_gate_rejects_non_standard_plans(db, plan_code, amount):
+@pytest.mark.parametrize("plan_code,amount", [("WL", 199), ("EXTENDED", 249), ("FAMILY", 299)])
+def test_wl_plans_are_sellable_on_the_stars_channel(db, plan_code, amount):
+    """Commercial WL wiring: the WL tariffs went from gate-rejected to
+    sellable on the same Stars channel (existing account, no subscription
+    yet -> first purchase). The rejection pin moves to package SKUs, which
+    stay structurally unpurchasable while PH6-08 is absent."""
+    account = _account(db)
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=account["telegram_id"], plan_code=plan_code, duration_days=30,
+        ttl_seconds=3600, now=100,
+    )
+    assert invoice["invoice_kind"] == "CANONICAL_PLAN"
+    assert invoice["stars_price"] == amount
+
+
+@pytest.mark.parametrize("plan_code", [
+    "WL_PACKAGE_50_GB", "WL_PACKAGE_100_GB", "WL_PACKAGE_250_GB", "WL_PACKAGE_500_GB",
+])
+def test_first_rollout_purchase_gate_still_rejects_package_skus(db, plan_code):
     """Independent-review fix: this previously passed vacuously via a
     ``plan=`` kwarg typo (TypeError before the gate ever ran), not because
     PlanNotSellable was actually raised."""

@@ -7,6 +7,25 @@ logger = logging.getLogger(__name__)
 
 SQLITE_MAX_INTEGER = (1 << 63) - 1
 
+_GB_DECIMAL = 1_000_000_000
+
+
+def wl_quota_line(item: dict) -> str:
+    """Human-readable WL quota for one catalog SKU. A 60-day SKU is ALWAYS
+    described per 30-day period (never as a doubled total) -- each 30-day
+    WL period carries its own full quota and remainder is never carried."""
+    quota_bytes = item.get("wl_quota_bytes") or 0
+    if not quota_bytes:
+        return ""
+    gb = quota_bytes // _GB_DECIMAL
+    days = int(item["duration_days"])
+    if days <= 30:
+        return f"Трафик: {gb} GB на {days} дн.\n"
+    return (
+        f"Трафик: {gb} GB каждые 30 дней "
+        f"({days // 30} периода по {gb} GB)\n"
+    )
+
 
 class PaymentDurabilityError(BaseException):
     """Stop polling before an unpersisted payment update is confirmed.
@@ -417,11 +436,25 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         server-side invoice row (catalog snapshot), never from callback
         data. Single-chat invoice mode -- a forwarded copy gets a deep-link
         button, never another Pay button."""
+        from .plan_catalog import GB_DECIMAL
+        quota_row = db._conn.execute(
+            "SELECT wl_quota_bytes FROM mgboost_plan_versions WHERE id=?",
+            (invoice["plan_version_id"],),
+        ).fetchone()
+        quota_bytes = quota_row["wl_quota_bytes"] if quota_row else 0
+        quota_text = ""
+        if quota_bytes:
+            gb = quota_bytes // GB_DECIMAL
+            days = int(invoice["duration_days"])
+            if days <= 30:
+                quota_text = f" — {gb} GB на {days} дн."
+            else:
+                quota_text = f" — {gb} GB каждые 30 дней ({days // 30} периода по {gb} GB)"
         try:
             await bot.send_invoice(
                 chat_id=chat_id,
                 title=invoice["tariff_name"],
-                description=f"{invoice['tariff_name']} — {invoice['duration_days']} дней",
+                description=f"{invoice['tariff_name']} — {invoice['duration_days']} дней{quota_text}",
                 payload=str(invoice["id"]),
                 provider_token="",
                 currency="XTR",
@@ -680,7 +713,9 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel")])
         await message.answer(
             "Выберите тариф:\n\n"
-            "Все тарифы включают стандартный набор серверов.",
+            "Все тарифы включают стандартный набор серверов. "
+            "WL, Расширенный и Семейный дополнительно включают WL-серверы "
+            "с лимитом трафика на 30-дневный период.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
@@ -709,9 +744,11 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             callback_data=f"buy_dur:{plan_code}:{item['duration_days']}",
         )] for item in summary["items"]]
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_cancel")])
+        quota_note = wl_quota_line(summary["items"][0])
         await call.message.edit_text(
             f"Тариф «{summary['display_name']}» — до {summary['device_limit']} устройств.\n"
-            "Выберите срок:",
+            + (quota_note + "\n" if quota_note else "")
+            + "Выберите срок:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
@@ -741,7 +778,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             f"Тариф: {item['display_name']}\n"
             f"Срок: {item['duration_days']} дн.\n"
             f"Устройств: до {item['device_limit']}\n"
-            f"Стоимость: {item['amount']} ⭐️\n\n"
+            + wl_quota_line(item)
+            + f"Стоимость: {item['amount']} ⭐️\n\n"
             "Оплата через Telegram Stars.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(

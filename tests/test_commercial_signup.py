@@ -1,7 +1,9 @@
 """PH5-11 first commercial STANDARD signup flow.
 
-Covers the launch-critical matrix end to end: the exact six-sellable-SKU
-gate, WL/EXTENDED/FAMILY rejection, server-authoritative callback handling,
+Covers the launch-critical matrix end to end: the sellable-SKU
+gate (now widened by the commercial WL wiring to the three STANDARD tariffs
+plus WL/EXTENDED/FAMILY; package SKUs stay rejected), server-authoritative
+callback handling,
 the first new-customer DIRECT account purchase (self-service, no legacy
 dependency), retry/concurrent-callback single-account guarantees, same-plan
 renewal, different-plan refusal, crash durability between capture and
@@ -36,6 +38,9 @@ EXPECTED_SELLABLE = {
     ("BASIC", 30): 99, ("BASIC", 60): 169,
     ("BASIC_PLUS", 30): 139, ("BASIC_PLUS", 60): 199,
     ("BASIC_PRO", 30): 169, ("BASIC_PRO", 60): 249,
+    ("WL", 30): 199, ("WL", 60): 349,
+    ("EXTENDED", 30): 249, ("EXTENDED", 60): 399,
+    ("FAMILY", 30): 299, ("FAMILY", 60): 449,
 }
 
 
@@ -135,31 +140,23 @@ def test_first_rollout_sellable_sku_matrix_is_exact(db):
     got = {(item["plan_code"], item["duration_days"]): item["amount"] for item in sellable}
     assert got == EXPECTED_SELLABLE
     limits = {item["plan_code"]: item["device_limit"] for item in sellable}
-    assert limits == {"BASIC": 3, "BASIC_PLUS": 6, "BASIC_PRO": 12}
-    assert len(sellable) == 6
+    assert limits == {
+        "BASIC": 3, "BASIC_PLUS": 6, "BASIC_PRO": 12,
+        "WL": 3, "EXTENDED": 6, "FAMILY": 12,
+    }
+    assert len(sellable) == 12
 
 
-@pytest.mark.parametrize("plan_code", ["WL", "EXTENDED", "FAMILY"])
-def test_non_standard_plans_rejected_for_brand_new_customers(db, plan_code):
+def test_package_skus_are_never_sellable_plan_codes(db):
     from src.commercial_signup import PlanNotSellable
-    with pytest.raises(PlanNotSellable):
-        db.stars_purchases.create_invoice(
-            telegram_id=777000, plan_code=plan_code, duration_days=30,
-            ttl_seconds=3600, now=100,
-        )
+    for package_code in ("WL_PACKAGE_50_GB", "WL_PACKAGE_100_GB",
+                         "WL_PACKAGE_250_GB", "WL_PACKAGE_500_GB"):
+        with pytest.raises(PlanNotSellable):
+            db.stars_purchases.create_invoice(
+                telegram_id=777000, plan_code=package_code, duration_days=30,
+                ttl_seconds=3600, now=100,
+            )
     assert db._conn.execute("SELECT COUNT(*) FROM stars_invoices").fetchone()[0] == 0
-
-
-@pytest.mark.parametrize("plan_code", ["WL", "EXTENDED", "FAMILY"])
-def test_non_standard_plans_rejected_for_existing_accounts(db, plan_code):
-    from src.commercial_signup import PlanNotSellable
-    account = db.accounts.create_account("DIRECT", now=1)
-    db.accounts.link_telegram_owner(account["id"], 888000, provenance="DIRECT_BIND", actor="t", now=1)
-    with pytest.raises(PlanNotSellable):
-        db.stars_purchases.create_invoice(
-            telegram_id=888000, plan_code=plan_code, duration_days=30,
-            ttl_seconds=3600, now=100,
-        )
 
 
 # --- signup invoice lifecycle ----------------------------------------------------
@@ -734,7 +731,7 @@ def _kb_data(markup):
     return [[btn.callback_data for btn in row] for row in rows]
 
 
-def test_bot_buy_flow_shows_three_plans_with_device_counts(db, buy_handlers):
+def test_bot_buy_flow_shows_six_plans_with_device_counts(db, buy_handlers):
     _enable_stars(db)
 
     class Msg:
@@ -753,7 +750,9 @@ def test_bot_buy_flow_shows_three_plans_with_device_counts(db, buy_handlers):
     assert any("Базовый" in t and "3" in t for t in flat)
     assert any("Базовый Плюс" in t and "6" in t for t in flat)
     assert any("Базовый Про" in t and "12" in t for t in flat)
-    assert not any("WL" in t for t in flat)
+    assert any("WL" in t and "3" in t for t in flat)
+    assert any("Расширенный" in t and "6" in t for t in flat)
+    assert any("Семейный" in t and "12" in t for t in flat)
 
 
 def test_bot_buy_flow_duration_and_confirmation_are_server_priced(db, buy_handlers):
@@ -792,7 +791,7 @@ def test_bot_buy_pay_creates_signup_invoice_and_sends_catalog_invoice(db, buy_ha
 def test_bot_buy_pay_rejects_tampered_plan_callback(db, buy_handlers):
     _enable_stars(db)
     bot = FakeBot()
-    call = FakeCall(555000111, "buy_pay:WL:30", bot=bot)
+    call = FakeCall(555000111, "buy_pay:WL_PACKAGE_100_GB:30", bot=bot)
     asyncio.run(buy_handlers["buy_pay"](call, FakeState()))
     assert any("нельзя оформить" in t for t in call.message.answers)
     assert db._conn.execute("SELECT COUNT(*) FROM stars_invoices").fetchone()[0] == 0
@@ -978,7 +977,10 @@ def test_buy_vpn_text_reaches_the_purchase_menu_from_any_state(db, fsm_state):
     )
     data = [btn.callback_data for row in reply_markup.inline_keyboard for btn in row]
     plan_rows = [d for d in data if d and d.startswith("buy_plan:")]
-    assert sorted(plan_rows) == ["buy_plan:BASIC", "buy_plan:BASIC_PLUS", "buy_plan:BASIC_PRO"]
+    assert sorted(plan_rows) == [
+        "buy_plan:BASIC", "buy_plan:BASIC_PLUS", "buy_plan:BASIC_PRO",
+        "buy_plan:EXTENDED", "buy_plan:FAMILY", "buy_plan:WL",
+    ]
 
 
 class StubTelegramSession:
