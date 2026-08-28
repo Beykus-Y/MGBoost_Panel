@@ -89,6 +89,32 @@ def _fmt_bytes(b: int) -> str:
     return f"{b:.1f} PB"
 
 
+def _canonical_subscription_summary(db, telegram_id: int) -> str | None:
+    """Render the canonical (``mgboost_accounts``) subscription state for an
+    ACTIVE account with a non-revoked OWNER telegram identity, or None when
+    the id resolves to no such account. Same resolver as Stars signup and
+    renewal (``AccountStore.get_active_account_by_telegram_id``) -- a legacy
+    ``tg_users`` link is deliberately not consulted, and possession of a
+    subscription URL/HWID/username never counts as ownership here."""
+    account = db.accounts.get_active_account_by_telegram_id(telegram_id)
+    if account is None:
+        return None
+    ent = db.entitlements.calculate(account_id=int(account["id"]))
+    sub = (ent or {}).get("subscription") or {}
+    plan = ((ent or {}).get("plan") or {})
+    expire = sub.get("effective_expiry")
+    expire_str = ""
+    if expire:
+        dt = datetime.fromtimestamp(int(expire), tz=timezone.utc)
+        expire_str = f"\nДата окончания: {dt.strftime('%d.%m.%Y')}"
+    return (
+        f"👤 Тариф: {plan.get('display_name') or plan.get('code') or '—'}\n"
+        f"Статус: {sub.get('effective_status') or '—'}{expire_str}\n\n"
+        "Ваша ссылка подписки была отправлена вам после оплаты. "
+        "Если вы её потеряли — отправьте /newsub для перевыпуска."
+    )
+
+
 DEFAULT_FAQ = """## Частые проблемы
 
 **Не обновляется подписка**
@@ -179,7 +205,14 @@ async def execute_tool(
     if name == "get_subscription_info":
         tg_user = db.get_tg_user(telegram_id)
         if not tg_user:
-            return "Подписка не привязана."
+            # canary hotfix: canonical DIRECT owner without a legacy link -- report
+            # the canonical entitlement instead of claiming no subscription.
+            try:
+                summary = _canonical_subscription_summary(db, telegram_id)
+            except Exception as e:
+                logger.error(f"execute_tool get_subscription_info canonical: {e}")
+                return "Не удалось получить информацию о подписке."
+            return summary or "Подписка не привязана."
         try:
             admin_token = await _run_sync(marzban.get_admin_token_from_env)
             user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
@@ -753,7 +786,13 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         parts = (getattr(message, "text", None) or "").split(maxsplit=1)
         forwarded_invoice_link = len(parts) == 2 and parts[1].startswith("stars_invoice_")
         tg_user = db.get_tg_user(message.from_user.id)
-        if tg_user:
+        # canary hotfix: a CANONICAL_SIGNUP customer owns a canonical DIRECT
+        # account with a non-revoked OWNER telegram identity but no legacy
+        # tg_users row. The linked/unlinked decision must consult the same
+        # canonical resolver as Stars signup/renewal/admin views --
+        # a missing legacy link must never demote a real owner to onboarding.
+        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+        if tg_user or account:
             await state.set_state(SupportStates.in_dialog)
             await message.answer(
                 ("Этот счёт нельзя оплатить из пересланного сообщения. "
@@ -774,7 +813,10 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     @dp.message(StateFilter(None), ~F.successful_payment)
     async def msg_no_state(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
-        if tg_user:
+        # canary hotfix: same canonical resolver as cmd_start -- a canonical DIRECT
+        # owner must land in the normal dialog, not in binding onboarding.
+        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+        if tg_user or account:
             await state.set_state(SupportStates.in_dialog)
             await message.answer("Чем могу помочь?", reply_markup=kb_main())
         else:
@@ -846,33 +888,17 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     async def msg_my_subscription(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
         if not tg_user:
-            # PH5-11: a commercial signup customer owns a canonical account
-            # but no legacy link -- show the canonical subscription state
-            # instead of the legacy binding prompt.
-            account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
-            if account is not None:
-                try:
-                    ent = db.entitlements.calculate(account_id=int(account["id"]))
-                    sub = (ent or {}).get("subscription") or {}
-                    plan = ((ent or {}).get("plan") or {})
-                    expire = sub.get("effective_expiry")
-                    expire_str = ""
-                    if expire:
-                        from datetime import datetime as _dt, timezone as _tz
-                        expire_str = (
-                            "\nДата окончания: "
-                            + _dt.fromtimestamp(int(expire), tz=_tz.utc).strftime("%d.%m.%Y")
-                        )
-                    await safe_answer(
-                        message,
-                        f"👤 Тариф: {plan.get('display_name') or plan.get('code') or '—'}\n"
-                        f"Статус: {sub.get('effective_status') or '—'}{expire_str}\n\n"
-                        "Ваша ссылка подписки была отправлена вам после оплаты. "
-                        "Если вы её потеряли — отправьте /newsub для перевыпуска.",
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка получения канонической подписки: {type(e).__name__}")
-                    await message.answer("Не удалось получить информацию о подписке.")
+            # PH5-11 + canary hotfix: a commercial signup customer owns a canonical
+            # account but no legacy link -- show the canonical subscription
+            # state instead of the legacy binding prompt.
+            try:
+                summary = _canonical_subscription_summary(db, message.from_user.id)
+            except Exception as e:
+                logger.error(f"Ошибка получения канонической подписки: {type(e).__name__}")
+                await message.answer("Не удалось получить информацию о подписке.")
+                return
+            if summary is not None:
+                await safe_answer(message, summary)
                 return
             await state.set_state(SupportStates.waiting_link)
             await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
@@ -1069,6 +1095,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     @dp.message(SupportStates.in_dialog, F.text == "🔧 Управление устройствами")
     async def msg_manage_devices(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
+        if not tg_user and db.accounts.get_active_account_by_telegram_id(message.from_user.id):
+            # canary hotfix: a canonical DIRECT owner is linked, but the LK
+            # management deep link is keyed by a legacy marzban username
+            # they do not have -- never push them into the waiting_link
+            # binding loop (their opaque URL does not match the parser).
+            await message.answer(
+                "⚙️ Управление устройствами для вашего аккаунта пока доступно "
+                "через поддержку. Опишите ваш запрос здесь — поможем.",
+            )
+            return
         if not tg_user:
             await state.set_state(SupportStates.waiting_link)
             await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())

@@ -1,3 +1,33 @@
+# AGENT_HANDOFF — bot `/start` canonical-owner fix rebased onto post-P0 baseline `243671e` (local checkpoint only, NO push, NO deploy)
+
+Updated: 2026-08-28 (independent review + rebase session). **This top
+section supersedes everything below.** `origin/main`/production is
+`243671e` (the P0 hotfix documented in the next section, already
+deployed). The `/start` canonical-owner fix was originally authored as
+checkpoint `c93cdd5` *before* that P0 hotfix existed, and was correctly
+excluded from it (preserved on branch `checkpoint/start-direct-owner` +
+tag `checkpoint-c93cdd5-start-direct-owner`, per the P0 section below).
+This session independently re-reviewed `c93cdd5` from scratch (did not
+trust the prior report's numbers), rebased its `src/bot_support.py` +
+`tests/test_bot_start_resolver.py` changes onto current `243671e` via
+`git cherry-pick --no-commit` (clean on both code files; only this doc
+and `CHANGELOG.md` conflicted, resolved by sequencing both updates
+rather than reverting either), found no implementation defects requiring
+a code change, and committed a new local checkpoint. Corrected against
+the original report: RED-before-fix on clean `243671e` is **6 failed / 9
+passed** (not the originally-claimed 7); GREEN-after-fix is 15/15
+unchanged. Targeted regression (bot/signup/ownership-rebind/enrollment/
+Stars/legacy-bridge/account-consolidation + the P0 suite itself): `384
+passed, 0 failed`. Full regression on the rebased tree: `1431 passed, 4
+skipped` -- exactly 20 more than the original checkpoint's `1411 passed`,
+the exact size of `tests/test_p0_legacy_wl_provisioning_hotfix.py`,
+confirming the P0 hotfix stayed green through this rebase. Verdict:
+**APPROVED**. `scripts/support_goodwill_extend_5d_20260828.py` (an
+unrelated pre-existing uncommitted admin script) was left untouched and
+is not part of this or the P0 checkpoint.
+
+---
+
 # AGENT_HANDOFF — P0 hotfix: legacy/WL provisioning un-poisoned (policy-scoped WL backstop, terminal-state semantics, migration binding diagnostics, audited recovery primitive); local checkpoint only, NO push, NO deploy, NO production mutation
 
 Updated: 2026-08-28 (P0 hotfix session, starting from local `c93cdd5` /
@@ -130,6 +160,47 @@ Independent review of `hotfix/p0-legacy-wl-provisioning` against
 POCO Slot 3 (account #8) is an explicit, separate, audited
 `repair_child_ensure` invocation against production — read the refusal
 typed result if the live state does not match this document's premises.
+
+---
+
+## HISTORICAL: original `c93cdd5` checkpoint note (2026-08-28, bot `/start` hotfix session, authored before the P0 hotfix above existed) — superseded by this session's rebase onto `243671e` at the top of this file
+
+The first real commercial canary proved signup/account/OWNER-binding/BASIC
+subscription/opaque credential/child/payment+refund all work, but `/start`
+still showed new-user onboarding («Здесь можно купить подписку или прислать
+существующую ссылку…») to the paying customer. **Root cause**:
+`cmd_start`/`msg_no_state` in `src/bot_support.py` keyed "linked user" on
+the legacy `tg_users` table alone — a table `CANONICAL_SIGNUP` never writes.
+**Fix** (`src/bot_support.py` only): the existing canonical resolver
+`AccountStore.get_active_account_by_telegram_id` (the exact read-model
+already used by Stars signup/renewal, `/newsub`, admin views) is now the
+additional linked-user signal on `/start`, the stray-message fallback and
+the AI-support `get_subscription_info` tool (which reported «Подписка не
+привязана» to owners); `📋 Моя подписка`'s PH5-11 canonical rendering moved
+byte-identically into a shared `_canonical_subscription_summary` helper;
+`🔧 Управление устройствами` recognizes canonical owners and routes them to
+support instead of the impossible `waiting_link` loop (the LK mgmt deep link
+is legacy-marzban-username-keyed — **known gap for canonical-only accounts,
+recorded, deliberately not faked**). No second resolver introduced; revoked
+identity / CLOSED account / unrelated Telegram id still land in onboarding;
+possession of URL/HWID/username still proves nothing; legacy users
+byte-identical UX. 15 regression tests in `tests/test_bot_start_resolver.py`,
+ALL through real aiogram `Dispatcher`/`feed_update` including a full
+signup-payment → fresh `Database()` + fresh `Dispatcher` restart; the
+canonical cases were reproduced red on pre-fix code first. Full regression
+`1411 passed, 4 skipped`; `git diff --check` clean. An initial mass-failure
+full run (23 failed / 885 errors, worse on pristine `7392b63`) was
+re-confirmed as the already-documented environmental /tmp `mkdtemp`
+disk-quota exhaustion (`sqlite3.OperationalError: disk I/O error`), cleared
+by pruning only hour-stale anonymous `/tmp/tmp*` scratch dirs — not a code
+regression. Payment/refund, PH6, routing, `tpl-*`, child lifecycle and
+tariffs untouched. Stopped at the local checkpoint commit per instruction;
+origin/main and production remain `7392b63` **(now stale: this checkpoint
+was rebased onto `243671e` and re-verified in the session documented at
+the top of this file — the `1411 passed, 4 skipped` and "RED on pre-fix
+code" figures below are the original author's numbers, not independently
+re-confirmed by this session beyond the corrected RED count noted
+above)**.
 
 ---
 
