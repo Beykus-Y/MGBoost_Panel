@@ -495,6 +495,46 @@ def test_expired_lease_from_dead_worker_is_reclaimed_once(db):
     assert _modify_count(fx["remote"], child["username"]) == baseline_mutations + 1
 
 
+def test_entitlement_change_mid_scan_never_opens_stale_repair(db):
+    """The scan reads `pool`/`desired` once per account, then makes a
+    per-child remote observation call before repairing. If the account's
+    entitlement changes during that window (e.g. a concurrent usage-ledger
+    write closes/exceeds the period), the repair must NOT be opened against
+    the now-stale decision -- it must self-heal on the next cycle instead."""
+    fx, period = _active_fixture(db, "RECON_STALE_POOL")
+    child = fx["children"][0]
+    baseline_mutations = _modify_count(fx["remote"], child["username"])
+    fx["remote"].users[child["username"]]["inbounds"]["vless"] = [
+        t for t in _inbounds_of(fx["remote"], child["username"]) if t != WL_A
+    ]
+    account_id = fx["account"]["account_id"]
+    real_get = fx["client"].get_user
+
+    def get_user(username):
+        # Simulate a concurrent usage-ledger write closing this account's
+        # period WHILE the drift scan is mid-flight observing this child --
+        # the pool/desired read at the top of the scan's per-account loop is
+        # now stale by the time the repair would be opened.
+        db._conn.execute(
+            "UPDATE mgboost_wl_periods SET status='CLOSED' "
+            "WHERE account_id=? AND status='ACTIVE'",
+            (account_id,),
+        )
+        db._conn.commit()
+        return real_get(username)
+
+    fx["client"].get_user = get_user
+
+    summary = _recon(db, fx, now=NOW + 30)
+
+    assert summary["drift"]["repaired"] == 0
+    assert _modify_count(fx["remote"], child["username"]) == baseline_mutations
+    assert WL_A not in _inbounds_of(fx["remote"], child["username"])
+    state = db.wl_enforcement.get_state(account_id)
+    assert state["state"] == "ACTIVE"  # untouched -- next cycle's regular
+    # decision path re-derives the now-closed-period abstain, not this scan
+
+
 def test_duplicate_scheduled_trigger_is_safe_via_cycle_lock(db, tmp_path):
     fx, _period = _disabled_fixture(db, "RECON_LOCK")
     child = fx["children"][0]
@@ -578,3 +618,19 @@ def test_scheduler_units_exist_in_repo():
     assert "--trigger SCHEDULED" in service_text
     assert "mgboost-wl-enforcement.service" in timer_text
     assert "OnUnitActiveSec" in timer_text
+
+
+def test_scheduler_unit_loads_marzban_broker_credentials():
+    """The reconciliation cycle calls ServiceMarzbanClient (broker mode),
+    which reads MARZBAN_BROKER_* from process env -- exactly like the panel
+    process that normally runs this engine inline. Without the panel's own
+    EnvironmentFile, the broker auth key is empty and every scheduled cycle
+    would fail broker auth (docs explicitly claim credentials "come from the
+    service environment" -- this proves the unit actually provides them,
+    the same way `mgboost-panel.service` does, not the local-only shape of
+    `mgboost-compat-telemetry-cleanup.service` which never talks to Marzban)."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    service_text = open(os.path.join(repo, "mgboost-wl-enforcement.service")).read()
+    panel_text = open(os.path.join(repo, "mgboost-panel.service")).read()
+    assert "EnvironmentFile=/opt/MGBoost_Panel/.env" in service_text
+    assert "EnvironmentFile=/opt/MGBoost_Panel/.env" in panel_text

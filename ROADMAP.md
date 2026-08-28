@@ -1979,6 +1979,16 @@ runtime with zero durable loss; no blind rollback when remote succeeded.
 `mgboost_wl_periods`, enforcement tables empty) the post-deploy steady state
 must be: timer active, cycles `OK`, remote WL mutations = 0, drift rows = 0 —
 until a LIMITED WL canary is deliberately created.
+**Independent review (2026-08-28) fixed two real defects before deploy:**
+the systemd unit was missing `EnvironmentFile` (broker auth would have
+failed every cycle) and `scan_terminal_drift` had a TOCTOU window where a
+stale `pool`/`desired` read before per-child network calls could open a
+repair epoch against an already-changed entitlement. Both fixed minimally
+with regression tests (`tests/test_wl_reconciliation.py`, now 20 tests);
+everything else (epoch/CAS guard, baseline-intersection safety, child
+observation path, flock/PrivateTmp, UNLIMITED/STANDARD abstain) verified
+unchanged by independent code reading and test reproduction. See
+`AGENT_HANDOFF.md` for the full verdict and production deploy evidence.
 
 ## [ ] PH6-08 — Effective quota/adjustment ledger
 

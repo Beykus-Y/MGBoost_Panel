@@ -583,6 +583,38 @@
   Regression: новый suite `tests/test_wl_reconciliation.py` 18 passed;
   targeted PH6-01..06 + P0 hotfix + broker 190 passed; full regression —
   см. AGENT_HANDOFF.
+- PH6-07 independent senior review (2026-08-28, до продакшн-деплоя): найдены
+  и исправлены два реальных дефекта. (1) P1 -- `mgboost-wl-enforcement.
+  service` был склонирован с local-only shape `mgboost-compat-telemetry-
+  cleanup.service` и не подключал `EnvironmentFile=/opt/MGBoost_Panel/.env`,
+  из-за чего каждый scheduled cycle падал бы на пустом Marzban broker
+  auth key; юнит приведён к shape `mgboost-child-worker.service` (тот же
+  паттерн исходящих broker-вызовов) с полным hardening-набором и
+  `Wants`/`After` на broker; добавлен regression-тест, проверяющий
+  наличие `EnvironmentFile` в юните. (2) P1/P2 -- TOCTOU в
+  `scan_terminal_drift`: `pool`/`desired` читались один раз в начале
+  per-account итерации, ДО реальных сетевых round-trip'ов на каждого
+  ребёнка; если entitlement менялся в этом окне (закрытие периода,
+  concurrent ledger write), repair epoch мог открыться против уже
+  устаревшего решения. Исправлено пересчётом `pool`/`desired`
+  непосредственно перед `open_repair_epoch`: при рассинхроне repair тихо
+  отменяется для этого цикла (регулярный decision path сам себя чинит
+  на следующем цикле); добавлен regression-тест
+  `test_entitlement_change_mid_scan_never_opens_stale_repair`. Всё
+  остальное (open_repair_epoch CAS/epoch guard, latest_include_baseline
+  allowlist-intersection safety, legacy.user.get как единственный child
+  observation path, flock lock file рядом с БД вне `/tmp`/`PrivateTmp`,
+  UNLIMITED/STANDARD structural abstain, newly-added-WL repair для
+  suspended, WL_UNEXPECTED_WHILE_INCLUDED conservative flag-only для
+  ACTIVE) подтверждено самостоятельным построчным чтением и
+  независимым воспроизведением тестов -- без исправлений. Полный
+  regression после фиксов: `1451 passed, 4 skipped` (skips -- только
+  Playwright e2e, окружение без него). Read-only production preflight
+  через SSH подтвердил ожидания checkpoint: HEAD `4c9d832`,
+  `quick_check=ok`, `foreign_key_check` пуст, `mgboost_wl_enforcement_
+  states/ops`=0/0, 0 wl_mode=LIMITED аккаунтов (2 NONE/STANDARD ACTIVE,
+  17 UNLIMITED), STANDARD canary exact WL intersection живым запросом =
+  0, легаси UNLIMITED sample содержит все 12 WL-тегов легитимно.
 
 ### Changed
 

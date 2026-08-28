@@ -11,15 +11,21 @@ production-proven PH6-06 machine (`run_wl_enforcement_cycle`,
 three things the on-demand slice deliberately lacked:
 
 1. **Scheduler/worker lifecycle** — `mgboost-wl-enforcement.timer` +
-   `mgboost-wl-enforcement.service` (oneshot, same hardened shape as the
-   telemetry-cleanup unit). One cycle = one bounded invocation of the
-   orchestrator `run_wl_reconciliation_cycle`:
-   - non-blocking `flock` cycle lock (`<data-dir>/wl-enforcement-cycle.lock`):
-     overlap is REFUSED (`SKIPPED_BUSY`), never queued; concurrent
-     timer/manual invocations are safe; a crashed holder releases the lock
-     with its process; `TimeoutStartSec=900` bounds execution; clean exit.
-   - no secrets in argv/logs: the Marzban credentials come from the service
-     environment; journald gets only the aggregate identifier-free JSON.
+   `mgboost-wl-enforcement.service` (hardened oneshot, same sandboxing shape
+   as `mgboost-child-worker.service` -- the correct analog, since both make
+   outbound broker calls; NOT the local-only `mgboost-compat-telemetry-
+   cleanup.service` shape, which never needs `EnvironmentFile`). One cycle =
+   one bounded invocation of the orchestrator `run_wl_reconciliation_cycle`:
+   - non-blocking `flock` cycle lock (`<data-dir>/wl-enforcement-cycle.lock`,
+     next to the DB -- NOT under `/tmp`, so it is unaffected by `PrivateTmp`
+     and shared identically by the timer and any manual invocation that
+     points at the same `--db`): overlap is REFUSED (`SKIPPED_BUSY`), never
+     queued; concurrent timer/manual invocations are safe; a crashed holder
+     releases the lock with its process; `TimeoutStartSec=900` bounds
+     execution; clean exit.
+   - no secrets in argv/logs: `EnvironmentFile=/opt/MGBoost_Panel/.env`
+     (same file `mgboost-panel.service` loads) supplies `MARZBAN_BROKER_*`;
+     journald gets only the aggregate identifier-free JSON.
    - pausing/disabling the timer loses nothing: all pending/repair work lives
      in the durable `mgboost_wl_enforcement_ops` rows and is resumed on the
      next run (timer or manual).

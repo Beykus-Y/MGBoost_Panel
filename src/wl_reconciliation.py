@@ -246,6 +246,7 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
 
         summary["scanned_children"] += len(children)
         repairs: list[dict] = []
+        repair_findings: list[tuple[dict, str]] = []
         flags: list[str] = []
         for child in children:
             child_id = int(child["child_intent_id"])
@@ -298,14 +299,8 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
             if desired == "EXCLUDED":
                 wl_present = observed_set & wl_tags
                 if wl_present:
-                    summary["detected"] += 1
-                    summary["repaired"] += 1
                     repairs.append(child)
-                    recon.record_drift(
-                        account_id, child_intent_id=child_id,
-                        drift_class="WL_PRESENT_WHILE_EXCLUDED",
-                        action="REPAIR_QUEUED", epoch=state["epoch"], now=timestamp,
-                    )
+                    repair_findings.append((child, "WL_PRESENT_WHILE_EXCLUDED"))
                 elif target - observed_set:
                     summary["detected"] += 1
                     summary["flagged"] += 1
@@ -322,14 +317,8 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
                 missing = expected_wl - observed_set
                 unexpected = (observed_set & wl_tags) - expected_wl
                 if missing:
-                    summary["detected"] += 1
-                    summary["repaired"] += 1
                     repairs.append(child)
-                    recon.record_drift(
-                        account_id, child_intent_id=child_id,
-                        drift_class="WL_MISSING_WHILE_INCLUDED",
-                        action="REPAIR_QUEUED", epoch=state["epoch"], now=timestamp,
-                    )
+                    repair_findings.append((child, "WL_MISSING_WHILE_INCLUDED"))
                 if unexpected:
                     summary["detected"] += 1
                     summary["flagged"] += 1
@@ -358,8 +347,35 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
                     account_id, safe_error_class=class_name, now=timestamp,
                 )
         elif repairs:
+            # Re-derive the decision immediately before opening the repair
+            # epoch: `pool`/`desired` were read at the TOP of this account's
+            # loop, before the per-child remote observation calls above (real
+            # network round trips). A concurrent write to the usage ledger
+            # (e.g. the PH6-03 collector, or the period reaching its end)
+            # during that window would make the frozen `desired` stale by the
+            # time repair opens. A repair epoch must never be minted against
+            # a decision that no longer holds -- skip and let the regular
+            # decision path (which reruns every cycle) self-heal instead.
+            fresh_pool = _wl_enforcement.resolve_current_parent_wl_pool(
+                db, account_id=account_id, now=timestamp,
+            )
+            fresh_desired = decide_direction_from_pool(fresh_pool)
+            if fresh_desired != desired:
+                # Entitlement no longer proves the frozen direction: record
+                # nothing (no repair happened) and leave the account exactly
+                # as observed -- the regular decision path re-derives the
+                # now-current entitlement on this very next cycle.
+                continue
+            for child, drift_class in repair_findings:
+                summary["detected"] += 1
+                summary["repaired"] += 1
+                recon.record_drift(
+                    account_id, child_intent_id=int(child["child_intent_id"]),
+                    drift_class=drift_class, action="REPAIR_QUEUED",
+                    epoch=state["epoch"], now=timestamp,
+                )
             result = store.open_repair_epoch(
-                account_id, direction=desired, children=repairs, pool=pool,
+                account_id, direction=desired, children=repairs, pool=fresh_pool,
                 now=timestamp,
             )
             if result["prepared"]:
