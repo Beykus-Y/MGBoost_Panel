@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 from . import hwid_gate
 from .child_contract import derive_operation_id
+from .entitlement_engine import exact_wl_allowed_for_delivery
 from .parent_sync import child_target_for
 
 
@@ -54,6 +55,11 @@ OUTCOME_DENY_SLOT_LIMIT = "DENY_SLOT_LIMIT"
 OUTCOME_DENY_CROSS_ACCOUNT_HWID = "DENY_CROSS_ACCOUNT_HWID"
 OUTCOME_PROVISIONING_PENDING = "PROVISIONING_PENDING"
 OUTCOME_PROVISIONING_UNAVAILABLE = "PROVISIONING_UNAVAILABLE"
+# Terminal provisioning failure (durable outbox ERROR, e.g. the PH5-11
+# render-boundary backstop's WL_INBOUND_IN_STANDARD_CHILD poison): never
+# reported as PENDING, never retried by callers -- recovery goes through the
+# explicit audited repair primitive, not through re-resolution.
+OUTCOME_PROVISIONING_FAILED_PERMANENT = "PROVISIONING_FAILED_PERMANENT"
 OUTCOME_INTERNAL_ERROR = "INTERNAL_ERROR"
 OUTCOME_OK = "OK"
 
@@ -148,6 +154,16 @@ def resolve_account_device(
             ).fetchone()
         if source is None:
             return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
+        # Resolve the account's canonical WL delivery policy BEFORE any
+        # remote mutation (P0 hotfix, production incident account #8): the
+        # PH5-11 backstop below must only fire for entitlements whose
+        # current delivery does NOT grant WL. Computation failure is
+        # transient-unavailable here -- nothing durable was mutated and no
+        # poison state is created for a local read error.
+        try:
+            wl_allowed = exact_wl_allowed_for_delivery(db, account_id=account_id, now=now)
+        except Exception:
+            return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
         idem_key = f"account-device-resolver-child-v1:{slot_generation_id}"
         try:
             prepared = db.child_provisioning.prepare_child_ensure(
@@ -168,6 +184,11 @@ def resolve_account_device(
                     (prepared["operation_id"],),
                 ).fetchone()
                 if not refreshed or refreshed["state"] != "APPLIED":
+                    if refreshed is not None and refreshed["state"] == "ERROR":
+                        # Terminal provisioning failure: structurally distinct
+                        # from pending/busy -- callers must never report this
+                        # as PROVISIONING_PENDING or re-queue it.
+                        return OpaqueResolveResult(OUTCOME_PROVISIONING_FAILED_PERMANENT)
                     return OpaqueResolveResult(OUTCOME_PROVISIONING_PENDING)
             else:
                 try:
@@ -178,19 +199,23 @@ def resolve_account_device(
                         error_class="PROVISIONING_UNAVAILABLE", now=now,
                     )
                     return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
-                # PH5-11 fail-safe: the freshly created child must never
-                # carry an exact PH0-05 WL inbound for a STANDARD delivery
-                # account. The pinned template contract should already make
-                # this impossible; this is the render-boundary backstop.
-                # WL classification is exact allowlist membership only.
+                # PH5-11 fail-safe, scoped by the canonical delivery policy
+                # (P0 hotfix): a freshly created child must never carry an
+                # exact PH0-05 WL inbound UNLESS this account's current
+                # entitlement grants WL access (LEGACY_PAID_COMPAT
+                # 'UNLIMITED' and other WL-capable semantics legitimately
+                # clone WL inbounds from their source). The pinned
+                # template/source contract should already make a WL leak
+                # impossible; this is the render-boundary backstop. WL
+                # classification is exact allowlist membership only.
                 from .wl_topology import WL_INBOUND_TAGS
                 child_tags = set((created.get("inbounds") or {}).get("vless") or [])
-                if child_tags & set(WL_INBOUND_TAGS):
+                if child_tags & set(WL_INBOUND_TAGS) and not wl_allowed:
                     db.child_provisioning.fail_permanent(
                         prepared["operation_id"], worker_id=worker_id,
                         error_class="WL_INBOUND_IN_STANDARD_CHILD", now=now,
                     )
-                    return OpaqueResolveResult(OUTCOME_PROVISIONING_UNAVAILABLE)
+                    return OpaqueResolveResult(OUTCOME_PROVISIONING_FAILED_PERMANENT)
                 child_uuid = created.pop("uuid")
                 db.child_provisioning.acknowledge(
                     prepared["operation_id"], worker_id=worker_id,
@@ -202,6 +227,8 @@ def resolve_account_device(
             "SELECT child_username, source_contract_hash, uuid_verifier, observed_state "
             "FROM mgboost_child_user_intents WHERE id=?", (prepared["child_intent_id"],),
         ).fetchone()
+        if final_intent is not None and final_intent["observed_state"] == "ERROR":
+            return OpaqueResolveResult(OUTCOME_PROVISIONING_FAILED_PERMANENT)
         if final_intent is None or final_intent["observed_state"] != "ACTIVE":
             return OpaqueResolveResult(OUTCOME_PROVISIONING_PENDING)
         child_username = final_intent["child_username"]

@@ -1,0 +1,290 @@
+"""P0 hotfix -- audited, idempotent recovery primitive for poisoned
+CHILD_USER_ENSURE operations.
+
+Production incident (account #8, POCO Slot 3 / generation 49): PH5-11's
+render-boundary backstop `fail_permanent`('WL_INBOUND_IN_STANDARD_CHILD')
+killed provisioning AFTER the broker had already created the remote child,
+because the backstop was scoped to no account policy at all. The durable
+local state (outbox ERROR + intent observed_state=ERROR) is terminal -- the
+worker never re-picks it and auto-recovery is impossible by design. This
+module is the ONLY sanctioned way out of that state; direct SQL updates and
+generic "retry any ERROR" endpoints are exactly what it must never become.
+
+Semantics, narrowed on purpose:
+
+  * Applies ONLY to a proven-owned child intent/outbox whose durable
+    ``last_error_class`` is in ``RECOVERABLE_ERROR_CLASSES`` (today exactly
+    the incident class ``WL_INBOUND_IN_STANDARD_CHILD``) -- everything else
+    is refused.
+  * Rereads the account's CURRENT canonical entitlement policy
+    (`entitlement_engine.exact_wl_allowed_for_delivery`). If it still
+    forbids exact WL, the repair MUST refuse -- policy, not the operator,
+    decides.
+  * Takes a FRESH typed remote observation through the existing read-only
+    ``child.user.observe`` broker surface (caller-supplied ``observe_fn``).
+    MATCH proves remote username/source-contract/inbound provenance against
+    the EXACT ensure contract pinned in the durable outbox payload. It
+    never ensures, never creates, never mutates remote state, never changes
+    a UUID, never re-pins a source.
+  * ABSENT is a typed non-mutation result (REMOTE_MISSING); MISMATCH and a
+    local UUID-verifier contradiction are refusals for manual review --
+    per the existing safe-repair conventions.
+  * Local completion goes through ``ChildProvisioningStore
+    .recovery_acknowledge`` (CAS from ERROR, full attempt-event evidence).
+  * Every terminal decision (REPAIRED / REFUSED / REMOTE_MISSING) appends
+    an immutable actor/reason/idempotency evidence row to the EXISTING
+    ``mgboost_entitlement_mutations`` audit ledger -- no second audit
+    framework. A repeat repair is a safe no-op (ALREADY_APPLIED, no new
+    audit row, no state change).
+
+This module talks to Marzban ONLY through the caller-injected read-only
+``observe_fn``; wiring it to an admin route/surface is a later, separate
+owner decision. Nothing schedules or invokes it automatically.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+import time
+import uuid
+
+from .child_contract import validate_child_ensure_request
+from .entitlement_engine import exact_wl_allowed_for_delivery
+from .wl_topology import WL_INBOUND_TAGS
+
+
+REPAIR_OPERATION = "CHILD_RECOVERY_REPAIR"
+
+# Only proven poison classes are recoverable. Never grow this set without
+# an explicit per-class proof that the remote child is verifiable for it.
+RECOVERABLE_ERROR_CLASSES = frozenset({"WL_INBOUND_IN_STANDARD_CHILD"})
+
+_IDEMPOTENCY_NAMESPACE = "p0-child-recovery-repair-v1\0"
+
+
+class ChildRecoveryError(RuntimeError):
+    pass
+
+
+def _canonical(value: dict) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _clean_reason(reason) -> str:
+    text = (reason or "").strip()
+    if not 3 <= len(text) <= 300:
+        raise ChildRecoveryError("a bounded human-readable reason (3..300) is required")
+    return text
+
+
+def _clean_idempotency_key(idempotency_key) -> str:
+    if not isinstance(idempotency_key, str) or not 16 <= len(idempotency_key) <= 512:
+        raise ChildRecoveryError("idempotency_key must be a string of 16..512 characters")
+    return idempotency_key
+
+
+def _audit(db, *, account_id, actor_ref, reason, idem_hash, before, after, now) -> int:
+    """Append one immutable evidence row to the existing entitlement
+    mutations ledger. A repeated client key never steals the UNIQUE hash
+    slot (mirrors the device-slot admin store's honest-repeat pattern)."""
+
+    def _insert(idem_column_value):
+        return db._conn.execute(
+            "INSERT INTO mgboost_entitlement_mutations "
+            "(account_id,subscription_id,operation,payment_channel,"
+            "mutation_source,actor_type,actor_ref,reason,idempotency_key_hash,"
+            "before_json,after_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                account_id,
+                db._conn.execute(
+                    "SELECT id FROM mgboost_subscriptions WHERE account_id=? "
+                    "ORDER BY id DESC LIMIT 1", (account_id,),
+                ).fetchone()[0],
+                REPAIR_OPERATION, "NOT_APPLICABLE", "ADMIN", "PRIMARY_ADMIN",
+                actor_ref, reason, idem_column_value,
+                _canonical(before), _canonical(after), now,
+            ),
+        )
+
+    with db._lock:
+        try:
+            db._conn.execute("BEGIN IMMEDIATE")
+            cursor = _insert(idem_hash)
+            db._conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            db._conn.rollback()
+            try:
+                db._conn.execute("BEGIN IMMEDIATE")
+                cursor = _insert(None)
+                db._conn.commit()
+                return cursor.lastrowid
+            except Exception:
+                db._conn.rollback()
+                raise
+        except Exception:
+            db._conn.rollback()
+            raise
+
+
+def _snapshot(outbox, intent) -> dict:
+    return {
+        "outbox_state": outbox["state"],
+        "outbox_last_error_class": outbox["last_error_class"],
+        "intent_observed_state": None if intent is None else intent["observed_state"],
+    }
+
+
+def repair_child_ensure(
+    db, *, operation_id: str, capability, reason: str, idempotency_key: str,
+    observe_fn, now: int | None = None,
+) -> dict:
+    """Repair one poisoned CHILD_USER_ENSURE operation. See the module
+    docstring for the full narrowed semantics. Returns a typed result dict:
+    ``{"status": "REPAIRED"|"ALREADY_APPLIED"|"REFUSED"|"REMOTE_MISSING",
+    "operation_id", "reason_class"?, "mutation_id"?}``."""
+    timestamp = int(time.time()) if now is None else int(now)
+    reason = _clean_reason(reason)
+    _clean_idempotency_key(idempotency_key)
+    if not callable(observe_fn):
+        raise ChildRecoveryError("a read-only observe_fn is required")
+    actor_ref = db.primary_admin_authority.require(capability)
+    idem_hash = _sha(_IDEMPOTENCY_NAMESPACE + idempotency_key)
+
+    # --- durable read + ownership proof (read-only) ------------------------
+    outbox = db._conn.execute(
+        "SELECT * FROM mgboost_outbox "
+        "WHERE operation_id=? AND operation_kind='CHILD_USER_ENSURE'",
+        (operation_id,),
+    ).fetchone()
+    if outbox is None:
+        raise ChildRecoveryError("unknown CHILD_USER_ENSURE operation_id")
+    account_id = int(outbox["account_id"])
+    intent = db._conn.execute(
+        "SELECT * FROM mgboost_child_user_intents WHERE id=? AND account_id=?",
+        (outbox["child_intent_id"], account_id),
+    ).fetchone()
+    if intent is None:
+        raise ChildRecoveryError("child intent does not belong to the operation's account")
+    generation = db._conn.execute(
+        "SELECT g.status FROM mgboost_device_slot_generations g "
+        "WHERE g.id=? AND g.account_id=?",
+        (intent["slot_generation_id"], account_id),
+    ).fetchone()
+    alias = db._conn.execute(
+        "SELECT id FROM mgboost_legacy_account_aliases "
+        "WHERE id=? AND account_id=? AND alias_role='PRIMARY'",
+        (intent["source_alias_id"], account_id),
+    ).fetchone()
+
+    def _finish(status, *, reason_class=None, mutation_id=None) -> dict:
+        return {
+            "status": status, "operation_id": operation_id,
+            **({"reason_class": reason_class} if reason_class else {}),
+            **({"mutation_id": mutation_id} if mutation_id else {}),
+        }
+
+    if outbox["state"] == "APPLIED":
+        # Idempotent repeat (or already consistent): safe no-op, no audit row.
+        return _finish("ALREADY_APPLIED")
+    if outbox["state"] != "ERROR":
+        raise ChildRecoveryError(
+            f"recovery applies only to terminal ERROR operations, not '{outbox['state']}'"
+        )
+    if generation is None or generation["status"] != "ACTIVE":
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "GENERATION_NOT_ACTIVE", now=timestamp)
+    if alias is None:
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "OWNER_ALIAS_MISSING", now=timestamp)
+    error_class = (outbox["last_error_class"] or "").strip()
+    if error_class not in RECOVERABLE_ERROR_CLASSES:
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "ERROR_CLASS_NOT_RECOVERABLE", now=timestamp)
+
+    # --- CURRENT canonical policy decides (fail closed) ---------------------
+    try:
+        wl_allowed = exact_wl_allowed_for_delivery(db, account_id=account_id, now=timestamp)
+    except Exception:
+        wl_allowed = False
+    if not wl_allowed:
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "POLICY_STILL_FORBIDS_WL", now=timestamp)
+
+    # --- fresh typed remote observation (read-only, outside local txns) ----
+    payload = validate_child_ensure_request(json.loads(outbox["payload_json"]))
+    observed = observe_fn(payload)
+    presence = (observed or {}).get("presence")
+    if presence == "ABSENT":
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "REMOTE_MISSING", now=timestamp, status="REMOTE_MISSING")
+    if presence != "MATCH":
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "REMOTE_MISMATCH", now=timestamp)
+    from .child_provisioning import ChildProvisioningError
+    try:
+        remote_uuid = str(uuid.UUID(observed.get("uuid"))).lower()
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ChildProvisioningError("invalid child UUID") from exc
+    verifier = "sha256:" + _sha(remote_uuid)
+    if intent["uuid_verifier"] is not None and intent["uuid_verifier"] != verifier:
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "UUID_VERIFIER_MISMATCH", now=timestamp)
+    # Belt-and-braces: the observed remote inbound set must itself be
+    # permissible under the CURRENT entitlement (MATCH already proves it
+    # equals the pinned source contract; the policy read above already
+    # proved that contract's WL membership is allowed -- this keeps the two
+    # proofs explicitly adjacent).
+    observed_tags = set((observed.get("inbounds") or {}).get("vless") or [])
+    if (observed_tags & set(WL_INBOUND_TAGS)) and not wl_allowed:
+        return _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+                       "POLICY_STILL_FORBIDS_WL", now=timestamp)
+    if observed.get("protocols") != ["vless"]:
+        raise ChildProvisioningError("unexpected child protocol credentials")
+
+    # --- local completion (CAS from ERROR, full evidence) -------------------
+    before = _snapshot(outbox, intent)
+    observation_verifier = _sha(_canonical(
+        {k: v for k, v in observed.items() if k != "uuid"}
+    ))
+    try:
+        repaired = db.child_provisioning.recovery_acknowledge(
+            operation_id, outcome="EXISTING", child_uuid=remote_uuid,
+            remote_result_verifier=observation_verifier, now=timestamp,
+        )
+    except Exception as exc:
+        refreshed = db._conn.execute(
+            "SELECT state FROM mgboost_outbox WHERE operation_id=?", (operation_id,),
+        ).fetchone()
+        if refreshed is not None and refreshed["state"] == "APPLIED":
+            return _finish("ALREADY_APPLIED")
+        raise ChildRecoveryError("recovery completion failed") from exc
+    after = dict(before)
+    after.update({"outbox_state": "APPLIED", "intent_observed_state": "ACTIVE"})
+    mutation_id = _audit(db, account_id=account_id, actor_ref=actor_ref, reason=reason,
+                         idem_hash=idem_hash, before=before, after=after, now=timestamp)
+    return {
+        "status": "REPAIRED", "operation_id": operation_id,
+        "child_username": repaired["child_username"], "mutation_id": mutation_id,
+    }
+
+
+def _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
+            reason_class: str, *, now: int, status: str = "REFUSED") -> dict:
+    """Audit-and-refuse: no local state mutation, one honest evidence row."""
+    before = _snapshot(outbox, intent)
+    after = dict(before)
+    after["repair_result"] = {"status": status, "reason_class": reason_class}
+    mutation_id = _audit(db, account_id=account_id, actor_ref=actor_ref, reason=reason,
+                         idem_hash=idem_hash, before=before, after=after, now=now)
+    return {
+        "status": status, "operation_id": outbox["operation_id"],
+        "reason_class": reason_class, "mutation_id": mutation_id,
+    }

@@ -28,7 +28,11 @@ import time
 from .admin_authority import PrimaryAdminAuthorizationError
 from .device_slots import InvalidHWID, privacy_safe_hwid
 from .legacy_bridge_resolver import is_fall_through_outcome, resolve_legacy_bridge
-from .opaque_resolver import OUTCOME_INTERNAL_ERROR, OUTCOME_OK
+from .opaque_resolver import (
+    OUTCOME_INTERNAL_ERROR,
+    OUTCOME_OK,
+    OUTCOME_PROVISIONING_FAILED_PERMANENT,
+)
 
 
 class MigrationLifecycleError(RuntimeError):
@@ -412,6 +416,21 @@ def reconcile_binding(db, binding: dict, *, now: int) -> dict:
             reason="remote child already ACTIVE -- lost ACK, not a real failure", now=now,
         )
 
+    # P0 hotfix: a terminal child operation (durable outbox ERROR, e.g. the
+    # PH5-11 WL_INBOUND_IN_STANDARD_CHILD poison) must never be resurrected
+    # into the MIGRATING retry machine by reconciliation -- that is the
+    # infinite RETRY loop class. It stays ERROR_RECONCILE until the explicit
+    # audited recovery primitive repairs it.
+    outbox_row = db._conn.execute(
+        "SELECT state FROM mgboost_outbox WHERE child_intent_id=?", (intent_row["id"],),
+    ).fetchone()
+    if outbox_row is not None and outbox_row["state"] == "ERROR":
+        return store.stay_error_reconcile(
+            binding["operation_id"], expected_revision=binding["revision"],
+            reason="child operation is terminally ERROR -- recovery primitive required, "
+                   "not provisioning retry", now=now,
+        )
+
     return store.reconcile_to_migrating(
         binding["operation_id"], expected_revision=binding["revision"],
         reason="child intent not yet ACTIVE -- safe to retry provisioning", now=now,
@@ -483,12 +502,18 @@ def process_migration_bridge_request(
     if existing["state"] not in ("MIGRATING", "ERROR_RECONCILE"):
         return result
 
-    if existing["slot_generation_id"] is None and result.slot_number is not None:
+    if existing["slot_generation_id"] is None:
+        # P0 hotfix diagnostics: the resolver's result carries slot/child
+        # identity only on OUTCOME_OK, but the slot claim and the child
+        # intent are durable local rows that exist even when provisioning
+        # terminally failed. Binding them here gives admin diagnostics,
+        # repair and audit the real entities involved. This never declares
+        # a failed provisioning migrated -- the state transitions below
+        # stay strictly outcome-driven.
         slot_row = db._conn.execute(
             "SELECT g.id FROM mgboost_device_slot_generations AS g "
-            "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
-            "WHERE g.account_id=? AND s.slot_number=? AND g.generation=? AND g.status='ACTIVE'",
-            (account_id, result.slot_number, result.generation),
+            "WHERE g.account_id=? AND g.hwid_verifier=? AND g.status='ACTIVE'",
+            (account_id, hwid_verifier),
         ).fetchone()
         if slot_row is not None:
             existing = db.migration_lifecycle.record_slot(
@@ -496,7 +521,7 @@ def process_migration_bridge_request(
                 slot_generation_id=slot_row["id"], now=timestamp,
             )
 
-    if existing["child_intent_id"] is None and existing["slot_generation_id"] is not None and result.child_username is not None:
+    if existing["child_intent_id"] is None and existing["slot_generation_id"] is not None:
         intent_row = db._conn.execute(
             "SELECT id FROM mgboost_child_user_intents WHERE slot_generation_id=?",
             (existing["slot_generation_id"],),
@@ -512,7 +537,7 @@ def process_migration_bridge_request(
             db.migration_lifecycle.mark_migrated(
                 existing["operation_id"], expected_revision=existing["revision"], now=timestamp,
             )
-    elif existing["state"] == "MIGRATING" and result.outcome != OUTCOME_OK:
+    elif existing["state"] in ("MIGRATING", "ERROR_RECONCILE") and result.outcome != OUTCOME_OK:
         if result.outcome == OUTCOME_INTERNAL_ERROR:
             # Ambiguous -- cannot tell from this single signal whether the
             # remote side actually committed. Never blindly retry.
@@ -520,6 +545,23 @@ def process_migration_bridge_request(
                 existing["operation_id"], expected_revision=existing["revision"],
                 error_class=result.outcome, now=timestamp,
             )
+        elif result.outcome == OUTCOME_PROVISIONING_FAILED_PERMANENT:
+            # Terminal provisioning failure (P0 hotfix): the typed root
+            # cause from the durable outbox row is surfaced to operators
+            # through the binding event instead of an endless MIGRATING ->
+            # RETRY loop. Recovery is the explicit audited repair primitive.
+            root_class = _terminal_root_error_class(db, existing["child_intent_id"]) or result.outcome
+            if existing["state"] == "MIGRATING":
+                db.migration_lifecycle.mark_error_reconcile(
+                    existing["operation_id"], expected_revision=existing["revision"],
+                    error_class=root_class, now=timestamp,
+                )
+            else:
+                db.migration_lifecycle.stay_error_reconcile(
+                    existing["operation_id"], expected_revision=existing["revision"],
+                    reason=f"terminal provisioning failure persists ({root_class})",
+                    now=timestamp,
+                )
         else:
             db.migration_lifecycle.retry_migrating(
                 existing["operation_id"], expected_revision=existing["revision"],
@@ -527,3 +569,18 @@ def process_migration_bridge_request(
             )
 
     return result
+
+
+def _terminal_root_error_class(db, child_intent_id: int | None) -> str | None:
+    """The durable typed root cause of a terminal child operation, for
+    operator-facing binding events (already a bounded safe error class)."""
+    if child_intent_id is None:
+        return None
+    row = db._conn.execute(
+        "SELECT last_error_class FROM mgboost_outbox WHERE child_intent_id=?",
+        (int(child_intent_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    value = (row["last_error_class"] or "").strip()
+    return value[:128] or None

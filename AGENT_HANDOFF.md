@@ -1,3 +1,138 @@
+# AGENT_HANDOFF — P0 hotfix: legacy/WL provisioning un-poisoned (policy-scoped WL backstop, terminal-state semantics, migration binding diagnostics, audited recovery primitive); local checkpoint only, NO push, NO deploy, NO production mutation
+
+Updated: 2026-08-28 (P0 hotfix session, starting from local `c93cdd5` /
+origin+production `7392b63`, working tree clean). **This top section
+supersedes everything below.** Production incident: new devices for
+legacy/WL-capable accounts were terminally poisoned by PH5-11's own
+STANDARD anti-leak backstop, and the resulting durable ERROR state was
+both misreported and unrecoverable. Scope discipline honored: the ready
+but undeployed `/start` checkpoint `c93cdd5` is EXCLUDED from this hotfix
+(preserved separately as branch `checkpoint/start-direct-owner` + tag
+`checkpoint-c93cdd5-start-direct-owner`); the hotfix branch
+`hotfix/p0-legacy-wl-provisioning` starts strictly at `7392b63`. Nothing
+was pushed; production was read-only (no writes/retries/restarts, no
+repair invocation).
+
+## Root cause (confirmed)
+
+`opaque_resolver.resolve_account_device` applied PH5-11's render-boundary
+backstop unconditionally: any freshly ensured child carrying an exact
+PH0-05 WL inbound was `fail_permanent`('WL_INBOUND_IN_STANDARD_CHILD')
+regardless of entitlement. For `LEGACY_PAID_COMPAT` (all variants have
+`wl_mode='UNLIMITED'`) a cloned child legitimately carries exact WL
+inbounds from the legacy source — so every new device of every legacy
+paid account got terminally killed AFTER the broker had already created
+the remote child (not a race, not a Marzban failure, not a lost ACK).
+Secondary defects in the same incident chain:
+
+1. `claim() == None` conflated "lease busy / in flight" with "terminal
+   ERROR", so poisoned operations were re-reported as
+   `PROVISIONING_PENDING` forever.
+2. Migration lifecycle turned the terminal ERROR into an infinite
+   `MIGRATING → RETRY` loop (`retry_migrating` on every non-OK outcome;
+   `reconcile_binding` resurrected terminal ERROR into MIGRATING).
+3. Diagnostics gap: `migration_binding.slot_generation_id/child_intent_id`
+   stayed NULL for failures because they were only ever recorded from the
+   outcome-OK resolver result, although the slot claim and the child
+   intent are durable local rows that exist regardless of the ensure
+   outcome.
+4. No sanctioned way back: worker never re-picks ERROR rows (by design),
+   and no repair primitive existed.
+
+## What was built (P0 scope only)
+
+- **Canonical WL delivery policy** — `entitlement_engine.exact_wl_allowed_
+  for_delivery(db, account_id, now)`: the single policy authority, derived
+  ONLY from the PH5-04 calculation (`wl.access_eligible`). STANDARD
+  (`wl_mode='NONE'`, incl. the untouched first commercial canary) stays
+  fail-closed; `LEGACY_PAID_COMPAT 'UNLIMITED'`, internal WL-capable
+  plans, active LIMITED periods and FORCE_ENABLED overrides are
+  legitimate; FORCE_DISABLED still refuses. No account_id/username/source/
+  plan-name/substring special cases; no second policy engine. Raises on
+  computation failure — callers fail closed transiently, never poison.
+- **`opaque_resolver`** — backstop now fires only when the child carries
+  exact WL AND policy forbids it; new typed outcome
+  `OUTCOME_PROVISIONING_FAILED_PERMANENT` (also returned when the durable
+  outbox row is already ERROR, and for a terminally errored intent)
+  structurally distinct from `PROVISIONING_PENDING` (still used for
+  genuine pending/busy) and `PROVISIONING_UNAVAILABLE` (still used for
+  transient ensure failures). Terminal ERROR is never re-queued.
+- **`migration_lifecycle`** — terminal outcome now lands the binding in
+  `ERROR_RECONCILE` with the TYPED root cause copied from the durable
+  outbox `last_error_class` (operator-visible in binding events);
+  genuine pending still retries exactly as before; `reconcile_binding`
+  refuses to resurrect a terminal-ERROR child operation back into
+  MIGRATING (stays ERROR_RECONCILE, audited RECONCILE_STALE). Binding
+  diagnostics now record `slot_generation_id`/`child_intent_id` from
+  durable local rows even on terminal failure (never marks a failed
+  provisioning migrated). HTTP unchanged: legacy `/sub` still answers the
+  honest generic 502; the opaque route keeps its documented uniform
+  response (anti-oracle).
+- **`child_provisioning.recovery_acknowledge`** — CAS-only transition
+  ERROR → APPLIED/ACTIVE with the same verification/event discipline as
+  `acknowledge` (RECONCILED attempt event, uuid verifier/masked, protocol
+  checks).
+- **`src/child_recovery.py::repair_child_ensure`** — the audited,
+  idempotent, deliberately dormant recovery primitive. Refuses anything
+  but a proven-owned intent/outbox with `last_error_class` exactly
+  `WL_INBOUND_IN_STANDARD_CHILD` and an ACTIVE generation + PRIMARY alias;
+  rereads CURRENT policy first (still forbidding WL ⇒ REFUSED, policy
+  decides); fresh typed `child.user.observe` against the exact pinned
+  ensure payload (ABSENT ⇒ typed REMOTE_MISSING, never creates a second
+  child; MISMATCH ⇒ REFUSED; local UUID-verifier contradiction ⇒ REFUSED);
+  never ensures, never changes UUID, never re-pins source, never blind-
+  overwrites remote; every terminal decision (REPAIRED/REFUSED/
+  REMOTE_MISSING) appends actor/reason/idempotency evidence to the
+  EXISTING `mgboost_entitlement_mutations` ledger; repeat repair is a
+  safe ALREADY_APPLIED no-op. No route, no scheduler, no automatic
+  invocation — wiring a surface is a separate owner decision.
+
+## Verification
+
+- RED before fix on baseline `7392b63`: new suite
+  `tests/test_p0_legacy_wl_provisioning_hotfix.py` — **13 failed /
+  7 passed** (exact incident differential: LEGACY_PAID_COMPAT + Slot 2
+  already ACTIVE + new Slot 3 → `PROVISIONING_UNAVAILABLE` poison;
+  terminal ERROR reported as PENDING; binding NULLs; RETRY loop; recovery
+  missing; plus the must-not-regress guards passing).
+- After fix: same suite **20/20 passed** — includes the realistic
+  differential (new Slot 3 provisions OK with legitimate WL, binding
+  MIGRATED), STANDARD fail-closed negative (corrupted WL template ⇒
+  permanent ERROR), STANDARD clean-template positive, existing/refreshed
+  legacy WL resolves untouched, lease-busy still PENDING, RETRY still
+  completes, terminal failure records slot+child in binding with typed
+  root cause and ZERO RETRY events, and 8 recovery cases (repair,
+  idempotent repeat, policy-refusal, UUID mismatch, source-contract
+  mismatch, remote-missing typed no-create, non-recoverable class,
+  capability/reason gates, never-ensures).
+- Targeted regression: **312 passed** (opaque resolver, child
+  provisioning/worker, migration lifecycle, legacy bridge trio, device
+  slots, broker, entitlement engine, plan catalog, delivery routing,
+  PH6-06 WL enforcement, commercial signup, opaque route, PH4-03 cohort,
+  internal entitlements, legacy paid compat, WL topology).
+- Full regression (solo run, dedicated TMPDIR `/home/beykus/mgboost-hotfix-
+  tmp` per the known /tmp-quota failure class, no foreign processes
+  touched): **1420 passed, 0 failed, 0 skipped** in 1095s.
+
+## Honest boundaries
+
+- The recovery primitive is dormant by design; POCO Slot 3 will be
+  repaired by a later session after independent review + deploy (owner
+  forbade production mutation here). Refusal reasons are typed and
+  audited; nothing auto-invokes it.
+- `PH6` phases are NOT declared done; no roadmap items were started
+  beyond this P0 scope.
+
+## Exact next step
+
+Independent review of `hotfix/p0-legacy-wl-provisioning` against
+`7392b63`, then owner deploy decision. After deploy, repairing the real
+POCO Slot 3 (account #8) is an explicit, separate, audited
+`repair_child_ensure` invocation against production — read the refusal
+typed result if the live state does not match this document's premises.
+
+---
+
 ## UPDATE (2026-08-28, same session): owner resolved the `tpl-<public_id>` question — see DL-058
 
 Owner chose Variant A (keep per-account `tpl-<public_id>` as-is for this

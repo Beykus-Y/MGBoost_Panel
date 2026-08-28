@@ -327,6 +327,82 @@ class ChildProvisioningStore:
                 self._conn.rollback()
                 raise
 
+    def recovery_acknowledge(
+        self, operation_id: str, *, outcome: str,
+        child_uuid: str, remote_result_verifier: str, now: int,
+    ) -> dict:
+        """P0 hotfix recovery completion: flip a TERMINALLY ERROR child
+        operation back to APPLIED/ACTIVE after the audited repair primitive
+        (``src.child_recovery``) has proven -- via fresh typed remote
+        observation AND the account's current entitlement policy -- that the
+        remote child is exactly the contract-correct one this operation
+        pinned. Mirrors ``acknowledge``'s verification and event shape, but
+        transitions from ERROR (no lease exists on a terminal row) with a
+        strict CAS so a concurrent repair can never double-apply."""
+        if outcome not in {"CREATED", "EXISTING"}:
+            raise ChildProvisioningError("invalid broker ensure outcome")
+        try:
+            normalized_uuid = str(uuid.UUID(child_uuid)).lower()
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ChildProvisioningError("invalid child UUID") from exc
+        uuid_verifier = "sha256:" + _sha(normalized_uuid)
+        uuid_masked = "uuid_" + _sha("mask\0" + normalized_uuid)[:8]
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mgboost_outbox WHERE operation_id=? AND state='ERROR'",
+                    (operation_id,),
+                ).fetchone()
+                if not row:
+                    raise ChildProvisioningConflict(
+                        "recovery requires a terminal ERROR child operation"
+                    )
+                child = self._conn.execute(
+                    "SELECT uuid_verifier, observed_state FROM mgboost_child_user_intents "
+                    "WHERE id=?", (row["child_intent_id"],),
+                ).fetchone()
+                if child is None or child["observed_state"] != "ERROR":
+                    raise ChildProvisioningConflict(
+                        "recovery requires a terminally errored child intent"
+                    )
+                if child["uuid_verifier"] not in (None, uuid_verifier):
+                    raise ChildProvisioningConflict("remote child UUID changed")
+                self._conn.execute(
+                    "UPDATE mgboost_child_user_intents SET observed_state='ACTIVE',"
+                    "uuid_verifier=?,uuid_masked=?,updated_at=?,row_version=row_version+1 "
+                    "WHERE id=? AND observed_state='ERROR'",
+                    (uuid_verifier, uuid_masked, now, row["child_intent_id"]),
+                )
+                updated = self._conn.execute(
+                    "UPDATE mgboost_outbox SET state='APPLIED',lease_owner=NULL,"
+                    "lease_expires_at=NULL,last_error_class=NULL,updated_at=?,"
+                    "row_version=row_version+1 WHERE id=? AND state='ERROR'",
+                    (now, row["id"]),
+                )
+                if updated.rowcount != 1:
+                    raise ChildProvisioningConflict(
+                        "child operation changed concurrently during recovery"
+                    )
+                self._conn.execute(
+                    "INSERT INTO mgboost_outbox_attempt_events "
+                    "(outbox_id,account_id,attempt_no,event_type,outcome,"
+                    "remote_effect_verifier,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        row["id"], row["account_id"], row["attempts"] + 1,
+                        "RECONCILED", outcome, remote_result_verifier, now,
+                    ),
+                )
+                result = self._conn.execute(
+                    "SELECT * FROM mgboost_child_user_intents WHERE id=?",
+                    (row["child_intent_id"],),
+                ).fetchone()
+                self._conn.commit()
+                return dict(result)
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def record_reconciliation_error(
         self, operation_id: str, *, error_class: str, now: int
     ) -> None:

@@ -351,3 +351,24 @@ class EntitlementEngine:
 def calculate_effective_entitlement(db, *, account_id: int, now: int | None = None) -> dict[str, Any]:
     """Convenience public API; callers should not calculate entitlements themselves."""
     return EntitlementEngine(db).calculate(account_id=account_id, now=now)
+
+
+def exact_wl_allowed_for_delivery(db, *, account_id: int, now: int | None = None) -> bool:
+    """Canonical WL delivery policy for one account, derived ONLY from the
+    PH5-04 entitlement calculation above: exact PH0-05 WL inbounds are
+    legitimate for a child if and only if the account's CURRENT canonical
+    entitlement grants WL access (``wl.access_eligible``).
+
+    STANDARD-delivery plans (``wl_mode='NONE'``, e.g. BASIC/BASIC_PLUS/
+    BASIC_PRO) resolve to False; LEGACY_PAID_COMPAT (``'UNLIMITED'``),
+    INTERNAL WL-capable plans, an active LIMITED-quota period and a
+    FORCE_ENABLED WL_ACCESS override resolve to True; FORCE_DISABLED
+    resolves to False. No special-casing by account id, username, account
+    source, plan display name or name substrings -- and no second policy
+    engine: this is the same calculation every other consumer uses.
+
+    Raises if the entitlement cannot be computed: callers must fail closed
+    themselves (WL must be provably allowed, never assumed) and may treat
+    the failure as their own transient/unavailable path."""
+    entitlement = calculate_effective_entitlement(db, account_id=account_id, now=now)
+    return bool(entitlement["wl"]["access_eligible"])

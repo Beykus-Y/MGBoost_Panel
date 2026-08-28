@@ -423,6 +423,55 @@
 
 ### Fixed
 
+- P0: provisioning новых устройств для legacy/WL-аккаунтов отравлялся
+  собственным STANDARD-бэкстопом; отравленные операции стали
+  невосстановимы (2026-08-28, production incident account #8 / POCO Slot 3
+  generation 49; local hotfix checkpoint, NO push, NO deploy, production
+  read-only). Root cause: PH5-11 render-boundary backstop
+  (`WL_INBOUND_IN_STANDARD_CHILD`) применялся безусловно ко всем аккаунтам,
+  хотя легитимен только там, где delivery WL запрещён: для
+  `LEGACY_PAID_COMPAT` с `wl_mode='UNLIMITED'` (и любых других
+  WL-capable entitlement'ов) child корректно клонирует exact-WL inbound'ы
+  из legacy-источника, после чего backstop терминально убивал
+  provisioning (`fail_permanent`) — системно затронуты все legacy paid
+  аккаунты с новым устройством. Политика вынесена в canonical
+  `entitlement_engine.exact_wl_allowed_for_delivery()` (единственный
+  источник — PH5-04 расчёт, `wl.access_eligible`; никаких special-case по
+  account_id/username/source/имени плана/substring "WL"): STANDARD
+  (`wl_mode='NONE'`, включая первый commercial canary) по-прежнему
+  fail-closed, WL-capable — легитимны. Сопутствующие дефекты того же
+  инцидента: (1) `claim()==None` смешивал «занято/lease» и «терминальный
+  ERROR» — теперь терминальное состояние отдаётся отдельным typed
+  outcome'ом `PROVISIONING_FAILED_PERMANENT` (не парсингом текста), auto-
+  retry не возвращён; (2) migration lifecycle для терминальной ошибки
+  бесконечно крутил `MIGRATING → RETRY` — теперь явный
+  `ERROR_RECONCILE` с typed root cause из durable `last_error_class`,
+  reconcile не воскрешает terminal ERROR обратно в MIGRATING (genuine
+  pending/busy по-прежнему честно RETRY-ится); (3) diagnostic-дефект:
+  `migration_binding.slot_generation_id/child_intent_id` оставались NULL,
+  т.к. записывались только из `OUTCOME_OK`-результата — теперь binding
+  заполняется из durable local rows (slot claim + child intent существуют
+  независимо от исхода ensure), состояние остаётся честным
+  terminal/review; (4) user-facing HTTP не притворяется отсутствием
+  подписки (502 service unavailable сохранён), typed root cause виден
+  оператору в binding events. Добавлен audited idempotent recovery
+  primitive (`src/child_recovery.py::repair_child_ensure`, dormant — без
+  route/автовызова): только для доказанно owned intent/outbox, только для
+  класса `WL_INBOUND_IN_STANDARD_CHILD`, reread текущей политики
+  (всё ещё запрещает WL → REFUSED), fresh typed `child.user.observe`
+  (remote username/source-contract/UUID provenance; ABSENT → typed
+  REMOTE_MISSING без создания второго child; MISMATCH/UUID-verifier
+  конфликт → REFUSED на manual review), локальное завершение через CAS
+  `recovery_acknowledge` (ERROR → APPLIED/ACTIVE, attempt-event
+  RECONCILED), audit actor/reason/idempotency в существующем
+  `mgboost_entitlement_mutations` ledger, повтор — safe no-op. Recovery
+  production-вызов сознательно НЕ выполнялся (NO PROD MUTATION): реальный
+  POCO Slot 3 будет восстанавливаться после независимого review/deploy.
+  Regression: RED на baseline `7392b63` (13 failed / 7 passed в новом
+  `tests/test_p0_legacy_wl_provisioning_hotfix.py`), после фикса 20/20;
+  воспроизведён точный дифференциал инцидента (legacy UNLIMITED + Slot 2
+  ACTIVE + новый Slot 3 после PH5-12 → provisioning SUCCESS, child с
+  легитимным WL), STANDARD-негатив остался терминальным.
 - Canonical (PH5-05/PH5-11) Stars invoice refund was structurally impossible (2026-08-28, minimal fix ahead of the first real commercial canary's controlled refund): `handle_stars_payment_refund`'s route-level status gate and `begin_invoice_refund`'s own DB-level CAS `WHERE` clause both only recognized the pre-PH5-05 legacy manual-Stars status vocabulary (`applied`/`manual_review`/`apply_retry_exhausted`/`apply_failed_user_missing`); a canonical invoice's terminal success status `canonical_applied` was never in that list, so any admin refund attempt on a canonical/signup purchase failed closed with 409 before ever calling Telegram — safe, but left operators with no way to money-refund a canonical purchase at all. Both gates now additionally accept `canonical_applied` only (owner decision: deliberately NOT `paid` — refunding before the PH5-05/PH5-11 apply pipeline has run would race that pipeline in a way nobody has proven safe yet). Money-only by design and unchanged: `mark_invoice_refunded` still never touches VPN expiry, and this fix adds no new code path — it only widens which existing invoice a already-proven `refund_pending -> refunded/refund_unknown -> reconcile` state machine may act on. No product-reversal semantics were added (account/subscription/credential/child/template are explicitly untouched by any refund). Regression: exact-one Telegram call, concurrent/duplicate refund calls make no second Telegram call, timeout/ambiguous-result reconciliation via the existing history-scan path, refunding a canonical invoice leaves its account/subscription/credential/child/template/purchase-application/payment-evidence rows byte-identical, legacy refund behavior for invoices #1/#2 unchanged, and a merely-`paid` (not yet applied) canonical invoice remains explicitly non-refundable at both the route and DB layer.
 - Account-centric admin migration status no longer reuses Telegram semantics (2026-08-27, **independently re-verified and production-deployed 2026-08-27 as part of the PH7-13 rollout below, fast-forwarded to `d5ed3b7`**): `classify_action()`'s fallback labeled every account without real-device migration lineage `WAITING_FOR_REGISTRATION` ("Ожидает Telegram"), so a BOUND owner with zero real devices showed a Telegram-waiting pseudo migration state, and `OK_MIGRATED` additionally required an active slot on top of migrated lineage. The fallback is now device-migration semantics: zero real-device lineage = `WAITING_FIRST_DEVICE` ("Ожидает первого подключения"), any real lineage (`MIGRATING`/`MIGRATED`/`LEGACY_REVOKE_PENDING`/`LEGACY_REVOKED`) = `OK_MIGRATED` ("Миграция штатно"). Telegram ownership stays an independent read-model column via the unchanged `telegram_status()`; RECONCILE_REQUIRED / MANUAL_REVIEW / COMPATIBILITY_BLOCK / CONTACT_USER precedence is unchanged (CONTACT_USER thereby narrows to zero-lineage campaign members, its natural outreach audience). Pure read-model derivation fix, no schema/API shape changes; frontend label map and the PH4-05 daily report blocker text updated; both mandatory regression cases covered at every surface (list, detail, browser render). Production evidence: real accounts checked via `scripts/ph4_05_daily_cohort_report.py` post-deploy show account 6 (`BOUND`+real lineage) -> `OK_MIGRATED` and account 5 (`UNREGISTERED`+zero lineage) -> `WAITING_FIRST_DEVICE`.
 
