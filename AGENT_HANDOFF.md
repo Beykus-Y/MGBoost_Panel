@@ -1,4 +1,133 @@
-# AGENT_HANDOFF — PH6-07 WL enforcement runtime (scheduler / reconciliation / drift / backlog) implemented and fully tested locally; local checkpoint ONLY — NO push, NO deploy, production READ-ONLY
+# AGENT_HANDOFF — PH6-07 WL enforcement runtime independently reviewed, fixed and DEPLOYED to production (`0f0795f`); 3 real scheduled cycles verified, zero mutations
+
+Updated: 2026-08-28 (independent senior review session, following the
+PH6-07 implementation checkpoint below). **This top section supersedes
+everything below.**
+
+## Review outcome
+
+Read `open_repair_epoch`, the freeze/target derivation (`_derive_freeze_
+and_dispatch`), `claim`'s stale-epoch/CAS guard, `wl_topology_guard.py`/
+`wl_topology.py`'s fail-closed exact-allowlist gate, and the full
+`scan_terminal_drift` line by line; reproduced the targeted and full test
+suites myself rather than trusting the checkpoint's own numbers. Two real
+defects found and fixed (commit `0f0795f`, on top of the checkpoint
+`8f7506c`):
+
+1. **P1 — missing broker credentials.** `mgboost-wl-enforcement.service`
+   was cloned from the local-only `mgboost-compat-telemetry-cleanup.
+   service` shape (no Marzban calls) instead of the correct analog
+   `mgboost-child-worker.service` (same outbound-broker-call shape), so it
+   never loaded `EnvironmentFile=/opt/MGBoost_Panel/.env` — every scheduled
+   cycle would have failed Marzban broker auth on an empty
+   `MARZBAN_BROKER_AUTH_KEY`. Fixed; unit now matches the child-worker
+   hardening/EnvironmentFile shape plus `Wants`/`After` on the broker.
+2. **P1/P2 — TOCTOU in the drift-repair path.** `scan_terminal_drift` read
+   `pool`/`desired` once at the top of each account's loop, before the real
+   per-child `legacy.user.get` network round trips. A concurrent
+   entitlement change in that window (period closing, a PH6-03 ledger
+   write) could let a repair epoch open through `open_repair_epoch` against
+   an already-stale decision -- `open_repair_epoch`'s own guard only checks
+   the frozen machine `last_direction`, which does not change with a fresh
+   entitlement flip. Fixed by re-deriving `pool`/`desired` immediately
+   before `open_repair_epoch` and silently skipping the repair on mismatch
+   (the regular decision path self-heals the next cycle regardless).
+   Regression test: `test_entitlement_change_mid_scan_never_opens_stale_
+   repair`.
+
+Everything else the review brief demanded a proof for was verified
+unchanged, by independent code reading + test reproduction, not fixed:
+`open_repair_epoch`'s `row_version` CAS is the same single-winner guard
+`apply_decision` already used (`_open_epoch_locked`); `claim()`'s
+superseded-epoch check is unmodified and applies identically to repair
+ops; `latest_include_baseline` is intersected against the CURRENT
+(live) `WL_INBOUND_TAGS` at restore time, so a topology-removed tag can
+never resurrect and an unknown tag never becomes trusted (unchanged
+`_derive_freeze_and_dispatch`, shared verbatim between PH6-06 decisions
+and PH6-07 repairs — there is no second engine); `WL_UNEXPECTED_WHILE_
+INCLUDED` (an ACTIVE child gaining membership in an unproven way,
+including a newly-topology-approved WL tag) is flagged `ERROR_RECONCILE`
+only, never auto-granted -- a deliberate, documented conservative choice
+(not a bug) with zero practical effect on this deploy since production
+has 0 real `wl_mode=LIMITED` accounts; `_observe_child_identity` reuses
+the exact same `service_marzban.get_user` (`legacy.user.get`) surface
+PH6-06's own `observe_child_vless` already used, not a second weaker
+path; the cycle lock file lives at `<data-dir>/wl-enforcement-cycle.lock`
+(next to the DB, confirmed NOT under `/tmp`), so it is unaffected by
+`PrivateTmp` and is shared identically by the timer and any manual
+`--db`-matched invocation. `systemd-analyze verify` on production: clean
+(only an unrelated pre-existing `snapd.service` warning). Full regression
+after fixes: `1451 passed, 4 skipped` (skips are Playwright-only,
+environment lacks the browser venv).
+
+**Process note:** a `fork` subagent spawned for a narrow read-only
+documentation-research task independently made real code edits (the
+TOCTOU fix above, credited and kept after independent verification) and,
+per its own final report, became confused about which git/production
+actions were its own vs. the primary session's concurrent ones. Ground
+truth was verified clean on both git (local/origin have exactly one new
+commit, `0f0795f`) and production (single HEAD, single panel restart,
+no unexplained sessions) — no corruption or duplicate action occurred.
+
+## Production deploy (2026-08-28, owner-authorized by this task's own brief)
+
+- Pre-deploy read-only preflight (SSH): HEAD `4c9d832`, `quick_check=ok`,
+  `foreign_key_check` empty, `mgboost_wl_enforcement_states/ops`=0/0, 0
+  `mgboost_wl_periods` rows, entitlement inventory 0×LIMITED / 2×NONE
+  (STANDARD) ACTIVE / 15×UNLIMITED ACTIVE + 1 CANCELLED + 1 status=
+  UNLIMITED = 17, accounts=19, children=51, no existing wl-enforcement
+  systemd units. Live-queried (not trusted from docs): STANDARD canary
+  (child_intent 48) exact WL intersection = 0/13 inbounds; a legacy
+  UNLIMITED sample (child_intent 1) legitimately carries all 12/12 WL
+  tags, status=active.
+- Fresh encrypted backup + isolated restore verified:
+  `encrypted_backup_create=PASS`, `encrypted_backup_restore=PASS`.
+- `main` fast-forwarded to `0f0795f` and pushed to `origin/main`;
+  production `git pull --ff-only` to the same HEAD (clean fast-forward,
+  no conflicts).
+- Two new systemd units installed (`/etc/systemd/system/`), `daemon-
+  reload`; `systemd-analyze verify` clean. `mgboost-panel` restarted to
+  self-apply the additive `ph6_07_wl_reconciliation_v1` migration —
+  checksum on disk matches `SCHEMA_CHECKSUM` exactly
+  (`d0a8a8b5...5d8293d1`); `quick_check=ok`, FK empty, `accounts=19`
+  unchanged. `mgboost-wl-enforcement.timer` enabled+started.
+- **3 real scheduled cycles observed** (never invoked manually — watched
+  via the timer's own `OnBootSec`/`OnUnitActiveSec` firing):
+  | cycle | trigger | outcome | drift detected/repaired/flagged | error |
+  |---|---|---|---|---|
+  | 1 | SCHEDULED | OK | 0/0/0 | none |
+  | 2 | SCHEDULED | OK | 0/0/0 | none |
+  | 3 | SCHEDULED | OK | 0/0/0 | none |
+  Engine detail (cycle 1, representative): `accounts_evaluated=17`,
+  `accounts_abstained=17`, `epochs_opened=0`, `ops_prepared/applied=0`,
+  `errors=[]` — exactly the expected P0-abstain/STANDARD-no-op steady
+  state. `mgboost_wl_enforcement_states`/`_ops` stayed 0/0 through all
+  three cycles; `mgboost_wl_reconciliation_drift` stayed empty; the
+  service unit was correctly `inactive` between invocations (oneshot,
+  no stuck process); no `err`-level journal entries.
+- Post-deploy re-verification: `quick_check=ok`, FK empty, `accounts=19`
+  unchanged, `mgboost_child_user_intents=51` unchanged, all 3 core
+  services (`mgboost-panel`/`mgboost-marzban-broker`/`mgboost-child-
+  worker`) active. Live re-query of the same two sample children:
+  STANDARD canary still 0/13 WL intersection, byte-identical; legacy
+  UNLIMITED sample still 12/12 WL tags, `status=active`, `expire`
+  unchanged. Zero real Marzban mutations across the whole deploy +
+  3-cycle observation window.
+- **Final HEAD: local = origin = production = `0f0795f`.**
+- Rollback path (not needed, documented for completeness):
+  `systemctl disable --now mgboost-wl-enforcement.timer` stops the
+  runtime with zero durable loss; durable PH6-06 op/backlog state is
+  never touched by a rollback; no blind Marzban restore.
+
+## PH6-07 PRODUCTION VERDICT: PASS
+
+No unresolved P0/P1. PH6-09 (cadence/overshoot/outage SLA policy) MAY
+START — its scope (guaranteed overshoot bound, outage backlog policy) is
+explicitly NOT covered by this deploy's technical 15-minute cadence.
+
+---
+
+
 
 Updated: 2026-08-28 (PH6-07 implementation session, starting from local =
 origin = production `4c9d832`, working tree had only the unrelated untracked
