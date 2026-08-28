@@ -1996,10 +1996,103 @@ unchanged by independent code reading and test reproduction. See
 **Tests:** example 100+50+20-10=160; base-first, multi-period carry, freeze/resume, unused refund/stack; 83 consumed vs 60 effective -> exceeded.
 **Rollback:** compensating entry only.
 
-## [ ] PH6-09 — Overshoot/outage fail-safe
+## [x] PH6-09 — Overshoot/outage fail-safe — implemented locally 2026-08-28, checkpoint only (NO push, NO deploy)
 
 **Depends:** PH6-03/07. **Scope:** cadence/headroom, bounded overshoot, DB/Marzban/node outage, fail closed for activate/restore, never global disable on uncertain topology.
 **Tests:** each outage/recovery. **Accept:** bound and alerts documented.
+
+**Implemented locally (2026-08-28, checkpoint off `d6afae1`; status stays
+checkpoint-only until independent review + owner-authorized deploy).**
+PH6-09 does NOT add a second enforcement engine — the existing chain
+collector → ledger → parent pool → PH6-06 machine → PH6-07
+reconciliation/scheduler stays canonical; PH6-09 adds the fail-safe policy
+around it:
+
+- **Collector/enforcement runtime chain (blocker closed):** PH6-03's
+  collector had NO scheduler (production-verified: last real run was
+  2026-08-26 while enforcement fired every 15 min against a 2-day-old
+  ledger). New `mgboost-wl-usage-collector.{service,timer}` run the
+  EXISTING canonical `run_collection_cycle` every 10 min (same hardened
+  oneshot + `EnvironmentFile` shape as the PH6-07 unit; PH6-03's own
+  single-leader CAS lease makes overlap a no-op). No parallel collector.
+- **Freshness contract** (`src/wl_freshness.py`): `usage_freshness()`
+  reads the collector lease row (`last_run_completed_at` +
+  `last_run_outcome`); `fresh = outcome=='OK' AND age <=
+  USAGE_FRESHNESS_MAX_AGE_SECONDS` (technical default 1800 s = 3x the
+  collector cadence — NOT an SLA). Never-ran / ERROR / PARTIAL are all
+  UNKNOWN → not fresh. Topology freshness was already per-cycle (fresh
+  PH6-01 assertion, fail-closed); entitlement freshness was already
+  re-derived per cycle + immediately before every repair epoch.
+- **Two governing invariants:**
+  1. *Uncertainty cannot increase WL access* — every access-INCREASING
+     action (DISABLED→ACTIVE restore; DL-059 newly-approved WL auto-add)
+     requires fresh usage + fresh topology + fresh entitlement; otherwise
+     fail closed, 0 mutation, observably counted
+     (`accounts_skipped_stale_usage` / `access_increase_blocked`).
+  2. *Uncertainty alone cannot mass-disable already-active users* — the
+     ledger is monotonic, so stale telemetry can only UNDER-count and can
+     never manufacture a fresh `exceeded` proof; EXCLUDED (access-
+     decreasing) decisions are deliberately NOT freshness-gated, and a
+     collector/node outage never becomes an outage of all WL clients.
+- **Overshoot model (demonstrated, not promised):** observed overshoot =
+  traffic accumulated between the last trustworthy usage observation and
+  successful disable convergence. Demonstrated detection window =
+  collector cadence (10 min) + enforcement cadence (15 min) + bounded
+  retry (cap 8 × 60 s backoff, per-op, pre-existing). Byte overshoot =
+  link rate × window — a temporal bound only, never a byte guarantee.
+  Exposed as `overshoot_bounds` in `backlog_snapshot()`.
+- **Headroom: none implemented — exact quota threshold kept.** Headroom is
+  not needed for correctness (disable converges within the demonstrated
+  window after the observed crossing); shrinking the user's purchased GB
+  would be a product decision and was NOT taken — options deferred to the
+  owner (see PH6-09 final report).
+- **DL-059 (owner decision):** ACTIVE LIMITED + newly-approved exact WL
+  inbound auto-add through the EXISTING PH6-07 drift path; proven scoping
+  via the append-only `mgboost_wl_topology_versions` registry
+  (`ph6_09_wl_topology_versions_v1`): a child gains ONLY
+  `tags_added_since(<its frozen manifest version>)`; unknown version →
+  nothing; unknown/wl-like tags still fail-closed the whole cycle (PH6-01
+  unchanged); symmetric DISABLED removal kept; manifests now durably
+  record their `topology_version`.
+- **Outage matrix** (documented in `docs/PHASE6_09_WL_FAIL_SAFE.md`):
+  DB outage → cycle-level bounded failure, durable ops resume idempotently
+  (pre-existing epoch/lease machinery, unchanged); broker/Marzban outage →
+  RETRY with cap 8 → ERROR_RECONCILE, no retry storm (bounded by timer
+  cadence + `next_attempt_at`), frozen manifest replays to
+  ALREADY_IN_SYNC after recovery (no duplicate remote effect); WL node /
+  collector outage → staleness freezes access-increases only, ZERO is
+  distinguished from UNKNOWN (missing child observation is UNKNOWN, never
+  counted as 0 traffic); collector stale + already-ACTIVE user → left
+  ACTIVE, never mass-disabled.
+- **Observability** (identifier-free, extends the PH6-07 read model only):
+  `collector_freshness` + `overshoot_bounds` in `backlog_snapshot()`;
+  per-cycle `ph6_09` block (usage freshness snapshot,
+  `accounts_skipped_stale_usage`, `access_increase_blocked`) inside the
+  cycle's `summary_json`; no new UUID/HWID/token/username anywhere.
+
+**Tests:** new suite `tests/test_wl_ph6_09_fail_safe.py` (13 tests, RED
+first — 12 failed before implementation): freshness contract (never-ran/
+too-old/ERROR/PARTIAL all not fresh), stale restore blocked + counted,
+two consecutive outage/recovery cycles then exactly-once restore,
+stale-cannot-fabricate-exhaustion (already-ACTIVE survives untouched),
+DL-059 auto-add (only the new tag, byte-identical otherwise, replay zero
+writes), auto-add blocked while stale, pre-arrived approved tag
+legitimate (no ERROR_RECONCILE), symmetric suspended-child removal,
+unknown-tag whole-cycle block kept, version registry unknown-version → ∅,
+collector units shape, cadence bounds consistency, and a real
+`run_collection_cycle` → enforcement chain through the snapshot read
+model. Targeted WL suites + P0 hotfix green; full regression see
+AGENT_HANDOFF.
+
+**Rollback:** disable `mgboost-wl-usage-collector.timer` + the usual
+code revert; the freshness gate then freezes INCLUDED decisions (fail
+closed) — it can never cause a mutation by being rolled back.
+
+**Product decisions deliberately NOT taken here (owner STOP items):**
+commercial overshoot budget, any headroom that reduces purchased GB,
+outage SLA numbers, and the maximum stale-telemetry window as a product
+guarantee — the implemented 1800 s freshness bound is a technical
+fail-safe, not any of those.
 
 ## [ ] PH6-10 — Subscription UX after exhaustion
 
@@ -3665,6 +3758,51 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Связано:** PH5-11, PH5-12, `src/commercial_signup.py::ensure_template_for_account`,
   `src/child_provisioning.py::prepare_child_ensure`, `src/account_consolidation.py::close_account`,
   DL-057.
+
+## DL-059 — ACTIVE LIMITED + newly-approved exact WL inbound: auto-add это legitimate topology convergence (PH6-09)
+
+- **Решение (owner, 2026-08-28):** если (a) у аккаунта есть действующий
+  canonical LIMITED WL entitlement, (b) текущий период активен и quota не
+  exhausted, (c) child ACTIVE/INCLUDED, (d) появился новый inbound, который
+  ЯВНО входит в текущую approved/versioned exact PH0-05/PH6-01 WL topology,
+  (e) fresh topology assertion = OK и (f) identity/UUID/generation child
+  доказаны — тогда scheduled reconciliation АВТОМАТИЧЕСКИ добавляет этот
+  newly-approved WL inbound существующему ACTIVE child через существующий
+  PH6-07 drift-repair path. Это legitimate topology convergence, а НЕ
+  ERROR_RECONCILE (отменяет прежний консервативный flag-only выбор
+  `WL_UNEXPECTED_WHILE_INCLUDED` для нового approved тега у ACTIVE child).
+- **Canonical semantics (симметричная):**
+  - ACTIVE + approved WL missing → safely add;
+  - DISABLED + approved WL present → safely remove (уже было в PH6-07);
+  - ambiguous / unknown / identity mismatch → ERROR_RECONCILE, 0 mutation.
+- **Жёсткие ограничения:** только exact current approved WL tag; никакого
+  fuzzy `wl` matching; unknown/wl-like tag не trusted и не auto-add (PH6-01
+  gate блокирует весь цикл, как и раньше); target строится ТОЛЬКО из current
+  approved topology; mutation меняет только `inbounds.vless`;
+  UUID/proxies/expire/data_limit/status не трогаются; topology
+  unknown/mismatch/unreachable → fail closed, 0 mutation;
+  entitlement/pool/quota fresh-recheck непосредственно перед repair epoch
+  (TOCTOU-фикс PH6-07 сохранён); NEW в PH6-09: дополнительно требуется
+  FRESH trusted usage telemetry (`src/wl_freshness.usage_freshness`) —
+  stale/unknown usage блокирует auto-add и любой access-increase.
+- **Доказуемая scope-механика:** «newly-approved» — это НЕ весь текущий
+  allowlist и не эвристика: append-only реестр
+  `mgboost_wl_topology_versions` (`ph6_09_wl_topology_versions_v1`)
+  записывает точный набор тегов каждой positively-asserted config_version;
+  child получает только `tags_added_since(версия его замороженного
+  manifest)`. Неизвестная версия → пустое множество → 0 auto-add (fail
+  closed). Тег, который child'а provisioning сознательно никогда не включал,
+  остаётся неавто-добавляемым, пока не появится approved-версия, которая его
+  вводит.
+- **Scope-границы:** решение НЕ распространяется на STANDARD/NONE,
+  UNLIMITED и UNLIMITED-quota periods (структурный abstain без изменений);
+  commercial-canary запуск — не эта фаза.
+- **Кто:** owner (постановка PH6-09).
+- **Почему:** PH6-06 review задокументировал newly-added-inbound gap и
+  временный conservative flag-only ответ; без canonical semantics для
+  approved expansion коммерческий LIMITED WL нельзя включать без ручного
+  разового вмешательства при каждом обновлении topology.
+- **Связано:** PH0-05, PH6-01, PH6-06, PH6-07, PH6-09.
 
 # Contradictions and migration hazards
 

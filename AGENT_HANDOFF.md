@@ -1,3 +1,93 @@
+# AGENT_HANDOFF — PH6-09 overshoot/outage fail-safe implemented on top of deployed PH6-07: collector scheduler closed, freshness contract, DL-059 auto-add; local checkpoint only, NO push, NO deploy, NO production mutation
+
+Updated: 2026-08-28 (PH6-09 implementation session from local = origin =
+production = `d6afae1`). **This top section supersedes everything below.**
+
+## What was found (root gaps)
+
+1. **Collector scheduler missing (blocker):** PH6-03's collector was
+   on-demand only. Production READ-ONLY verified: enforcement timer firing
+   every 15 min while the ledger's last trusted observation was 2026-08-26
+   (2 days stale). Closed with new `mgboost-wl-usage-collector.{service,
+   timer}` running the EXISTING `run_collection_cycle` every 10 min (same
+   hardened shape as the PH6-07 unit; PH6-03's own CAS lease owns overlap).
+2. **No freshness contract:** nothing distinguished ZERO from UNKNOWN
+   usage. New `src/wl_freshness.py` (`USAGE_FRESHNESS_MAX_AGE_SECONDS=1800`,
+   technical, not SLA): never-ran/ERROR/PARTIAL/too-old are all NOT fresh.
+3. **Approved topology expansion had no canonical semantics:** PH6-07
+   review left `WL_UNEXPECTED_WHILE_INCLUDED` flag-only. Owner decision
+   **DL-059** (ROADMAP Decision Log) resolved it: ACTIVE LIMITED child
+   gains newly-approved exact WL inbound via the EXISTING PH6-07 drift
+   path; scoping proven by the new append-only
+   `mgboost_wl_topology_versions` registry (child gains ONLY
+   `tags_added_since(<its frozen manifest version>)`; unknown version →
+   nothing; unknown/wl-like tags still block the whole cycle). Manifests
+   now record `topology_version`.
+
+## The two governing invariants (both test-pinned)
+
+- **Uncertainty cannot increase WL access:** restore + auto-add require
+  fresh usage/topology/entitlement; otherwise 0 mutation, counted
+  (`accounts_skipped_stale_usage` / `access_increase_blocked`).
+- **Uncertainty cannot mass-disable active users:** the monotonic ledger
+  can only under-count when stale, so it can never fabricate `exceeded`;
+  EXCLUDED decisions are deliberately NOT freshness-gated; a collector/node
+  outage never becomes an outage of all WL clients.
+
+## Overshoot/headroom (no invented SLA)
+
+Demonstrated window = 10 min collector + 15 min enforcement + bounded
+retry (cap 8 × 60 s); byte overshoot = link rate × window — temporal only.
+`backlog_snapshot()` exposes `collector_freshness` + `overshoot_bounds`.
+**Headroom NOT implemented** (exact quota threshold kept): it is not needed
+for correctness, and shrinking purchased GB is a product decision. Owner
+STOP items left undecided: commercial overshoot budget, headroom size,
+outage SLA numbers, product-grade stale window. Full details + outage
+matrix + deploy plan: `docs/PHASE6_09_WL_FAIL_SAFE.md`.
+
+## Production READ-ONLY verification (this session, zero writes)
+
+HEAD `d6afae1`; timer active (next fire listed, 3 recorded cycles all
+`OK`, drift 0/0/0); collector units absent before this change;
+`mgboost_wl_usage_collector_lease` last run 2026-08-26 17:36 UTC; cursors
+62, max last_polled_at 2026-08-26; `mgboost_wl_enforcement_states/ops` =
+0/0; `mgboost_wl_periods` = 0; drift rows = 0; entitlement wl_mode counts
+(NONE=2, UNLIMITED=16, LIMITED=0). No production writes/restarts at any
+point.
+
+## Tests
+
+`tests/test_wl_ph6_09_fail_safe.py` — 13 tests, RED first (12 failed
+pre-implementation): freshness matrix, stale restore blocked + counted,
+two consecutive outage/recovery cycles then exactly-once restore,
+stale-cannot-fabricate-exhaustion, DL-059 auto-add (only the new tag,
+byte-identical otherwise, replay 0 writes), auto-add blocked while stale,
+pre-arrived approved tag legitimate, symmetric suspended removal,
+unknown-tag whole-cycle block, registry unknown-version → ∅, units shape,
+cadence bounds, real collector→enforcement chain. `_enforce_fixture` now
+marks the collector fresh (the freshness gate is real); staleness tests
+overwrite it. Full regression: **1464 passed, 4 skipped** (skips are
+Playwright-only, environment lacks the browser venv; baseline 1451 + 13).
+`py_compile` clean, `git diff --check` clean, `systemd-analyze verify` on
+the new units: only the expected dev-host complaint about the
+production-only venv path (same path verified clean on production for the
+PH6-07 unit; re-verify at deploy).
+
+## Deploy plan (owner-authorized, NOT executed)
+
+Backup → push → ff-pull → install the two new units → daemon-reload →
+restart `mgboost-panel` (additive migration `ph6_09_wl_topology_versions_v1`
+self-applies) → `systemctl enable --now mgboost-wl-usage-collector.timer`.
+Expected steady state on the current 0-LIMITED shape: collector outcome OK
+every ~10 min, freshness age < 1800 s, enforcement cycles OK, 0 mutations.
+Rollback: disable the collector timer + code revert (fail-safe direction
+only). **Local checkpoint HEAD after this session: see `git log -1`; local
+and origin/production untouched otherwise (NO push, NO deploy).** The
+untracked `scripts/support_goodwill_extend_5d_20260828.py` was NOT touched,
+NOT committed, NOT deleted.
+
+---
+
 # AGENT_HANDOFF — PH6-07 WL enforcement runtime independently reviewed, fixed and DEPLOYED to production (`0f0795f`); 3 real scheduled cycles verified, zero mutations
 
 Updated: 2026-08-28 (independent senior review session, following the

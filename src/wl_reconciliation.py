@@ -81,11 +81,16 @@ from .wl_enforcement import (
     normalize_observed_vless,
     run_wl_enforcement_cycle,
 )
+from .wl_freshness import (
+    USAGE_FRESHNESS_MAX_AGE_SECONDS,
+    usage_freshness,
+)
 from .wl_reconciliation_schema import apply_wl_reconciliation_schema
 from .wl_topology_guard import (
     TopologyMismatchError,
     fetch_live_topology_observation,
 )
+from .wl_topology_versions import tags_added_since
 
 
 class WLReconciliationError(RuntimeError):
@@ -178,7 +183,9 @@ def _expected_membership(store, state: dict, child: dict) -> dict | None:
     """The frozen proof of what this child's membership was when the account
     converged: the manifest of its APPLIED op in the live epoch. Without that
     manifest there is nothing durably proven to judge drift against -- the
-    child is skipped (never judged from live state alone)."""
+    child is skipped (never judged from live state alone). `topology_version`
+    is what scopes a later DL-059 approved-expansion auto-add (unknown ->
+    nothing is ever auto-added)."""
     for op in store.epoch_ops(state["account_id"], state["epoch"]):
         if int(op["child_intent_id"]) != int(child["child_intent_id"]):
             continue
@@ -188,6 +195,7 @@ def _expected_membership(store, state: dict, child: dict) -> dict | None:
         return {
             "target": sorted(manifest.get("target", [])),
             "baseline_full": sorted(manifest.get("baseline_full", [])),
+            "topology_version": manifest.get("topology_version"),
         }
     return None
 
@@ -216,10 +224,16 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
         "repaired": 0,
         "flagged": 0,
         "observation_errors": 0,
+        "access_increase_blocked": 0,
         "repair_accounts": [],
         "flagged_classes": [],
     }
     recon: WLReconciliationStore = db.wl_reconciliation
+    # PH6-09 freshness contract: repairing an INCLUDED (access-increasing)
+    # direction on stale/unknown usage telemetry is refused outright. The
+    # EXCLUDED direction (removing WL from a suspended child) is NOT gated --
+    # it only ever decreases access against a frozen, re-proven decision.
+    usage_fresh = usage_freshness(db, now=timestamp)["fresh"]
 
     rows = db._conn.execute(
         "SELECT * FROM mgboost_wl_enforcement_states WHERE state IN ('ACTIVE','DISABLED')"
@@ -237,6 +251,10 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
         # (it runs in the same cycle) -- a drift repair must never invent
         # an entitlement the canonical read model no longer proves.
         if desired is None or desired != state["last_direction"]:
+            continue
+        if desired == "INCLUDED" and not usage_fresh:
+            # Fail closed: no access-increasing repair on stale telemetry.
+            summary["access_increase_blocked"] += 1
             continue
         children = store.list_candidate_children(account_id)
         if not children:
@@ -314,8 +332,18 @@ def scan_terminal_drift(db, service_marzban, *, worker_id: str, now: int,
                 expected_wl = target & wl_tags
                 if not expected_wl:
                     continue  # no WL entitlement ever proven for this child
-                missing = expected_wl - observed_set
-                unexpected = (observed_set & wl_tags) - expected_wl
+                # DL-059 canonical semantics: the tags an operator-APPROVED
+                # versioned baseline update added after this child's frozen
+                # convergence are exactly its newly-approved WL inbounds --
+                # an entitled ACTIVE child missing one is legitimate drift,
+                # repaired through the same machinery. Anything observed but
+                # never frozen AND never approved-added stays flagged
+                # (conservative), and approved tags never count as unexpected.
+                added_approved = tags_added_since(
+                    db._conn, wl_tags, expected.get("topology_version"),
+                )
+                missing = (expected_wl | added_approved) - observed_set
+                unexpected = (observed_set & wl_tags) - expected_wl - added_approved
                 if missing:
                     repairs.append(child)
                     repair_findings.append((child, "WL_MISSING_WHILE_INCLUDED"))
@@ -424,6 +452,7 @@ def run_wl_reconciliation_cycle(*, db, service_marzban, worker_id: str,
                                 topology_observer=None, lock_file: str | None = None) -> dict:
     timestamp = int(time.time()) if now is None else int(now)
     recon: WLReconciliationStore = db.wl_reconciliation
+    freshness_snapshot = usage_freshness(db, now=timestamp)
     try:
         lock = _CycleLock(lock_file) if lock_file else None
         if lock is not None:
@@ -471,6 +500,14 @@ def run_wl_reconciliation_cycle(*, db, service_marzban, worker_id: str,
                 last_error_class = drift["flagged_classes"][0]
             elif engine["errors"]:
                 last_error_class = str(engine["errors"][0])[:128]
+            snapshot = backlog_snapshot(db, now=timestamp)
+            snapshot["ph6_09"] = {
+                "usage_freshness": freshness_snapshot,
+                "accounts_skipped_stale_usage":
+                    engine.get("accounts_skipped_stale_usage", 0),
+                "access_increase_blocked":
+                    drift.get("access_increase_blocked", 0),
+            }
             recon.record_cycle_finish(
                 cycle_id, outcome=outcome, now=timestamp,
                 config_version=assertion["config_version"], topology_ok=1,
@@ -479,7 +516,7 @@ def run_wl_reconciliation_cycle(*, db, service_marzban, worker_id: str,
                 drift_repaired=drift["repaired"],
                 drift_flagged=drift["flagged"],
                 last_error_class=last_error_class,
-                summary_json=_canonical(backlog_snapshot(db, now=timestamp)),
+                summary_json=_canonical(snapshot),
             )
             return {
                 "outcome": outcome,
@@ -606,6 +643,22 @@ def backlog_snapshot(db, *, now: int | None = None) -> dict:
         "oldest_backlog_age_seconds": oldest_age,
         "drift": drift,
         "last_error_class": last_error_class,
+        # PH6-09: usage-telemetry freshness + the demonstrated (never
+        # promised) overshoot window, derived from the real unit cadences.
+        "collector_freshness": usage_freshness(db, now=timestamp),
+        "overshoot_bounds": {
+            "collector_cadence_seconds": 600,
+            "enforcement_cadence_seconds": 900,
+            "usage_freshness_max_age_seconds": USAGE_FRESHNESS_MAX_AGE_SECONDS,
+            "demonstrated_detection_window_seconds": 600 + 900,
+            "note": (
+                "demonstrated technical bound from the systemd cadences, not "
+                "an SLA: observed overshoot = traffic accumulated between the "
+                "last trusted usage observation and successful disable "
+                "convergence (bytes = link rate x window; never a byte-level "
+                "guarantee)"
+            ),
+        },
         "worker_health": {
             "last_cycle_finished_at": _cycle_dict(last)["finished_at"] if last else None,
             "last_cycle_outcome": _cycle_dict(last)["outcome"] if last else None,

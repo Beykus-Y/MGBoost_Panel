@@ -67,6 +67,16 @@ class WLTopologyGuardStore:
                 ),
             )
             self._conn.commit()
+        if diff.ok:
+            # PH6-09: register this positively-asserted version's exact tag
+            # set -- the durable basis for provably-scoped approved-expansion
+            # auto-adds (DL-059). A negative assertion records nothing.
+            from .wl_topology_versions import record_topology_version
+
+            record_topology_version(
+                self._conn, config_version=diff.config_version,
+                wl_tags=observed_tags, now=timestamp,
+            )
         return {
             "ok": diff.ok,
             "config_version": diff.config_version,

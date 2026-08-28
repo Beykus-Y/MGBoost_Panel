@@ -228,6 +228,16 @@ def _enforce_fixture(db, *, mapping, n_children=1):
     for c in children:
         _give_child_wl_tags(remote, c["username"])
     client = WlBackedClient(remote)
+    # PH6-09 freshness contract: INCLUDED decisions need a fresh trusted
+    # collector observation; tests that exercise staleness overwrite this
+    # afterwards (tests/test_wl_ph6_09_fail_safe.py).
+    db._conn.execute(
+        "UPDATE mgboost_wl_usage_collector_lease SET last_run_started_at=?,"
+        "last_run_completed_at=?,last_run_outcome=?,last_run_error_class=NULL "
+        "WHERE id=1",
+        (NOW - 5, NOW, "OK"),
+    )
+    db._conn.commit()
     return {
         "account": account, "alias_id": alias_id, "remote": remote,
         "client": client, "children": children,

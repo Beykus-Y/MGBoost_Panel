@@ -90,7 +90,9 @@ from .wl_enforcement_contract import (
     validate_wl_set_request,
 )
 from . import wl_topology as _wl_topology
+from .wl_freshness import usage_freshness
 from .wl_topology_guard import fetch_live_topology_observation
+from .wl_topology_versions import tags_added_since
 from .wl_parent_pool import resolve_current_parent_wl_pool
 
 # Kept as a module-level name so the versioned PH0-05 baseline stays
@@ -190,9 +192,10 @@ class WLEnforcementStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def latest_exclude_baseline(self, child_intent_id: int) -> list[str] | None:
-        """The frozen baseline_full of the most recent prior EXCLUDED op for
-        this child -- the only reference data an INCLUDED restore may use."""
+    def latest_exclude_baseline(self, child_intent_id: int) -> tuple[list[str], str | None] | None:
+        """The frozen baseline_full (+ the topology version it was frozen
+        under) of the most recent prior EXCLUDED op for this child -- the
+        only reference data an INCLUDED restore may use."""
         rows = self._conn.execute(
             "SELECT manifest_json FROM mgboost_wl_enforcement_ops "
             "WHERE child_intent_id=? AND direction='EXCLUDED' AND manifest_json IS NOT NULL "
@@ -201,15 +204,17 @@ class WLEnforcementStore:
         ).fetchall()
         if not rows:
             return None
-        return sorted(json.loads(rows[0]["manifest_json"])["baseline_full"])
+        manifest = json.loads(rows[0]["manifest_json"])
+        return sorted(manifest["baseline_full"]), manifest.get("topology_version")
 
-    def latest_include_baseline(self, child_intent_id: int) -> list[str] | None:
-        """The frozen baseline_full of the most recent prior INCLUDED op for
-        this child (PH6-07 drift repair): a child that was INCLUDED from its
-        very first epoch has no prior disable, so its own frozen pre-include
-        observation is the only durable evidence of its legitimate full
-        membership. Still only ever filtered through the static allowlist
-        before anything is restored."""
+    def latest_include_baseline(self, child_intent_id: int) -> tuple[list[str], str | None] | None:
+        """The frozen baseline_full (+ the topology version it was frozen
+        under) of the most recent prior INCLUDED op for this child (PH6-07
+        drift repair): a child that was INCLUDED from its very first epoch
+        has no prior disable, so its own frozen pre-include observation is
+        the only durable evidence of its legitimate full membership. Still
+        only ever filtered through the static allowlist before anything is
+        restored."""
         rows = self._conn.execute(
             "SELECT manifest_json FROM mgboost_wl_enforcement_ops "
             "WHERE child_intent_id=? AND direction='INCLUDED' AND manifest_json IS NOT NULL "
@@ -218,7 +223,8 @@ class WLEnforcementStore:
         ).fetchall()
         if not rows:
             return None
-        return sorted(json.loads(rows[0]["manifest_json"])["baseline_full"])
+        manifest = json.loads(rows[0]["manifest_json"])
+        return sorted(manifest["baseline_full"]), manifest.get("topology_version")
 
     def unsettled_ops(self, account_id: int, epoch: int, *, now: int) -> list[dict]:
         """Every non-terminal op of the given epoch: PENDING/RETRY, plus
@@ -886,22 +892,37 @@ def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzb
             )
             return None
     else:
-        baseline_full_prior = store.latest_exclude_baseline(claimed["child_intent_id"])
+        baseline_full_prior, prior_topology_version = (
+            store.latest_exclude_baseline(claimed["child_intent_id"])
+            or (None, None)
+        )
         if baseline_full_prior is None:
             # PH6-07 repair path for a child that was INCLUDED from its very
             # first epoch (no prior disable exists): the child's own frozen
             # INCLUDED observation is the only durable evidence of its
             # legitimate membership. Same discipline as the EXCLUDED baseline:
             # frozen evidence + allowlist filter, never live-derived trust.
-            baseline_full_prior = store.latest_include_baseline(claimed["child_intent_id"])
+            baseline_full_prior, prior_topology_version = (
+                store.latest_include_baseline(claimed["child_intent_id"])
+                or (None, None)
+            )
         if baseline_full_prior is None:
             store.record_error(
                 operation_id, error_class="NO_BASELINE_FOR_INCLUDE", now=now,
             )
             return None
         # The recorded baseline is the child's FULL pre-disable member list;
-        # only its PH0-05 allowlisted subset may ever be restored.
-        baseline_wl_tags = sorted(set(baseline_full_prior) & set(WL_INBOUND_TAGS))
+        # only its PH0-05 allowlisted subset may ever be restored. On top of
+        # that proven subset, EXACTLY the tags an operator-approved versioned
+        # baseline update added since this child last converged (DL-059) join
+        # the target -- legitimate topology convergence, provably scoped by
+        # the durable version registry; anything unverifiable adds nothing.
+        newly_approved = tags_added_since(
+            store._conn, _wl_topology.WL_INBOUND_TAGS, prior_topology_version,
+        )
+        baseline_wl_tags = sorted(
+            (set(baseline_full_prior) & set(WL_INBOUND_TAGS)) | newly_approved
+        )
         if not baseline_wl_tags:
             # The source never carried any WL inbound: INCLUDE is
             # definitionally a no-op -- settle honestly by observation.
@@ -921,6 +942,10 @@ def _derive_freeze_and_dispatch(store, claimed, payload, observed, service_marzb
         "baseline_full": baseline_full,
         "target": target,
         "removed_wl": removed_wl,
+        # PH6-09: the PH0-05 config version this frozen evidence was derived
+        # under -- what makes a later topology expansion provably scoped
+        # (tags_added_since) instead of guessed.
+        "topology_version": _wl_topology.WL_TOPOLOGY_VERSION,
     }
     store.record_manifest(operation_id, worker_id=worker_id, manifest=manifest, now=now)
     return _dispatch_frozen_manifest(store, claimed, payload, manifest,
@@ -1015,6 +1040,8 @@ def run_wl_enforcement_cycle(
     summary = {
         "accounts_evaluated": 0,
         "accounts_abstained": 0,
+        "accounts_skipped_stale_usage": 0,
+        "usage_fresh": None,
         "epochs_opened": 0,
         "ops_prepared": 0,
         "ops_applied": 0,
@@ -1027,10 +1054,25 @@ def run_wl_enforcement_cycle(
     }
     store: WLEnforcementStore = db.wl_enforcement
 
+    # PH6-09 freshness contract, evaluated ONCE per cycle: access-increasing
+    # (INCLUDED) decisions need a fresh trusted collector observation.
+    # Access-decreasing (EXCLUDED) decisions are intentionally NOT gated --
+    # a stale ledger can only under-count, never fabricate quota exhaustion,
+    # so telemetry loss can never mass-disable already-active users.
+    freshness = usage_freshness(db, now=timestamp)
+    summary["usage_fresh"] = bool(freshness["fresh"])
+
     for account_id in _accounts_in_scope(db._conn):
         summary["accounts_evaluated"] += 1
         try:
             pool = resolve_current_parent_wl_pool(db, account_id=account_id, now=timestamp)
+            if (
+                decide_direction_from_pool(pool) == "INCLUDED"
+                and not freshness["fresh"]
+            ):
+                # Fail closed: no enable/restore on stale or unknown usage.
+                summary["accounts_skipped_stale_usage"] += 1
+                continue
             decision = store.apply_decision(account_id, pool=pool, now=timestamp)
             if decision is None:
                 summary["accounts_abstained"] += 1

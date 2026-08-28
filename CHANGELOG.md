@@ -17,6 +17,23 @@
 
 ### Added
 
+- PH6-09 overshoot/outage fail-safe поверх production PH6-07 (2026-08-28,
+  implemented locally, checkpoint only — NO push/deploy): new systemd-юниты
+  `mgboost-wl-usage-collector.{service,timer}` (канонический PH6-03
+  collector теперь реально работает по 10-минутному таймеру — раньше
+  scheduler отсутствовал и enforcement читал устаревший ledger), freshness
+  contract (`src/wl_freshness.py`, технический bound 1800 с, не SLA),
+  access-increasing WL решения (restore, auto-add нового approved inbound)
+  только при свежей telemetry/topology/entitlement — иначе fail closed;
+  уже-ACTIVE пользователи при collector/node outage не массово отключаются
+  (stale ledger может только under-count); DL-059: ACTIVE LIMITED child
+  автоматически получает newly-approved exact WL inbound через существующий
+  PH6-07 drift path с доказуемой scope-механикой (append-only
+  `mgboost_wl_topology_versions` реестр версий); observability:
+  `collector_freshness`, `overshoot_bounds`, per-cycle `ph6_09` счётчики
+  в identifier-free read model. Headroom не введён (exact quota threshold);
+  commercial overshoot/SLA значения — осознанно НЕ выбраны (owner STOP).
+
 - PH5-11 first commercial STANDARD signup flow (2026-08-27, implemented
   locally, pending independent review + deploy; canary not started):
   «Купить VPN» в Telegram для новых клиентов — 3 non-WL тарифа

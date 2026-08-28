@@ -58,6 +58,7 @@ from .wl_enforcement_schema import apply_wl_enforcement_schema
 from .wl_enforcement import WLEnforcementStore
 from .wl_reconciliation_schema import apply_wl_reconciliation_schema
 from .wl_reconciliation import WLReconciliationStore
+from .wl_topology_versions_schema import apply_wl_topology_versions_schema
 from .wl_package_schema import apply_wl_package_schema
 from .wl_package_catalog import WLPackageCatalogStore
 from .wl_packages import WLPackageStore
@@ -464,6 +465,7 @@ class Database:
         apply_wl_usage_ledger_schema(self._conn)
         apply_wl_enforcement_schema(self._conn)
         apply_wl_reconciliation_schema(self._conn)
+        apply_wl_topology_versions_schema(self._conn)
         apply_wl_package_schema(self._conn)
         apply_child_workflow_schema(self._conn)
         apply_child_lifecycle_schema(self._conn)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Periodic MGBoost WL usage collection cadence (PH6-09 runtime chain)
+
+[Timer]
+# TECHNICAL cadence only, NOT a product SLA: the collector runs every 10
+# minutes so the PH6-03 ledger stays fresh enough for the PH6-07 enforcement
+# cycle (15 min) to act on trustworthy data. Together with the PH6-09
+# freshness bound (`USAGE_FRESHNESS_MAX_AGE_SECONDS`) this derives the
+# demonstrated overshoot window documented in
+# docs/PHASE6_09_WL_FAIL_SAFE.md -- it makes NO byte-level overshoot claim.
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60s
+Unit=mgboost-wl-usage-collector.service
+
+[Install]
+WantedBy=timers.target
