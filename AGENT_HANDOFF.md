@@ -1,9 +1,28 @@
-# AGENT_HANDOFF — bot `/start` canonical-owner fix rebased onto post-P0 baseline `243671e` (local checkpoint only, NO push, NO deploy)
+# AGENT_HANDOFF — bot `/start` canonical-owner fix deployed to production (`7f5b18f`)
 
-Updated: 2026-08-28 (independent review + rebase session). **This top
-section supersedes everything below.** `origin/main`/production is
-`243671e` (the P0 hotfix documented in the next section, already
-deployed). The `/start` canonical-owner fix was originally authored as
+Updated: 2026-08-28T12:13Z (deploy follow-up to the review/rebase session
+below). **This top section supersedes everything below.** `origin/main`
+and production `HEAD` are now `7f5b18f`. Deploy: local `main` (stale at
+`c93cdd5`, diverged from `origin/main`) was fast-forwarded to `7f5b18f`
+and pushed (`243671e..7f5b18f`); production fetched and fast-forwarded
+the same way (`git merge --ff-only`), `py_compile` clean, only
+`mgboost-panel.service` restarted (code-only change, no schema
+migration). Fresh encrypted backup+restore `PASS` preceded the pull.
+Pre/post invariants unchanged: `quick_check=ok`, 0 FK violations,
+accounts=19, subscriptions=19, grace_periods=17. All 3 services
+(`mgboost-panel`, `mgboost-child-worker`, `mgboost-marzban-broker`)
+active post-restart, zero errors in the panel journal since restart,
+unauthenticated `/admin/accounts` still `401`, legacy bogus `/sub` token
+still `404`. `scripts/support_goodwill_extend_5d_20260828.py` (unrelated
+pre-existing uncommitted admin script) remained untracked/untouched on
+both local and production checkouts throughout.
+
+---
+
+Updated: 2026-08-28 (independent review + rebase session, PRE-deploy).
+**Superseded by the section above** -- kept for the review trail.
+`origin/main`/production was `243671e` (the P0 hotfix documented further
+below, already deployed). The `/start` canonical-owner fix was originally authored as
 checkpoint `c93cdd5` *before* that P0 hotfix existed, and was correctly
 excluded from it (preserved on branch `checkpoint/start-direct-owner` +
 tag `checkpoint-c93cdd5-start-direct-owner`, per the P0 section below).
