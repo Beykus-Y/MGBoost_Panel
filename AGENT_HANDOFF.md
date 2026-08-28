@@ -36,8 +36,13 @@ production = `d6afae1`). **This top section supersedes everything below.**
 
 ## Overshoot/headroom (no invented SLA)
 
-Demonstrated window = 10 min collector + 15 min enforcement + bounded
-retry (cap 8 × 60 s); byte overshoot = link rate × window — temporal only.
+Demonstrated DETECTION window = 10 min collector + 15 min enforcement =
+1500 s worst case. Separately: broker-retry cadence is gated by the
+15-min enforcement timer (no in-process retry loop), NOT the 60 s
+`RETRY_DELAY_SECONDS` marker, so `MAX_ATTEMPTS=8` bounds convergence
+retry at up to ~8 enforcement cycles (~2 h worst case) before
+`ERROR_RECONCILE` -- never "cap 8 × 60 s". Byte overshoot = link rate ×
+window — temporal only, never a byte guarantee.
 `backlog_snapshot()` exposes `collector_freshness` + `overshoot_bounds`.
 **Headroom NOT implemented** (exact quota threshold kept): it is not needed
 for correctness, and shrinking purchased GB is a product decision. Owner

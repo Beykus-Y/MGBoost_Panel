@@ -61,10 +61,30 @@ collector lease row (`last_run_completed_at`, `last_run_outcome`):
 
     observed overshoot = traffic between the last trustworthy usage
                          observation and successful disable convergence
-    demonstrated window = 10 min (collector) + 15 min (enforcement)
-                          + bounded retry (cap 8, 60 s backoff, per op)
-    byte overshoot      = link rate x window   (temporal bound ONLY)
 
+Two DIFFERENT bounds -- never merged into one number:
+
+    detection window (healthy broker) = 10 min (collector) + 15 min
+                                         (enforcement) = 1500 s worst case,
+                                         phase-independent (correctness
+                                         comes from freshness/period state,
+                                         never from systemd timer order)
+
+    convergence retry (broker degraded) = up to MAX_ATTEMPTS=8 retries,
+                                           but each retry is only re-claimed
+                                           on the NEXT scheduled enforcement
+                                           cycle (no in-process retry loop),
+                                           so the real cadence is the 15-min
+                                           enforcement timer, NOT the 60 s
+                                           `RETRY_DELAY_SECONDS` next_attempt
+                                           marker -> worst case ~= 8
+                                           enforcement cycles (~2 h) before
+                                           the op lands ERROR_RECONCILE
+
+    byte overshoot = link rate x window   (temporal bound ONLY)
+
+Prolonged/permanent broker outage has NO honest finite convergence bound
+beyond the ERROR_RECONCILE backstop -- this is stated, not hidden.
 No byte-level guarantee is claimed or implementable. **Headroom: none** —
 the exact quota threshold is kept; headroom would reduce purchased GB and
 is a product decision deferred to the owner.
@@ -90,7 +110,7 @@ Operator-approved versioned PH0-05 update (new exact tag + version bump):
 | Outage | Behavior |
 |---|---|
 | DB unavailable/locked | cycle records bounded `ERROR`, exits; durable op rows resume idempotently next cycle (epoch/lease machinery unchanged) |
-| Broker unavailable | desired state stays durable; RETRY with `next_attempt_at` backoff, cap 8 → account `ERROR_RECONCILE`; no retry storm (cadence-bounded) |
+| Broker unavailable | desired state stays durable; RETRY with `next_attempt_at` marker, cap 8 retries re-claimed one per enforcement cycle (~2 h worst case, not 8×60s) → account `ERROR_RECONCILE`; no retry storm (cadence-bounded) |
 | Broker outage after remote success, before ACK | frozen manifest replay settles `ALREADY_IN_SYNC`, exactly-once by observation |
 | Marzban unavailable | same as broker: no blind mutation, recover by reread |
 | WL node / usage unavailable for one child | that child's observation is UNKNOWN (never 0); other children unaffected; no global disable |

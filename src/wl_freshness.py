@@ -58,9 +58,13 @@ def usage_freshness(db, *, now: int, max_age_seconds: int = USAGE_FRESHNESS_MAX_
         }
     completed_at = int(row["last_run_completed_at"])
     outcome = row["last_run_outcome"]
-    age = max(0, int(now) - completed_at)
+    age = int(now) - completed_at
     return {
-        "fresh": bool(outcome == "OK" and age <= int(max_age_seconds)),
+        # A negative age (completed_at in the future -- clock skew, or a
+        # corrupted row) is never treated as "freshest possible": clamping
+        # it to 0 would make an untrustworthy timestamp look maximally
+        # trusted. Fail closed instead -- age is reported as observed.
+        "fresh": bool(outcome == "OK" and 0 <= age <= int(max_age_seconds)),
         "last_ok_run_at": completed_at,
         "last_run_outcome": outcome,
         "last_run_error_class": row["last_run_error_class"],

@@ -2036,11 +2036,22 @@ around it:
      collector/node outage never becomes an outage of all WL clients.
 - **Overshoot model (demonstrated, not promised):** observed overshoot =
   traffic accumulated between the last trustworthy usage observation and
-  successful disable convergence. Demonstrated detection window =
-  collector cadence (10 min) + enforcement cadence (15 min) + bounded
-  retry (cap 8 × 60 s backoff, per-op, pre-existing). Byte overshoot =
+  successful disable convergence. Two DIFFERENT bounds, never merged:
+  (a) demonstrated DETECTION window = collector cadence (10 min) +
+  enforcement cadence (15 min) = 1500 s worst case, phase-independent
+  (freshness/period state decides correctness, never systemd timer
+  order); (b) CONVERGENCE-on-a-healthy-broker also needs the dispatch to
+  actually land. `RETRY_DELAY_SECONDS=60` (pre-existing) only sets the
+  persisted `next_attempt_at` marker; because a retry is only re-claimed
+  by the NEXT scheduled enforcement cycle (no in-process retry loop), the
+  real attempt cadence is the 15-minute enforcement timer, not 60 s. So
+  `MAX_ATTEMPTS=8` bounds retry at up to ~8 enforcement cycles
+  (worst case ≈ 2 h) before the op lands `ERROR_RECONCILE`, not "cap 8 ×
+  60 s ≈ 8 min". Outage/unavailable-broker convergence has NO honest
+  finite bound beyond that ERROR_RECONCILE backstop. Byte overshoot =
   link rate × window — a temporal bound only, never a byte guarantee.
-  Exposed as `overshoot_bounds` in `backlog_snapshot()`.
+  Exposed as `overshoot_bounds` in `backlog_snapshot()` (detection window
+  only; the field never states a convergence/retry number).
 - **Headroom: none implemented — exact quota threshold kept.** Headroom is
   not needed for correctness (disable converges within the demonstrated
   window after the observed crossing); shrinking the user's purchased GB

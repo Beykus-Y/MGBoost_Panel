@@ -199,6 +199,19 @@ def test_freshness_ok_requires_recent_successful_collector_run(db):
     assert usage_freshness(db, now=NOW + FRESH_MAX_AGE + 22)["fresh"] is False
 
 
+def test_freshness_rejects_future_completed_at_clock_skew(db):
+    """A `last_run_completed_at` in the future relative to `now` (clock
+    skew, or a corrupted row) must never be treated as maximally fresh.
+    Clamping a negative age to 0 would make an untrustworthy timestamp
+    look like the freshest possible observation -- fail closed instead."""
+    from src.wl_freshness import usage_freshness
+
+    _mark_collector_fresh(db, now=NOW + 3600, outcome="OK")
+    snapshot = usage_freshness(db, now=NOW)
+    assert snapshot["fresh"] is False
+    assert snapshot["age_seconds"] == NOW - (NOW + 3600)
+
+
 def test_stale_usage_cannot_restore_disabled_account(db):
     """Invariant 1: DISABLED -> ACTIVE (access-increasing) is refused while
     usage telemetry is stale -- fail closed, zero mutation, observable."""
