@@ -23,6 +23,13 @@ def test_newer_version_above_baseline_is_supported():
     assert cr.classify("happ", "99.99.99", "android") == cr.SUPPORTED
 
 
+def test_windows_desktop_baselines_cover_newer_happ_and_v2raytun_versions():
+    assert cr.classify("happ", "99.99.99", "windows") == cr.SUPPORTED
+    assert cr.classify("v2raytun", "3.8.11", "windows") == cr.SUPPORTED
+    assert cr.classify("v2raytun", "3.8.12", "windows") == cr.SUPPORTED
+    assert cr.classify("v2raytun", "3.8.10", "windows") == cr.UNKNOWN
+
+
 def test_older_version_below_baseline_is_unknown():
     assert cr.classify("happ", "3.20.0", "android") == cr.UNKNOWN
 
@@ -41,6 +48,7 @@ def test_non_numeric_version_falls_back_to_exact_match():
 def test_min_supported_version_is_the_lowest_vetted_entry():
     assert cr._MIN_SUPPORTED_VERSION[("incy", "android")] == (3, 3, 0)
     assert cr._MIN_SUPPORTED_VERSION[("happ", "android")] == (3, 24, 1)
+    assert cr._MIN_SUPPORTED_VERSION[("v2raytun", "windows")] == (3, 8, 11)
 
 
 def test_supported_client_wrong_platform_is_unknown():

@@ -36,6 +36,7 @@ from ..service_marzban import ServiceMarzbanClient
 from ..subscription import process_subscription
 from .sub import (
     _invalid_subscription_response,
+    _observe_compatibility_fail_open,
     _observe_grace_activity_fail_open,
     check_subscription_rate_limit,
     is_browser_request,
@@ -98,6 +99,13 @@ def handle_opaque_sub(handler, token):
         return
 
     device_metadata = extract_device_metadata(handler.headers)
+    # Record the exact privacy-safe tuple even when this request is denied
+    # by the compatibility gate.  Opaque delivery otherwise has no
+    # evidence path for a real client that is correctly fail-closed today.
+    # This observer uses an isolated short-timeout connection and is strictly
+    # fail-open; it neither changes the resolver result nor stores raw HWID
+    # or opaque token.
+    _observe_compatibility_fail_open(db, token, device_metadata)
 
     result = resolve_opaque_subscription(
         db, token, device_metadata, hmac_key=DEVICE_SLOT_HMAC_KEY,

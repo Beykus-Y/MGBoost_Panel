@@ -131,6 +131,7 @@ class _OpaqueDB:
     def __init__(self, *, account_id=7, grace_error=None):
         self.grace_calls = []
         self.grace_error = grace_error
+        self.compat_calls = []
         self._account_id = account_id
         self.resolve_calls = []
 
@@ -151,6 +152,9 @@ class _OpaqueDB:
         self.grace_calls.append((account_id, channel))
         if self.grace_error:
             raise self.grace_error
+
+    def observe_hwid_compatibility(self, token, device_metadata):
+        self.compat_calls.append((token, device_metadata))
 
 
 def _patch_opaque_resolver(monkeypatch, route):
@@ -176,6 +180,20 @@ def test_opaque_route_observes_grace_activity_on_real_fetch(monkeypatch):
     route.handle_opaque_sub(handler, OPAQUE_TOKEN)
     assert handler.status == 200
     assert db.grace_calls == [(7, "OPAQUE")]
+    assert len(db.compat_calls) == 1
+    assert db.compat_calls[0][0] == OPAQUE_TOKEN
+
+
+def test_opaque_compat_observer_failure_is_fail_open(monkeypatch):
+    from src.routes import opaque_sub as route
+
+    monkeypatch.setattr(route, "OPAQUE_SUBSCRIPTION_ENABLED", True)
+    _patch_opaque_resolver(monkeypatch, route)
+    db = _OpaqueDB(account_id=7)
+    db.observe_hwid_compatibility = lambda *_args: (_ for _ in ()).throw(RuntimeError("telemetry unavailable"))
+    handler = _Handler(db, {"User-Agent": "Happ/3.1/Android"})
+    route.handle_opaque_sub(handler, OPAQUE_TOKEN)
+    assert handler.status == 200
 
 
 def test_opaque_route_grace_observer_failure_is_fail_open(monkeypatch):

@@ -31,3 +31,16 @@ def test_unknown_os_never_invents_a_platform():
         "x-device-os": "unverified-os-family",
     })
     assert metadata["platform"] is None
+
+
+def test_v2raytun_windows_headers_match_the_historical_hwid_format():
+    metadata = extract_device_metadata({
+        "User-Agent": "v2raytun/3.8.11/Windows",
+        "x-hwid": "v2raytun-windows-test-device-001",
+    })
+    assert metadata["client_name"] == "v2raytun"
+    assert metadata["client_version"] == "3.8.11"
+    assert metadata["platform"] == "Windows"
+    assert metadata["device_id"] == "v2raytun-windows-test-device-001"
+    assert metadata["hwid_candidate_present"] is True
+    assert metadata["hwid_candidate_supported"] is True

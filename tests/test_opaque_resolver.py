@@ -10,6 +10,7 @@ import pytest
 
 from src.broker_operations import BrokerOperations
 from src.child_contract import derive_operation_id, source_contract_hash
+from src.device_headers import extract_device_metadata
 from src.opaque_resolver import (
     OUTCOME_DENY_CROSS_ACCOUNT_HWID,
     OUTCOME_DENY_MALFORMED_HWID,
@@ -250,6 +251,27 @@ def test_unsupported_client_denied(db):
         worker_id="engine-test-worker", now=300,
     )
     assert result.outcome == OUTCOME_DENY_UNSUPPORTED_CLIENT
+
+
+@pytest.mark.parametrize("headers", [
+    {"User-Agent": "Happ/99.99.99/Windows/test-desktop-hwid-001"},
+    {"User-Agent": "v2raytun/3.8.12/Windows", "x-hwid": "v2raytun-windows-test-device-002"},
+])
+def test_supported_windows_desktop_clients_reach_the_hwid_resolver_path(db, headers):
+    account, _alias_id, _slot, _r, ensure_fn, subscription_fn = _seed_account_with_first_child(
+        db, mapping="ENGINE_WINDOWS_DESKTOP_" + headers["User-Agent"].split("/", 1)[0],
+        tg=810040 + (1 if headers["User-Agent"].startswith("Happ") else 2),
+        alias="windows-source-" + headers["User-Agent"].split("/", 1)[0].lower(),
+    )
+    token = _issue_active_credential(
+        db, account["account_id"], idem_prefix="engine-windows-" + headers["User-Agent"].split("/", 1)[0].lower(),
+    )
+    result = resolve_opaque_subscription(
+        db, token, extract_device_metadata(headers), hmac_key=HWID_KEY,
+        ensure_fn=ensure_fn, subscription_fn=subscription_fn,
+        worker_id="engine-test-worker", now=300,
+    )
+    assert result.outcome == OUTCOME_OK
 
 
 def test_full_slots_denied_with_clear_refusal_no_eviction(db):
