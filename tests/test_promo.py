@@ -496,3 +496,198 @@ def test_user_redeem_rejects_invalid_telegram_id(db):
             code="ANYCODE", telegram_id=-1,
             idempotency_key="promo-redeem-v1:-1:666666666", now=1_000,
         )
+
+
+# --- PURCHASE_DISCOUNT: reservation lifecycle ---------------------------------
+
+
+def _define_discount(db, code, *, percent=None, minor=None):
+    cap = _capability(db)
+    params = {"discount_percent": percent} if percent is not None else {"discount_minor": minor}
+    return _define(db, cap, code=code, effect_kind="PURCHASE_DISCOUNT", effect_params=params)
+
+
+def _make_reservation(db, code, telegram_id, *, key_suffix="1", now=1_000, ttl=3600):
+    return db.promo.reserve_purchase_for_telegram_user(
+        code=code, telegram_id=telegram_id, ttl_seconds=ttl,
+        idempotency_key=f"promo-reserve-v1:{telegram_id}:{key_suffix}", now=now,
+    )
+
+
+def test_reserve_rejects_non_discount_and_unknown_codes(db):
+    cap = _capability(db)
+    _define(db, cap, code="NOTDISC", effect_kind="EXTEND_SUBSCRIPTION", effect_params={"days": 7})
+    account, _ = _wl_account(db, telegram_id=950000001, now=1_000)
+    with pytest.raises(PromoError):
+        _make_reservation(db, "NOTDISC", 950000001)
+    with pytest.raises(PromoNotFound):
+        _make_reservation(db, "DOESNOTEXIST9", 950000001)
+
+
+def test_reserve_requires_existing_account_and_replays_same_key(db):
+    _define_discount(db, "DISC10P", percent=10)
+    with pytest.raises(PromoNotFound):
+        _make_reservation(db, "DISC10P", 960000001)
+    account, _ = _wl_account(db, telegram_id=960000001, now=1_000)
+
+    first = _make_reservation(db, "DISC10P", 960000001)
+    assert first["status"] == "RESERVED"
+    assert first["reserved_until"] == 1_000 + 3_600
+    replay = _make_reservation(db, "DISC10P", 960000001)
+    assert replay["redemption_id"] == first["redemption_id"]
+    assert replay["already"] is True
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_promo_redemptions").fetchone()["c"] == 1
+
+
+def test_per_user_limit_blocks_second_reservation_for_same_code(db):
+    _define_discount(db, "DISCONCE", minor=5)
+    account, _ = _wl_account(db, telegram_id=960000002, now=1_000)
+    _make_reservation(db, "DISCONCE", 960000002, key_suffix="a")
+    with pytest.raises(PromoConflict):
+        _make_reservation(db, "DISCONCE", 960000002, key_suffix="b")
+
+
+def test_stars_invoice_carries_discounted_price_and_snapshot(db):
+    _define_discount(db, "STARDISC", percent=50)
+    account, _ = _wl_account(db, telegram_id=960000003, now=1_000)
+    reservation = _make_reservation(db, "STARDISC", 960000003)
+
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=960000003, plan_code="WL", duration_days=30, ttl_seconds=3600,
+        now=1_100, promo_redemption_id=reservation["redemption_id"],
+    )
+    assert invoice["original_stars_price"] == invoice["price_amount_snapshot"]
+    assert invoice["discount_minor"] == invoice["price_amount_snapshot"] // 2
+    assert invoice["stars_price"] == invoice["price_amount_snapshot"] - invoice["discount_minor"]
+    row = db._conn.execute(
+        "SELECT status,bound_kind,bound_invoice_id FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],),
+    ).fetchone()
+    assert row["status"] == "RESERVED"  # binding does not commit
+    assert row["bound_kind"] == "STARS" and row["bound_invoice_id"] == invoice["id"]
+
+    # Snapshot is immutable once written.
+    import sqlite3 as _sq
+    with pytest.raises(_sq.IntegrityError):
+        db._conn.execute(
+            "UPDATE stars_invoices SET discount_minor=1 WHERE id=?", (invoice["id"],))
+        db._conn.commit()
+    db._conn.rollback()
+
+
+def test_checkout_commits_reservation_and_cleanup_cannot_cancel_it(db):
+    _define_discount(db, "STARDISC2", percent=50)
+    account, _ = _wl_account(db, telegram_id=960000004, now=1_000)
+    reservation = _make_reservation(db, "STARDISC2", 960000004)
+    # reservation TTL ends at 1_100+3_600=4_700 -- the same instant the
+    # invoice expires. Sweep at 4_000: nothing expired yet.
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=960000004, plan_code="WL", duration_days=30, ttl_seconds=3600,
+        now=1_100, promo_redemption_id=reservation["redemption_id"],
+    )
+    db.promo.release_expired_reservations(now=4_000)
+    row = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()
+    assert row["status"] == "RESERVED"  # live bound invoice: TTL never wins
+
+    db.stars_purchases.validate_invoice_for_checkout(invoice["id"], 960000004, now=4_050)
+    status = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()["status"]
+    assert status == "COMMITTED"
+    # After COMMITTED even an everything-expired sweep cannot cancel it.
+    db.promo.release_expired_reservations(now=9_000_000)
+    still = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()["status"]
+    assert still == "COMMITTED"
+
+
+def test_cleanup_cancels_bound_reservation_once_invoice_expires(db):
+    _define_discount(db, "STARDISC5", percent=10)
+    account, _ = _wl_account(db, telegram_id=960000007, now=1_000)
+    reservation = _make_reservation(db, "STARDISC5", 960000007, ttl=600)
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=960000007, plan_code="WL", duration_days=30, ttl_seconds=600,
+        now=1_100, promo_redemption_id=reservation["redemption_id"],
+    )
+    # Abandoned checkout: the invoice expires -> the reservation must be
+    # released, never held forever (single-use code back to the pool).
+    db.promo.release_expired_reservations(now=1_100 + 601)
+    row = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()
+    assert row["status"] == "CANCELLED"
+
+
+def test_capture_flips_reservation_to_redeemed_exactly_once(db):
+    _define_discount(db, "STARDISC3", percent=25)
+    account, _ = _wl_account(db, telegram_id=960000005, now=1_000)
+    reservation = _make_reservation(db, "STARDISC3", 960000005)
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=960000005, plan_code="WL", duration_days=30, ttl_seconds=3600,
+        now=1_100, promo_redemption_id=reservation["redemption_id"],
+    )
+    db.stars_purchases.validate_invoice_for_checkout(invoice["id"], 960000005, now=1_150)
+    result = db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="charge-disc-1", provider_charge_id=None,
+        payer_telegram_id=960000005, currency="XTR", amount=invoice["stars_price"], now=1_200,
+    )
+    assert result == "paid"
+    row = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()
+    assert row["status"] == "REDEEMED"
+
+    duplicate = db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="charge-disc-1", provider_charge_id=None,
+        payer_telegram_id=960000005, currency="XTR", amount=invoice["stars_price"], now=1_300,
+    )
+    assert duplicate == "duplicate"
+
+
+def test_cleanup_cancels_unbound_reservation_and_returns_code_to_pool(db):
+    _define_discount(db, "STARDISC4", minor=3)
+    account, _ = _wl_account(db, telegram_id=960000006, now=1_000)
+    reservation = _make_reservation(db, "STARDISC4", 960000006, ttl=600)
+    db.promo.release_expired_reservations(now=1_000 + 601)
+    row = db._conn.execute(
+        "SELECT status FROM mgboost_promo_redemptions WHERE id=?",
+        (reservation["redemption_id"],)).fetchone()
+    assert row["status"] == "CANCELLED"
+    # cancelled single-use attempt does not block a fresh reservation
+    again = _make_reservation(db, "STARDISC4", 960000006, key_suffix="2", now=1_700)
+    assert again["status"] == "RESERVED"
+
+
+def test_discount_floor_is_one_star_never_zero(db):
+    from src.promo import _discount_from_effect_params
+    assert _discount_from_effect_params({"discount_percent": 100}, 100) == 1
+    assert _discount_from_effect_params({"discount_minor": 999999}, 5) == 1
+
+
+def test_checkout_rejected_when_reservation_lost_the_race(db):
+    """If the reservation got cancelled between invoice creation and checkout
+    (the exact race the COMMITTED gate exists for), checkout must be refused
+    -- never charge money against a pool-returned promo."""
+    import pytest as _pytest
+    from src.stars_purchase import StarsPurchaseError
+    _define_discount(db, "STARDISC6", percent=10)
+    account, _ = _wl_account(db, telegram_id=960000008, now=1_000)
+    reservation = _make_reservation(db, "STARDISC6", 960000008, ttl=600)
+    invoice = db.stars_purchases.create_invoice(
+        telegram_id=960000008, plan_code="WL", duration_days=30, ttl_seconds=600,
+        now=1_100, promo_redemption_id=reservation["redemption_id"],
+    )
+    # Simulate the lost race: cleanup cancelled the bound reservation right
+    # before the delayed checkout arrives (direct SQL for the race window).
+    db._conn.execute(
+        "UPDATE mgboost_promo_redemptions SET status='CANCELLED' WHERE id=?",
+        (reservation["redemption_id"],))
+    db._conn.commit()
+    with _pytest.raises(StarsPurchaseError):
+        db.stars_purchases.validate_invoice_for_checkout(invoice["id"], 960000008, now=1_200)
+    invoice_row = db.get_invoice(invoice["id"])
+    assert invoice_row["status"] == "created"  # unchanged, no money moved

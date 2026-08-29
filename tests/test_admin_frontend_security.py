@@ -110,6 +110,12 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
         flags=re.DOTALL,
     )
+    js_source = re.sub(
+        r"let promoOps=null;\nconst PROMO_OPS_READY = \(async\(\)=>\{.*?\n\}\)\(\);\nwindow\.__PROMO_OPS_READY=PROMO_OPS_READY;",
+        "window.__PROMO_OPS_READY=Promise.resolve(null);",
+        js_source,
+        flags=re.DOTALL,
+    )
     payload = "<img src=x onerror=globalThis.__xss=1>'\\\"&"
     script = f"""
 const vm=require('vm');

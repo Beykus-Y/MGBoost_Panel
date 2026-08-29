@@ -150,6 +150,36 @@ _SCHEMA_STATEMENTS = (
     """
     ALTER TABLE mgboost_manual_payment_records ADD COLUMN discount_snapshot_json TEXT
     """,
+    """
+    ALTER TABLE stars_invoices ADD COLUMN promo_redemption_id INTEGER
+    """,
+    """
+    ALTER TABLE stars_invoices ADD COLUMN original_stars_price INTEGER
+    """,
+    """
+    ALTER TABLE stars_invoices ADD COLUMN discount_minor INTEGER
+    """,
+    """
+    ALTER TABLE mgboost_promo_redemptions ADD COLUMN bound_kind TEXT
+    """,
+    """
+    ALTER TABLE mgboost_promo_redemptions ADD COLUMN bound_invoice_id INTEGER
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_stars_invoices_promo_redemption
+        ON stars_invoices(promo_redemption_id) WHERE promo_redemption_id IS NOT NULL
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_stars_invoices_promo_snapshot_immutable
+        BEFORE UPDATE OF promo_redemption_id, original_stars_price, discount_minor
+        ON stars_invoices
+        WHEN OLD.promo_redemption_id IS NOT NULL AND (
+            NEW.promo_redemption_id IS NOT OLD.promo_redemption_id
+            OR NEW.original_stars_price IS NOT OLD.original_stars_price
+            OR NEW.discount_minor IS NOT OLD.discount_minor
+        )
+        BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END
+    """,
 )
 
 SCHEMA_CHECKSUM = hashlib.sha256(
@@ -167,6 +197,7 @@ _REQUIRED_COLUMNS = {
     "mgboost_promo_redemptions": {
         "id", "promo_id", "promo_version", "trial_class", "owner_telegram_id",
         "account_id", "status", "reserved_until", "per_user_limit_snapshot",
+        "bound_kind", "bound_invoice_id",
         "applied_mutation_id",
         "idempotency_key_hash", "request_hash", "row_version",
     },
@@ -174,13 +205,18 @@ _REQUIRED_COLUMNS = {
         "promo_id", "promo_version", "promo_redemption_id", "original_amount_minor",
         "discount_snapshot_json",
     },
+    "stars_invoices": {
+        "promo_redemption_id", "original_stars_price", "discount_minor",
+    },
 }
 
 _REQUIRED_OBJECTS = {
     "ux_mgboost_promo_active_version",
     "ux_promo_trial_class_identity",
     "ux_promo_single_use_user",
+    "ux_stars_invoices_promo_redemption",
     "ix_mgboost_promo_redemptions_account",
+    "trg_stars_invoices_promo_snapshot_immutable",
 }
 
 

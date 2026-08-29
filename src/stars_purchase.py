@@ -27,6 +27,7 @@ from .commercial_signup import (
     SELLABLE_PLAN_CODES, SIGNUP_INVOICE_KIND, assert_plan_sellable,
 )
 from .entitlement_engine import calculate_effective_entitlement
+from .promo import PromoConflict
 from .subscription_renewal import (
     PlanMismatch, RenewalError, UnlimitedSubscriptionConflict, UnknownPlan,
 )
@@ -84,9 +85,17 @@ class StarsPurchaseStore:
         return [item for item in self.catalog() if item["plan_code"] in sellable]
 
     def create_invoice(self, *, telegram_id: int, plan_code: str, duration_days: int,
-                       ttl_seconds: int, now: int | None = None) -> dict:
+                       ttl_seconds: int, now: int | None = None,
+                       promo_redemption_id: int | None = None) -> dict:
+        """`promo_redemption_id` (PH5-13): bind a live RESERVED purchase
+        reservation inside this invoice's own transaction and write the
+        immutable discount snapshot; the invoice is created with the
+        DISCOUNTED `stars_price`. Signup invoices (no account) never carry a
+        promo -- reservations require an existing proven account."""
         timestamp = int(time.time()) if now is None else int(now)
         assert_plan_sellable(plan_code)
+        promo_discount = self._resolve_promo_discount_locked(
+            promo_redemption_id, telegram_id, timestamp) if promo_redemption_id is not None else None
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -96,6 +105,9 @@ class StarsPurchaseStore:
                     # a NULL account_id) is the durable pre-payment intent;
                     # no account/entitlement exists until capture confirms
                     # the payment.
+                    if promo_discount is not None:
+                        raise StarsPurchaseError(
+                            "a purchase discount requires an existing account")
                     plan, duration, catalog, price = self._lookup_active_product_locked(plan_code, duration_days)
                     cursor = self._conn.execute(
                         "INSERT INTO stars_invoices (created_by_telegram_id,marzban_username,tariff_id,tariff_name,"
@@ -115,24 +127,66 @@ class StarsPurchaseStore:
                     return dict(row)
                 plan, duration, catalog, price = self._lookup_active_product_locked(plan_code, duration_days)
                 self._assert_purchase_plan_locked(account["id"], plan_code)
+                final_price = int(price["amount"])
+                if promo_discount is not None:
+                    from .promo import _discount_from_effect_params
+                    final_price = _discount_from_effect_params(
+                        promo_discount["effect_params"], final_price)
                 cursor = self._conn.execute(
                     "INSERT INTO stars_invoices (created_by_telegram_id,marzban_username,tariff_id,tariff_name,"
                     "duration_days,stars_price,status,expires_at,created_at,invoice_kind,account_id,"
                     "plan_version_id,duration_id,catalog_version_id,price_id,plan_code_snapshot,"
-                    "plan_version_snapshot,catalog_version_snapshot,price_amount_snapshot) "
-                    "VALUES (?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "plan_version_snapshot,catalog_version_snapshot,price_amount_snapshot,"
+                    "promo_redemption_id,original_stars_price,discount_minor) "
+                    "VALUES (?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (int(telegram_id), account["public_id"], None, plan["display_name"], int(duration_days),
-                     int(price["amount"]), timestamp + int(ttl_seconds), timestamp, "CANONICAL_PLAN",
+                     final_price, timestamp + int(ttl_seconds), timestamp, "CANONICAL_PLAN",
                      account["id"], plan["id"], duration["id"], catalog["id"], price["id"], plan["plan_code"],
-                     plan["version"], catalog["catalog_version"], price["amount"]),
+                     plan["version"], catalog["catalog_version"], price["amount"],
+                     promo_redemption_id,
+                     int(price["amount"]) if promo_discount is not None else None,
+                     int(price["amount"]) - final_price if promo_discount is not None else None),
                 )
                 invoice_id = cursor.lastrowid
+                if promo_discount is not None:
+                    self._promo().bind_reservation_locked(
+                        redemption_id=int(promo_redemption_id), telegram_id=int(telegram_id),
+                        bound_kind="STARS", bound_invoice_id=invoice_id, now=timestamp)
                 self._conn.commit()
                 row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (invoice_id,)).fetchone()
                 return dict(row)
             except Exception:
                 self._conn.rollback()
                 raise
+
+
+    def _promo(self):
+        promo = self._database.promo if self._database is not None else None
+        if promo is None:
+            raise StarsPurchaseError("promo store unavailable")
+        return promo
+
+    def _resolve_promo_discount_locked(self, promo_redemption_id, telegram_id, timestamp):
+        """Validate a RESERVED purchase reservation (caller's transaction)
+        and return its effect params for the immutable discount snapshot.
+        Binding to the concrete invoice id happens right after the INSERT."""
+        if promo_redemption_id is None:
+            return None
+        try:
+            promo = self._promo()
+            row = promo._reservation_row_locked(int(promo_redemption_id))
+            if row is None or row["effect_kind"] != "PURCHASE_DISCOUNT":
+                raise StarsPurchaseError("reservation is not a purchase discount")
+            if int(row["owner_telegram_id"] or -1) != int(telegram_id):
+                raise StarsPurchaseError("reservation does not belong to this payer")
+            if row["status"] != "RESERVED":
+                raise StarsPurchaseError(f"reservation is {row['status']}, not RESERVED")
+            import json as _json
+            return {"effect_params": _json.loads(row["effect_params_json"])}
+        except StarsPurchaseError:
+            raise
+        except Exception as exc:
+            raise StarsPurchaseError(f"reservation invalid: {exc}") from exc
 
     def _lookup_active_product_locked(self, plan_code: str, duration_days: int):
         plan = self._conn.execute(
@@ -193,6 +247,20 @@ class StarsPurchaseStore:
             if not account or account["id"] != row["account_id"]:
                 raise StarsPurchaseError("payer is not the canonical account owner")
             self._assert_purchase_plan_locked(row["account_id"], row["plan_code_snapshot"])
+            if row["promo_redemption_id"] is not None:
+                # PH5-13 pre_checkout gate: RESERVED -> COMMITTED. Rejection
+                # here means the reservation lost its race (cleanup cancelled
+                # it) -- Telegram must be answered ok=False so no money moves
+                # against a promo that already returned to the pool.
+                try:
+                    self._promo().commit_reservation_locked(
+                        redemption_id=int(row["promo_redemption_id"]),
+                        invoice_id=int(row["id"]), now=timestamp)
+                except PromoConflict as exc:
+                    raise StarsPurchaseError(str(exc)) from exc
+                # validate runs outside any explicit store transaction; the
+                # CAS above opened an implicit one -- close it durably.
+                self._conn.commit()
             return dict(row)
 
     def _validate_snapshot_locked(self, row: dict) -> None:
@@ -212,7 +280,21 @@ class StarsPurchaseStore:
                     row["catalog_version_snapshot"], row["price_amount_snapshot"])
         actual = (product["plan_code"], product["version"], product["duration_days"],
                   product["catalog_version"], product["amount"])
-        if expected != actual or row["stars_price"] != product["amount"]:
+        if expected != actual:
+            raise ProductSnapshotMismatch("immutable product snapshot disagrees with its referenced catalog")
+        if row["promo_redemption_id"] is not None:
+            # PH5-13: the payable amount is the immutable discounted price
+            # (catalog price minus the reservation's discount, floor 1).
+            from .promo import _discount_from_effect_params
+            reservation = self._promo()._reservation_row_locked(int(row["promo_redemption_id"]))
+            if reservation is None:
+                raise ProductSnapshotMismatch("discount reservation is missing")
+            effect_params = json.loads(reservation["effect_params_json"])
+            expected_final = _discount_from_effect_params(
+                effect_params, int(row["price_amount_snapshot"]))
+            if int(row["stars_price"]) != expected_final:
+                raise ProductSnapshotMismatch("discounted price disagrees with its reservation snapshot")
+        elif row["stars_price"] != product["amount"]:
             raise ProductSnapshotMismatch("immutable product snapshot disagrees with its referenced catalog")
 
     def capture_paid(self, invoice_id: int, *, charge_id: str, provider_charge_id: str | None,
@@ -262,7 +344,10 @@ class StarsPurchaseStore:
                     return "duplicate" if row["telegram_payment_charge_id"] == charge_id else "manual_review"
                 reason = None
                 account_id = row["account_id"]
-                if currency != "XTR" or int(amount) != int(row["price_amount_snapshot"]):
+                expected_amount = (
+                    int(row["stars_price"]) if row["promo_redemption_id"] is not None
+                    else int(row["price_amount_snapshot"]))
+                if currency != "XTR" or int(amount) != expected_amount:
                     reason = "amount_or_currency_mismatch"
                 elif row["invoice_kind"] == SIGNUP_INVOICE_KIND:
                     # Confirmed payment for a brand-new customer. The
@@ -300,6 +385,14 @@ class StarsPurchaseStore:
                     )
                     self._conn.commit()
                     return "manual_review"
+                if row["promo_redemption_id"] is not None:
+                    # PH5-13: RESERVE/COMMITTED -> REDEEMED inside the SAME
+                    # transaction as the paid flip -- one payment is exactly
+                    # one redemption. Zero rows rolls the whole capture back
+                    # (surfaced as manual_review on retry, never guessed).
+                    self._promo().redeem_reservation_locked(
+                        redemption_id=int(row["promo_redemption_id"]),
+                        invoice_id=int(row["id"]), now=timestamp)
                 self._conn.execute(
                     "UPDATE stars_invoices SET status='paid',telegram_payment_charge_id=?,provider_payment_charge_id=?,"
                     "payer_telegram_id=?,total_amount=?,payment_currency=?,paid_at=? WHERE id=? AND status='created'",

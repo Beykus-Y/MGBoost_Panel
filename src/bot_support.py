@@ -803,15 +803,23 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         if db.get_setting("stars:enabled") != "1":
             await call.message.answer("Покупка временно недоступна.")
             return
+        promo_reservation_id = None
         try:
-            invoice = db.stars_purchases.create_invoice(
+            if await state.get_state() is not None:
+                promo_reservation_id = (await state.get_data()).get("promo_reservation_id")
+        except AttributeError:
+            pass  # non-FSM transport (tests): no reservation context
+        try:
+            invoice = await _run_sync(lambda: db.stars_purchases.create_invoice(
                 telegram_id=call.from_user.id, plan_code=plan_code, duration_days=duration_days,
-                ttl_seconds=3600,
-            )
+                ttl_seconds=3600, promo_redemption_id=promo_reservation_id,
+            ))
         except Exception as exc:
             logger.info("Canonical Stars invoice rejected: %s", type(exc).__name__)
             await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
             return
+        if promo_reservation_id is not None:
+            await state.update_data(promo_reservation_id=None)
         try:
             await call.message.edit_text("Счёт готов — оплатите его ниже. ⬇️")
         except Exception:
@@ -1247,6 +1255,34 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             reply_markup=kb_waiting(),
         )
 
+    async def _promo_reserve_for_purchase(message: Message, state: FSMContext, code: str):
+        """PURCHASE_DISCOUNT: reserve now, discount lands on the NEXT Stars
+        invoice created in this dialog (idempotent by the same per-event key
+        rule as redemption)."""
+        reservation_id = f"promo-reserve-v1:{message.chat.id}:{message.message_id}"
+        from .promo import PromoConflict, PromoError, PromoIneligible, PromoNotFound
+        try:
+            result = await _run_sync(lambda: db.promo.reserve_purchase_for_telegram_user(
+                code=code, telegram_id=message.from_user.id,
+                ttl_seconds=3600, idempotency_key=reservation_id,
+            ))
+        except PromoNotFound:
+            await message.answer("❌ Промокод не найден или не применим. Попробуйте другой.")
+            return
+        except PromoConflict:
+            await message.answer("⚠️ Этот промокод уже был использован вами ранее.")
+            return
+        except (PromoIneligible, PromoError):
+            await message.answer("❌ Не удалось применить промокод. Обратитесь к поддержке.")
+            return
+        await state.update_data(promo_reservation_id=result["redemption_id"])
+        await state.set_state(SupportStates.in_dialog)
+        await message.answer(
+            "✅ Скидка зафиксирована. Выберите «⭐️ Продлить подписку» — она "
+            "применится к следующему счёту.",
+            reply_markup=kb_main(),
+        )
+
     @dp.message(SupportStates.waiting_promo_code)
     async def _promo_redeem_message(message: Message, state: FSMContext):
         if message.text == "⬅️ Назад к боту":
@@ -1256,6 +1292,10 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         code = (message.text or "").strip()
         if not code:
             await message.answer("Отправьте промокод текстом одним сообщением.")
+            return
+        definition = db.promo.get_definition(code)
+        if definition is not None and definition["effect_kind"] == "PURCHASE_DISCOUNT":
+            await _promo_reserve_for_purchase(message, state, code)
             return
         # Deterministic per-event idempotency: Telegram redelivers the same
         # update with the same (chat_id, message_id), so a retry/timeout

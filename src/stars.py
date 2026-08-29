@@ -547,6 +547,13 @@ async def _tick(bot, db, marzban, admin_token):
         await process_canonical_invoice_row(bot, db, row)
     await _process_signup_template_jobs(db, marzban, bot)
     await _process_admin_grant_template_jobs(db, marzban, bot)
+    # PH5-13 garbage collection: release expired promo purchase reservations
+    # (unbound past TTL; bound only when their invoice is canonically
+    # unpayable). Never touches COMMITTED/REDEEMED rows.
+    try:
+        db.promo.release_expired_reservations()
+    except Exception as e:
+        logger.error(f"promo reservation sweeper failed: {e}")
     await _sync_canonical_purchase_children(db, marzban)
     if not admin_token:
         return

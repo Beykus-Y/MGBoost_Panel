@@ -17,6 +17,22 @@
 
 ### Added
 
+- PH5-13 PURCHASE_DISCOUNT (implemented locally, NO push/deploy): машина
+  резервации `RESERVED → COMMITTED → REDEEMED` с терминальным `CANCELLED`.
+  Резерв — `PromoStore.reserve_purchase_for_telegram_user` (durable,
+  `reserved_until`, per-user limit действует и на резерв). Привязка к
+  инвойсу — внутри транзакции `create_invoice` (immutable снапшот скидки:
+  `promo_redemption_id`/`original_stars_price`/`discount_minor` на
+  `stars_invoices`, триггер неизменяемости + unique index); итоговая цена
+  инвойса дисконтирована (floor 1 ⭐). Гейт COMMITTED — на pre_checkout
+  (CAS; проигранная гонка → `ok=False`, деньги не списываются); REDEEM —
+  в той же транзакции, что и перевод инвойса в `paid` (одна оплата = ровно
+  одна redemption). TTL-cleanup (`release_expired_reservations` в воркере
+  Stars) снимает только unbound-резервы past-TTL и привязанные к
+  канонически неоплатимым инвойсам; COMMITTED не трогает никогда —
+  финансовый double-spend race закрыт по построению. Бот: промокод со
+  скидкой резервируется из диалога и применяется к следующему счёту
+  «⭐️ Продлить подписку».
 - PH5-13 admin UI промокодов (implemented locally, NO push/deploy): backend
   `src/routes/admin_promo.py` — `POST/GET /admin/promo/definitions`,
   `POST /admin/promo/definitions/<code>/disable`,
