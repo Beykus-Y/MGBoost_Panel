@@ -34,11 +34,30 @@ Design constraints, all deliberate:
   different-plan grant on a live subscription is refused, matching every
   other caller of this engine (upgrade/downgrade is explicitly out of
   scope, PH5-06).
+* A brand-new account also needs the SAME system-owned provisioning
+  wiring PH5-11's self-service signup creates (`mgboost_legacy_alias_
+  groups` / `mgboost_legacy_account_aliases` PRIMARY `tpl-<public_id>` /
+  `mgboost_direct_account_reviews`) -- without it, first-device bootstrap
+  fails closed (`opaque_resolver.resolve_account_device` requires a
+  PRIMARY alias for every account, migrated or not). This module reuses
+  those exact tables/values, only substituting `ownership_provenance=
+  OWNER_APPROVED` (an admin grant, not payment evidence) for PH5-11's
+  `EVIDENCE_PROVEN`. Remote template provisioning itself is queued in a
+  NEW small table (`mgboost_admin_grant_template_jobs`, PH7-14) rather
+  than PH5-11's `mgboost_signup_template_jobs`, whose `invoice_id` is
+  `NOT NULL` by design (payment-anchored) -- an ADMIN_GRANT account has no
+  invoice and must never be given a fabricated one. The actual remote
+  provisioning call (`commercial_signup.ensure_template_for_account`) is
+  reused unchanged; only the job queue differs.
 """
 
 from __future__ import annotations
 
+import json
+import time
+
 from .admin_authority import PrimaryAdminAuthorizationError
+from .commercial_signup import derive_template_username
 from .subscription_renewal import (
     PlanMismatch, RenewalError, UnknownPlan, UnlimitedSubscriptionConflict,
 )
@@ -52,6 +71,8 @@ PAYMENT_CHANNEL = "ADMIN_GRANT"
 MUTATION_SOURCE = "ADMIN"
 ACTOR_TYPE = "PRIMARY_ADMIN"
 _TELEGRAM_IDENTITY_PROVENANCE = "ADMIN_REBIND"
+_ALIAS_OWNERSHIP_PROVENANCE = "OWNER_APPROVED"
+_REVIEW_OWNERSHIP_EVIDENCE = "PROVEN"
 
 
 class AdminGrantError(ValueError):
@@ -84,6 +105,86 @@ class AdminGrantStore:
             return self._authority.require(capability)
         except PrimaryAdminAuthorizationError:
             raise
+
+    def _ensure_direct_provisioning_wiring(
+        self, *, account_id: int, public_id: str, decision_ref: str,
+        actor: str, now: int,
+    ) -> None:
+        """Idempotent: no-op if this account already has a PRIMARY alias
+        (mirrors `commercial_signup.ensure_signup_account`'s own
+        `if alias is None` guard byte-for-byte, same tables, same PRIMARY
+        `tpl-<public_id>` username -- only the ownership_provenance/
+        ownership_evidence values and the job-queue table differ)."""
+        existing = self._conn.execute(
+            "SELECT id FROM mgboost_legacy_account_aliases WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
+        if existing is not None:
+            return
+        template_username = derive_template_username(public_id)
+        evidence = {"account_id": account_id, "origin": PAYMENT_CHANNEL, "decision_ref": decision_ref}
+        evidence_json = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "INSERT INTO mgboost_legacy_alias_groups "
+                    "(account_id,mapping_key,decision_ref,created_by_actor,created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (account_id, f"admin-grant-v1:{public_id}", decision_ref, actor, now),
+                )
+                self._conn.execute(
+                    "INSERT INTO mgboost_legacy_account_aliases "
+                    "(account_id,legacy_username,alias_role,ownership_provenance,legacy_status,"
+                    "legacy_expiry,observed_device_count,observed_hwid_count,evidence_json,created_at) "
+                    "VALUES (?,?,'PRIMARY',?,'ACTIVE',NULL,0,0,?,?)",
+                    (account_id, template_username, _ALIAS_OWNERSHIP_PROVENANCE, evidence_json, now),
+                )
+                self._conn.execute(
+                    "INSERT INTO mgboost_direct_account_reviews "
+                    "(account_id,legacy_username,ownership_evidence,decision_ref,reviewed_by_actor,"
+                    "evidence_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (account_id, template_username, _REVIEW_OWNERSHIP_EVIDENCE, decision_ref, actor,
+                     evidence_json, now),
+                )
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO mgboost_admin_grant_template_jobs "
+                    "(account_id,decision_ref,state,created_at,updated_at) "
+                    "VALUES (?,?,'PENDING',?,?)",
+                    (account_id, decision_ref, now, now),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def pending_template_jobs(self) -> list[dict]:
+        """Same shape/contract as `commercial_signup.pending_template_jobs`
+        -- read by the same `_tick` worker loop, a separate queue only
+        because the job row itself carries no invoice."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM mgboost_admin_grant_template_jobs WHERE state='PENDING' "
+                "ORDER BY account_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_template_result(
+        self, account_id: int, *, state: str, error_class: str | None = None,
+        now: int | None = None,
+    ) -> None:
+        if state not in {"PENDING", "READY", "MANUAL_REVIEW"}:
+            raise AdminGrantError("invalid admin-grant template job state")
+        timestamp = int(time.time()) if now is None else int(now)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE mgboost_admin_grant_template_jobs SET state=?,attempts=attempts+1,"
+                "last_error_class=?,last_attempt_at=?,ready_at=?,updated_at=? "
+                "WHERE account_id=? AND state='PENDING'",
+                (state, error_class, timestamp, timestamp if state == "READY" else None,
+                 timestamp, int(account_id)),
+            )
+            self._conn.commit()
 
     def grant_existing_account(
         self, capability, *, account_id: int, plan_code: str, duration_days: int,
@@ -133,18 +234,23 @@ class AdminGrantStore:
         `grant_existing_account`'s own `PlanMismatch` guard."""
         # Capability + reason are validated before any write, matching every
         # other PH3/PH5 capability-gated store's fail-fast shape.
-        self._require_primary(capability)
-        _clean_reason(reason)
+        actor = self._require_primary(capability)
+        clean_reason = _clean_reason(reason)
+        timestamp = int(time.time()) if now is None else int(now)
         account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
         if account is None:
-            account = self._accounts.create_account("DIRECT", now=now)
+            account = self._accounts.create_account("DIRECT", now=timestamp)
+            self._ensure_direct_provisioning_wiring(
+                account_id=account["id"], public_id=account["public_id"],
+                decision_ref=clean_reason, actor=actor, now=timestamp,
+            )
             self._accounts.link_telegram_owner(
                 account["id"], int(telegram_id),
                 provenance=_TELEGRAM_IDENTITY_PROVENANCE,
-                actor=self._authority.require(capability), now=now,
+                actor=actor, now=timestamp,
             )
         return self.grant_existing_account(
             capability, account_id=account["id"], plan_code=plan_code,
             duration_days=duration_days, reason=reason,
-            idempotency_key=idempotency_key, now=now,
+            idempotency_key=idempotency_key, now=timestamp,
         )

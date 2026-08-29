@@ -238,6 +238,53 @@ async def _notify_signup_applied(bot, db, row: dict):
         await notify_user_extended(bot, row)
 
 
+async def _process_admin_grant_template_jobs(db, marzban, bot):
+    """PH7-14 counterpart to `_process_signup_template_jobs`, for accounts
+    bootstrapped by `AdminGrantStore` (no invoice to key a
+    `mgboost_signup_template_jobs` row on). Same convergence loop, same
+    remote provisioning call (`ensure_template_for_account` -- reused
+    unchanged; it already falls back to the account's own current
+    subscription's `wl_mode` when no PH5-11 job row exists, which is
+    exactly this case), a separate queue only."""
+    jobs = db.admin_grants.pending_template_jobs() if hasattr(db, "admin_grants") else []
+    for job in jobs:
+        account_id = int(job["account_id"])
+        try:
+            result = await _run_sync(
+                lambda: db.commercial_signup.ensure_template_for_account(
+                    account_id, marzban=marzban,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "admin-grant template provisioning retry for account %s: %s",
+                account_id, type(exc).__name__,
+            )
+            await _run_sync(
+                lambda: db.admin_grants.record_template_result(
+                    account_id, state="PENDING", error_class=type(exc).__name__,
+                )
+            )
+            continue
+        state = result.get("state")
+        if state == "READY":
+            await _run_sync(
+                lambda: db.admin_grants.record_template_result(account_id, state="READY")
+            )
+        else:
+            error_class = result.get("error_class") or "template_unknown"
+            await _run_sync(
+                lambda: db.admin_grants.record_template_result(
+                    account_id, state="MANUAL_REVIEW", error_class=error_class,
+                )
+            )
+            await _notify_admin_signup_issue(
+                bot, db,
+                f"admin-grant template job for account #{account_id} -> MANUAL_REVIEW "
+                f"({error_class})",
+            )
+
+
 async def _process_signup_template_jobs(db, marzban, bot):
     """Drive the durable PH5-11 template-provisioning jobs to convergence.
 
@@ -499,6 +546,7 @@ async def _tick(bot, db, marzban, admin_token):
     for row in db.stars_purchases.pending_invoices():
         await process_canonical_invoice_row(bot, db, row)
     await _process_signup_template_jobs(db, marzban, bot)
+    await _process_admin_grant_template_jobs(db, marzban, bot)
     await _sync_canonical_purchase_children(db, marzban)
     if not admin_token:
         return

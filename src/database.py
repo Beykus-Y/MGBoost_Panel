@@ -18,6 +18,7 @@ from .account_schema import apply_parent_account_schema
 from .account_consolidation_schema import apply_account_consolidation_schema
 from .commercial_signup import CommercialSignupStore
 from .commercial_signup_schema import apply_commercial_signup_schema
+from .admin_grant_schema import apply_admin_grant_schema
 from .delivery_routing import DeliveryRoutingStore
 from .delivery_routing_schema import apply_delivery_routing_schema
 from .account_store import AccountStore
@@ -477,6 +478,7 @@ class Database:
         apply_parent_sync_schema(self._conn)
         apply_stars_purchase_schema(self._conn)
         apply_commercial_signup_schema(self._conn)
+        apply_admin_grant_schema(self._conn)
         apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
         apply_subscription_credential_schema(self._conn)

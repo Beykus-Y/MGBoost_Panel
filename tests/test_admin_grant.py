@@ -224,3 +224,91 @@ def test_unknown_plan_code_fails_closed(db):
             reason="controlled WL canary bad plan",
             idempotency_key="admin-grant-test-unknown-0000000001",
         )
+
+
+# --- first-device provisioning wiring (PH7-14) ---------------------------------
+# A fresh account needs the same PH5-11-shaped provisioning wiring real
+# self-service signup creates, or `opaque_resolver.resolve_account_device`
+# fails closed (OUTCOME_INTERNAL_ERROR) for lack of a PRIMARY alias -- caught
+# by an actual production first-device bootstrap attempt, not by any prior
+# test in this file (none of them touched device provisioning at all).
+
+
+def test_grant_new_account_creates_provisioning_wiring_for_first_device_bootstrap(db):
+    cap = _capability(db)
+    result = db.admin_grants.grant_new_account(
+        cap, telegram_id=222000999, plan_code="WL", duration_days=30,
+        reason="controlled WL canary -- bootstrap wiring check",
+        idempotency_key="admin-grant-test-bootstrap-0000000001", now=1000,
+    )
+    account_id = result["account_id"]
+    public_id = result["account_public_id"]
+
+    alias = db._conn.execute(
+        "SELECT account_id,legacy_username,alias_role,ownership_provenance,legacy_status "
+        "FROM mgboost_legacy_account_aliases WHERE account_id=?", (account_id,),
+    ).fetchone()
+    assert alias is not None
+    assert alias["legacy_username"] == f"tpl-{public_id}"
+    assert alias["alias_role"] == "PRIMARY"
+    assert alias["ownership_provenance"] == "OWNER_APPROVED"
+    assert alias["legacy_status"] == "ACTIVE"
+
+    review = db._conn.execute(
+        "SELECT ownership_evidence FROM mgboost_direct_account_reviews WHERE account_id=?",
+        (account_id,),
+    ).fetchone()
+    assert review["ownership_evidence"] == "PROVEN"
+
+    jobs = db.admin_grants.pending_template_jobs()
+    assert [j["account_id"] for j in jobs] == [account_id]
+    assert jobs[0]["state"] == "PENDING"
+
+    # Zero mgboost_signup_template_jobs rows -- that queue is PH5-11's
+    # payment-anchored one and must never be touched by an ADMIN_GRANT.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_signup_template_jobs WHERE account_id=?", (account_id,),
+    ).fetchone()[0] == 0
+
+
+def test_grant_new_account_replay_does_not_duplicate_provisioning_wiring(db):
+    cap = _capability(db)
+    first = db.admin_grants.grant_new_account(
+        cap, telegram_id=222001000, plan_code="WL", duration_days=30,
+        reason="controlled WL canary -- bootstrap replay check",
+        idempotency_key="admin-grant-test-bootstrap-replay-a-01", now=1000,
+    )
+    db.admin_grants.grant_new_account(
+        cap, telegram_id=222001000, plan_code="WL", duration_days=30,
+        reason="controlled WL canary -- bootstrap replay renewal",
+        idempotency_key="admin-grant-test-bootstrap-replay-b-01", now=5000,
+    )
+    account_id = first["account_id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_account_aliases WHERE account_id=?", (account_id,),
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_admin_grant_template_jobs WHERE account_id=?", (account_id,),
+    ).fetchone()[0] == 1
+
+
+def test_record_template_result_transitions_job_out_of_pending(db):
+    cap = _capability(db)
+    result = db.admin_grants.grant_new_account(
+        cap, telegram_id=222001111, plan_code="WL", duration_days=30,
+        reason="controlled WL canary -- template job transition check",
+        idempotency_key="admin-grant-test-bootstrap-job-0000001", now=1000,
+    )
+    account_id = result["account_id"]
+    assert len(db.admin_grants.pending_template_jobs()) == 1
+
+    db.admin_grants.record_template_result(account_id, state="READY", now=2000)
+
+    assert db.admin_grants.pending_template_jobs() == []
+    job = db._conn.execute(
+        "SELECT state,attempts,ready_at FROM mgboost_admin_grant_template_jobs WHERE account_id=?",
+        (account_id,),
+    ).fetchone()
+    assert job["state"] == "READY"
+    assert job["attempts"] == 1
+    assert job["ready_at"] == 2000
