@@ -1,11 +1,22 @@
 # AGENT_HANDOFF — PH5-13 Promo codes: backend + full ingress implemented locally, deploy pending
 
-Updated: 2026-08-30 (review-remediation in progress; no push/deploy yet).
+Updated: 2026-08-30 (review remediation plus v2raytun/Windows incident fix
+ready locally; no push/deploy yet).
 **Correction to the prior handoff:** read-only production forensic found
 `ph5_13_promo_codes_v1` already applied at production `2641527`; do not
 rewrite its checksum. The immutable trigger fix is additive
 `ph5_13_promo_codes_v2_snapshot_immutable`. The opaque-404 known issue below
 is unaffected.
+
+**2026-08-30 current checkpoint:** local commit `6807a6d` adds the reviewed
+`v2raytun/3.8.11/windows` minimum baseline from privacy-safe historical
+evidence and observes opaque compatibility dimensions fail-open before the
+resolver. This fixes the confirmed uniform-404 class without disabling
+`hwid_gate`, accepting unknown Windows clients, rotating credentials, or
+changing aliases/entitlements. `Happ/Windows` was already supported and is
+regression-covered. Throne parser/telemetry is ready, but Throne remains
+`SAFE-DEFER` until one controlled real request supplies current-pipeline
+evidence. Final targeted/full, migration and production canary gates remain.
 
 ## What exists now (4 commits on top of 2641527)
 
@@ -59,7 +70,8 @@ is unaffected.
 - MANUAL_RUB discount binding remains intentionally absent; do not add UI/API
   claims that it works.
 - E2E canary: real redeem via bot + real Stars discounted purchase.
-- The opaque-404 known issue (section below) is unrelated and still open.
+- The v2raytun/Windows opaque-404 issue is fixed locally and awaits the same
+  final deploy gates; other unknown-client diagnostics remain out of scope.
 
 # AGENT_HANDOFF — KNOWN OPEN BUG: opaque-subscription uniform 404 gives zero diagnostic signal for real support cases (account_id=21)
 

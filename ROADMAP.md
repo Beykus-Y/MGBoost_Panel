@@ -1534,7 +1534,7 @@ reviews of this diff could not resolve in agreement.**
     clean; touched JS/Python compile clean.
 
 ## [~] PH5-13 — Promo codes v1 (backend + bot/LK/admin ingress DONE locally
-2026-08-30; NO push/deploy — production rollout still pending explicit go-ahead)
+2026-08-30; final gates and authorized production rollout pending)
 
 **Implemented (commits 43d27f1, 7697b0c, + two 2026-08-30 commits; suite
 1597 passed):** `src/promo.py` (`PromoStore`: definitions with
@@ -1567,8 +1567,13 @@ already applied `ph5_13_promo_codes_v1`, so the trigger repair is additive
 `WL_TRIAL` is now idempotently bootstrapped and exact-shape-verified during
 normal `main.py` application startup after legacy JSON migration. `PURCHASE_DISCOUNT` is explicitly
 **TELEGRAM_STARS-only v1**; `MANUAL_RUB` has no binding/wiring and must not be
-advertised as discounted. Remaining gates are full regression,
-migration/backup-restore and controlled production canary.**
+advertised as discounted. The confirmed v2raytun/Windows opaque-404 incident
+is fixed locally by the evidence-backed `v2raytun >= 3.8.11 / windows`
+registry baseline; opaque telemetry is now privacy-safe and fail-open, and
+does not alter resolver decisions. Throne header parsing is ready, but its
+registry status remains SAFE-DEFER pending one controlled real request.
+Remaining gates are targeted/full regression, migration/backup-restore and
+controlled production canary.**
 
 
 **Depends:** PH5-01/02/04/05/09 (single canonical account/subscription/

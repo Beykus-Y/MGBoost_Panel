@@ -178,3 +178,17 @@ PH3-04 introduces no new schema/config beyond the dormant
 route, so deployment is a plain code-only fast-forward with no schema
 migration and no new production mutation surface. See `CHANGELOG.md` for the
 production evidence gate result.
+
+## Addendum — opaque route compatibility evidence (2026-08-30)
+
+The historical description above applies to the legacy `/sub/{token}` route.
+The enabled opaque subscription route invokes the shared resolver and its
+HWID gate independently of `PH3_04_ENFORCEMENT_MODE`; this addendum does not
+enable a global gate or change the legacy route.
+
+Registry version 3 adds `v2raytun >= 3.8.11 / windows` as `SUPPORTED` from
+12 historical production observations, all with a well-formed device id and
+legacy fingerprint. The detailed aggregate-only evidence and regression
+contract are in `docs/V2RAYTUN_WINDOWS_COMPATIBILITY_EVIDENCE_20260830.md`.
+No other Windows client, earlier/non-numeric v2raytun version, missing HWID or
+unknown client becomes allowed.

@@ -65,7 +65,11 @@ What's blocking it, concretely:
 1. **No live evidence through the current pipeline.** The historical `fingerprint` values are from an older ingestion path (`sub_requests`) and there's no confirmation they map into the current `device_headers.py` `HEADER_ALIASES` set feeding `mgboost_hwid_compat_subjects`. Need a fresh live/controlled request from an actual Throne client to see which header it sends and whether `extract_device_metadata()` recognizes it as a valid HWID candidate under `_SUPPORTED_HWID_RE`.
 2. **`platform` is never populated for Throne in any observed row.** `compat_registry.classify()` requires an exact `(client, platform)` match (only `version` got the min-baseline loosening on 2026-08-29) — with platform empty/missing, no `(client, platform)` pair can ever be added, since there is nothing to key the record on. Need to find why platform isn't captured for Throne specifically (check its actual headers/UA against `_parse_user_agent` in `device_headers.py` — it may use a platform-signaling header/UA pattern the current alias list doesn't cover, similar to the Happ-specific UA heuristic already carved out there).
 3. **Once (1) and (2) are resolved**, add a reviewed `CompatibilityRecord("throne", "<version>", "<platform>", SUPPORTED, "ORGANIC_LIVE"|"CONTROLLED", "<date>", "<evidence note>")` to `_REGISTRY` in `src/compat_registry.py`, bump `REGISTRY_VERSION`, and add a corresponding case to `tests/test_compat_registry.py` — following the exact pattern used for happ/v2raytun/incy on 2026-08-25.
-4. **Separately note:** `src/hwid_gate.py` (the thing that would actually enforce this registry) is dormant — no route imports it. So even a correct Throne registry entry changes nothing in production behavior until the gate itself is wired into a real route. If the goal is "Throne users are not blocked," that's already true today (gate isn't enforced anywhere); if the goal is "Throne is enforced as SUPPORTED once the gate goes live," steps 1-3 above are the prerequisite.
+4. **Superseded by the closure update below:** the enabled opaque
+   subscription route does import the resolver and its `hwid_gate`; the legacy
+   `/sub/{token}` route is separate. A correct Throne registry entry would
+   therefore affect opaque requests, but must still wait for controlled/live
+   evidence.
 
 ---
 
