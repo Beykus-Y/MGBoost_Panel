@@ -820,8 +820,8 @@ class PromoStore(_RedemptionTxMixin):
         ).fetchone()
         if row is None:
             raise PromoError(
-                "WL_TRIAL plan_version is not registered -- run "
-                "scripts/seed_promo_wl_trial_plan.py once before granting trials"
+                "WL_TRIAL plan_version is not registered -- complete normal "
+                "application startup before granting trials"
             )
         return int(row["id"])
 
