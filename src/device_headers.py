@@ -57,6 +57,7 @@ HEADER_ALIASES = {
     "os": (
         "x-os",
         "os",
+        "x-device-os",
         "x-operating-system",
         "x-client-os",
     ),
@@ -205,6 +206,17 @@ def extract_device_metadata(headers) -> dict:
         if not metadata.get(field) and ua_fields.get(field):
             metadata[field] = ua_fields[field]
             metadata["metadata"]["sources"][field] = ua_fields.get(f"{field}_source", "user-agent")
+
+    # Throne's upstream subscription implementation sends the OS as
+    # ``x-device-os`` (alongside x-hwid and User-Agent) rather than a
+    # separate platform field.  Derive a platform only for an exact known OS
+    # label; arbitrary OS strings remain unknown/fail-closed.
+    if not metadata.get("platform") and metadata.get("os"):
+        platform = PLATFORMS.get(str(metadata["os"]).strip().lower())
+        if platform:
+            metadata["platform"] = platform
+            source = metadata["metadata"]["sources"].get("os", "header:os")
+            metadata["metadata"]["sources"]["platform"] = f"derived:{source}"
 
     if not metadata["hwid_candidate_present"] and ua_fields.get("hwid_candidate_present"):
         metadata["hwid_candidate_present"] = True
