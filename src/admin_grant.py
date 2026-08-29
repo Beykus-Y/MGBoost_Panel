@@ -158,6 +158,37 @@ class AdminGrantStore:
                 self._conn.rollback()
                 raise
 
+    def repair_missing_provisioning_wiring(
+        self, capability, *, account_id: int, reason: str, now: int | None = None,
+    ) -> bool:
+        """Idempotent repair primitive for an account granted BEFORE this
+        wiring existed (or any other account that somehow reached ACTIVE
+        without a PRIMARY alias): backfills the exact same PH5-11-shaped
+        wiring `grant_new_account` now creates inline for brand-new
+        accounts. No-op (`False`) if the account already has a PRIMARY
+        alias -- never re-wires or duplicates. `account_source` must be
+        `DIRECT` (the same account-source `mgboost_direct_account_reviews`
+        itself requires by trigger)."""
+        actor = self._require_primary(capability)
+        clean_reason = _clean_reason(reason)
+        timestamp = int(time.time()) if now is None else int(now)
+        account = self._accounts.get_account(int(account_id))
+        if account is None or account["status"] == "CLOSED":
+            raise AdminGrantError("account not found or closed")
+        if account["account_source"] != "DIRECT":
+            raise AdminGrantError("provisioning wiring repair requires a DIRECT account")
+        existing = self._conn.execute(
+            "SELECT id FROM mgboost_legacy_account_aliases WHERE account_id=?",
+            (int(account_id),),
+        ).fetchone()
+        if existing is not None:
+            return False
+        self._ensure_direct_provisioning_wiring(
+            account_id=int(account_id), public_id=account["public_id"],
+            decision_ref=clean_reason, actor=actor, now=timestamp,
+        )
+        return True
+
     def pending_template_jobs(self) -> list[dict]:
         """Same shape/contract as `commercial_signup.pending_template_jobs`
         -- read by the same `_tick` worker loop, a separate queue only

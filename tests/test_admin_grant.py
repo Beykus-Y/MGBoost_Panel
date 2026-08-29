@@ -292,6 +292,64 @@ def test_grant_new_account_replay_does_not_duplicate_provisioning_wiring(db):
     ).fetchone()[0] == 1
 
 
+def test_repair_missing_provisioning_wiring_backfills_pre_fix_account(db):
+    """Simulates an account granted BEFORE this wiring existed: create the
+    account/subscription via the engine directly (bypassing
+    grant_new_account's own wiring call), confirm it starts wire-less, then
+    repair it."""
+    cap = _capability(db)
+    account = db.accounts.create_account("DIRECT", now=1000)
+    db.accounts.link_telegram_owner(
+        account["id"], 222001222, provenance="ADMIN_REBIND", actor="test-actor", now=1000,
+    )
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_account_aliases WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()[0] == 0
+
+    repaired = db.admin_grants.repair_missing_provisioning_wiring(
+        cap, account_id=account["id"],
+        reason="controlled WL canary -- pre-fix account repair", now=2000,
+    )
+    assert repaired is True
+
+    alias = db._conn.execute(
+        "SELECT legacy_username,alias_role,ownership_provenance FROM "
+        "mgboost_legacy_account_aliases WHERE account_id=?", (account["id"],),
+    ).fetchone()
+    assert alias["legacy_username"] == f"tpl-{account['public_id']}"
+    assert alias["alias_role"] == "PRIMARY"
+    assert alias["ownership_provenance"] == "OWNER_APPROVED"
+    assert len(db.admin_grants.pending_template_jobs()) == 1
+
+    # Second call is a true no-op -- never re-wires/duplicates.
+    repaired_again = db.admin_grants.repair_missing_provisioning_wiring(
+        cap, account_id=account["id"], reason="repeat repair attempt", now=3000,
+    )
+    assert repaired_again is False
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_account_aliases WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()[0] == 1
+
+
+def test_repair_missing_provisioning_wiring_requires_primary_admin(db):
+    account = db.accounts.create_account("DIRECT", now=1000)
+    with pytest.raises(PrimaryAdminAuthorizationError):
+        db.admin_grants.repair_missing_provisioning_wiring(
+            _bad_capability(), account_id=account["id"], reason="unauthorized repair attempt",
+        )
+
+
+def test_repair_missing_provisioning_wiring_refuses_non_direct_account(db):
+    cap = _capability(db)
+    account = db.accounts.create_account("INTERNAL", now=1000)
+    with pytest.raises(AdminGrantError):
+        db.admin_grants.repair_missing_provisioning_wiring(
+            cap, account_id=account["id"], reason="wrong account source",
+        )
+
+
 def test_record_template_result_transitions_job_out_of_pending(db):
     cap = _capability(db)
     result = db.admin_grants.grant_new_account(
