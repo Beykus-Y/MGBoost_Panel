@@ -19,6 +19,8 @@ from .account_consolidation_schema import apply_account_consolidation_schema
 from .commercial_signup import CommercialSignupStore
 from .commercial_signup_schema import apply_commercial_signup_schema
 from .admin_grant_schema import apply_admin_grant_schema
+from .promo_schema import apply_promo_schema
+from .promo import PromoStore
 from .delivery_routing import DeliveryRoutingStore
 from .delivery_routing_schema import apply_delivery_routing_schema
 from .account_store import AccountStore
@@ -205,6 +207,11 @@ class Database:
         self.manual_payments.bind_database(self)
         self.admin_grants = AdminGrantStore(
             self._conn, self._lock, self.accounts, self.subscription_renewal,
+            self.primary_admin_authority,
+        )
+        self.promo = PromoStore(
+            self._conn, self._lock, self.accounts, self.admin_grants,
+            self.subscription_renewal, self.subscription_admin_ops, self.entitlements,
             self.primary_admin_authority,
         )
 
@@ -481,6 +488,7 @@ class Database:
         apply_admin_grant_schema(self._conn)
         apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
+        apply_promo_schema(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)
         apply_ownership_rebind_schema(self._conn)

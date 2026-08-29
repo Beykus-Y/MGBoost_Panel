@@ -188,7 +188,9 @@ class SubscriptionRenewalStore:
                     raise RenewalError("account not found or closed")
 
                 subscription = self._conn.execute(
-                    "SELECT s.*, pv.plan_code AS current_plan_code FROM mgboost_subscriptions s "
+                    "SELECT s.*, pv.plan_code AS current_plan_code, "
+                    "pv.billing_required AS current_plan_billing_required "
+                    "FROM mgboost_subscriptions s "
                     "LEFT JOIN mgboost_plan_versions pv ON pv.id=s.current_plan_version_id "
                     "WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
                     (int(account_id),),
@@ -201,11 +203,24 @@ class SubscriptionRenewalStore:
                             "commercial purchase must not overwrite it"
                         )
                     if subscription["current_plan_code"] not in (None, plan_code):
-                        raise PlanMismatch(
-                            f"account's current plan is "
-                            f"{subscription['current_plan_code']!r}, not {plan_code!r}; "
-                            "a different-plan purchase is upgrade/downgrade policy (PH5-06)"
+                        # PH5-13 promo trial exception: a free (billing_required=0)
+                        # plan whose term has already expired is not a live
+                        # commitment -- it must never block a real purchase of a
+                        # DIFFERENT plan. A billing_required=1 plan (or a still-
+                        # live free trial) still hits PlanMismatch unchanged --
+                        # this is narrowly "an expired free trial doesn't count",
+                        # never general upgrade/downgrade (PH5-06 unchanged).
+                        expired_free_trial = (
+                            subscription["current_plan_billing_required"] == 0
+                            and subscription["current_expiry"] is not None
+                            and subscription["current_expiry"] <= timestamp
                         )
+                        if not expired_free_trial:
+                            raise PlanMismatch(
+                                f"account's current plan is "
+                                f"{subscription['current_plan_code']!r}, not {plan_code!r}; "
+                                "a different-plan purchase is upgrade/downgrade policy (PH5-06)"
+                            )
                     current_expiry = subscription["current_expiry"]
                     subscription_id = subscription["id"]
                     expected_row_version = subscription["row_version"]
@@ -316,6 +331,200 @@ class SubscriptionRenewalStore:
                             "sequence_no": existing_wl_seq + offset,
                             "starts_at": start, "ends_at": end,
                         })
+
+                self._conn.commit()
+                return {
+                    **after_payload,
+                    "term_id": term_id,
+                    "mutation_id": mutation_id,
+                    "wl_periods": periods,
+                    "already_applied": False,
+                }
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def append_promo_wl_period(
+        self,
+        *,
+        account_id: int,
+        days: int,
+        quota_bytes: int,
+        operation: str,
+        plan_version_id: int | None = None,
+        mutation_source: str,
+        payment_channel: str,
+        actor_type: str,
+        actor_ref: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str,
+        now: int | None = None,
+    ) -> dict:
+        """PH5-13 promo primitive: append exactly one immutable WL period of
+        `days` days / `quota_bytes` quota, bypassing the plan_catalog entirely
+        (no duration_days%catalog check, no billed-plan requirement). Used by
+        `PromoStore` for EXTEND_SUBSCRIPTION (on an already-LIMITED plan,
+        `plan_version_id=None` -- current plan identity untouched) and
+        TRIAL_GRANT (`plan_version_id` = the real registered WL_TRIAL plan
+        version -- this IS what legitimizes the trial's entitlement; never
+        left unset for a subscription that doesn't already have one).
+
+        The WL-period anchor is `max(MAX(existing wl_periods.ends_at), now)`
+        -- deliberately NOT `subscription.current_expiry`, which can diverge
+        from the real WL-period chronology after an `ADMIN_EXPIRY_ADJUSTMENT`
+        (PH7-01), which moves `current_expiry` alone. `current_expiry` itself
+        is extended by the same DL-044 `max(current_expiry, now) + days`
+        formula, kept in step via one CAS UPDATE (or INSERT for a fresh
+        subscription). Idempotent by `idempotency_key`, same
+        `mgboost_entitlement_mutations.idempotency_key_hash` boundary as
+        every other PH5 writer."""
+        timestamp = int(time.time()) if now is None else int(now)
+        if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
+            raise RenewalError("days must be a positive integer")
+        if not isinstance(quota_bytes, int) or isinstance(quota_bytes, bool) or quota_bytes <= 0:
+            raise RenewalError("quota_bytes must be a positive integer")
+        idem_hash = _idempotency_hash(idempotency_key)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+
+                existing_mutation = self._conn.execute(
+                    "SELECT * FROM mgboost_entitlement_mutations WHERE idempotency_key_hash=?",
+                    (idem_hash,),
+                ).fetchone()
+                if existing_mutation is not None:
+                    result = self._replay(existing_mutation)
+                    self._conn.commit()
+                    return result
+
+                account = self._accounts.get_account(int(account_id))
+                if account is None or account["status"] == "CLOSED":
+                    raise RenewalError("account not found or closed")
+
+                subscription = self._conn.execute(
+                    "SELECT * FROM mgboost_subscriptions WHERE account_id=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (int(account_id),),
+                ).fetchone()
+
+                if subscription is not None:
+                    if subscription["status"] == "UNLIMITED":
+                        raise UnlimitedSubscriptionConflict(
+                            "account has an admin-granted unlimited subscription; "
+                            "a promo period must not overwrite it"
+                        )
+                    current_expiry = subscription["current_expiry"]
+                    subscription_id = subscription["id"]
+                    expected_row_version = subscription["row_version"]
+                    effective_plan_version_id = (
+                        plan_version_id if plan_version_id is not None
+                        else subscription["current_plan_version_id"]
+                    )
+                else:
+                    if plan_version_id is None:
+                        raise RenewalError(
+                            "plan_version_id is required to create a subscription "
+                            "for an account with no prior subscription"
+                        )
+                    current_expiry = None
+                    subscription_id = None
+                    expected_row_version = None
+                    effective_plan_version_id = plan_version_id
+
+                anchor, new_expiry = compute_new_expiry(current_expiry, days, now=timestamp)
+
+                existing_max_ends_at = self._conn.execute(
+                    "SELECT MAX(ends_at) FROM mgboost_wl_periods WHERE account_id=?",
+                    (int(account_id),),
+                ).fetchone()[0]
+                period_anchor = max(existing_max_ends_at or 0, timestamp)
+                period_start = align_to_utc_hour(period_anchor)
+                period_end = period_start + int(days) * 86400
+
+                if subscription_id is None:
+                    cursor = self._conn.execute(
+                        "INSERT INTO mgboost_subscriptions "
+                        "(account_id,current_plan_version_id,status,started_at,current_expiry,"
+                        "created_at,updated_at) VALUES (?,?,'ACTIVE',?,?,?,?)",
+                        (int(account_id), effective_plan_version_id, anchor, new_expiry,
+                         timestamp, timestamp),
+                    )
+                    subscription_id = cursor.lastrowid
+                else:
+                    new_row_version = expected_row_version + 1
+                    updated = self._conn.execute(
+                        "UPDATE mgboost_subscriptions SET current_plan_version_id=?,"
+                        "status='ACTIVE',current_expiry=?,updated_at=?,row_version=? "
+                        "WHERE id=? AND account_id=? AND row_version=?",
+                        (effective_plan_version_id, new_expiry, timestamp, new_row_version,
+                         subscription_id, int(account_id), expected_row_version),
+                    )
+                    if updated.rowcount != 1:
+                        raise RenewalError("concurrent subscription modification detected")
+
+                before_payload = {"current_expiry": current_expiry}
+                after_payload = {
+                    "account_id": int(account_id),
+                    "subscription_id": subscription_id,
+                    "days": int(days),
+                    "quota_bytes": int(quota_bytes),
+                    "anchor": anchor,
+                    "new_expiry": new_expiry,
+                    "period_starts_at": period_start,
+                    "period_ends_at": period_end,
+                }
+                mutation_cursor = self._conn.execute(
+                    "INSERT INTO mgboost_entitlement_mutations "
+                    "(account_id,subscription_id,operation,payment_channel,mutation_source,"
+                    "actor_type,actor_ref,reason,external_reference,idempotency_key_hash,"
+                    "before_json,after_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (int(account_id), subscription_id, operation, payment_channel,
+                     mutation_source, actor_type, actor_ref, reason, None, idem_hash,
+                     json.dumps(before_payload, sort_keys=True, separators=(",", ":")),
+                     json.dumps(after_payload, sort_keys=True, separators=(",", ":")),
+                     timestamp),
+                )
+                mutation_id = mutation_cursor.lastrowid
+
+                existing_terms_seq = self._conn.execute(
+                    "SELECT COALESCE(MAX(sequence_no),0) FROM mgboost_subscription_terms "
+                    "WHERE subscription_id=?", (subscription_id,),
+                ).fetchone()[0]
+                term_snapshot = {
+                    "kind": operation, "days": int(days), "quota_bytes": int(quota_bytes),
+                    "plan_version_id": effective_plan_version_id,
+                }
+                term_cursor = self._conn.execute(
+                    "INSERT INTO mgboost_subscription_terms ("
+                    "account_id,subscription_id,sequence_no,plan_version_id,duration_id,"
+                    "duration_days,starts_at,ends_at,billing_required_snapshot,"
+                    "device_limit_mode_snapshot,device_limit_snapshot,wl_mode_snapshot,"
+                    "wl_quota_bytes_snapshot,wl_period_days_snapshot,plan_snapshot_json,"
+                    "mutation_id,created_at) VALUES (?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (int(account_id), subscription_id, existing_terms_seq + 1,
+                     plan_version_id, int(days), period_start, period_end, 0,
+                     None, None, "LIMITED", int(quota_bytes), int(days),
+                     json.dumps(term_snapshot, sort_keys=True, separators=(",", ":")),
+                     mutation_id, timestamp),
+                )
+                term_id = term_cursor.lastrowid
+
+                existing_wl_seq = self._conn.execute(
+                    "SELECT COALESCE(MAX(sequence_no),0) FROM mgboost_wl_periods "
+                    "WHERE subscription_id=?", (subscription_id,),
+                ).fetchone()[0]
+                self._conn.execute(
+                    "INSERT INTO mgboost_wl_periods "
+                    "(account_id,subscription_id,subscription_term_id,sequence_no,"
+                    "starts_at,ends_at,quota_mode,base_quota_bytes,status,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (int(account_id), subscription_id, term_id, existing_wl_seq + 1,
+                     period_start, period_end, "LIMITED", int(quota_bytes), "PLANNED", timestamp),
+                )
+                periods = [{
+                    "sequence_no": existing_wl_seq + 1,
+                    "starts_at": period_start, "ends_at": period_end,
+                }]
 
                 self._conn.commit()
                 return {

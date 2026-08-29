@@ -194,6 +194,67 @@ def test_unlimited_subscription_is_never_overwritten_by_a_commercial_purchase(db
         _purchase(db, account["id"], plan_code="BASIC", duration_days=30, key="unlimited-key-0001", now=1_000)
 
 
+# --- PH5-13 promo: expired free-trial plan must not block a real purchase ---
+
+
+def _install_trial_subscription(db, account_id, *, current_expiry, now=100):
+    trial_plan = db.accounts.create_plan_version({
+        "plan_code": "WL_TRIAL_TEST", "version": 1, "display_name": "WL Trial",
+        "plan_kind": "COMMERCIAL", "billing_required": False,
+        "device_limit_mode": "LIMITED", "device_limit": 1,
+        "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
+        "terms": {},
+    }, now=now)
+    db._conn.execute(
+        "INSERT INTO mgboost_subscriptions "
+        "(account_id,current_plan_version_id,status,started_at,current_expiry,"
+        "created_at,updated_at) VALUES (?,?,'ACTIVE',?,?,?,?)",
+        (account_id, trial_plan["id"], now, current_expiry, now, now),
+    )
+    db._conn.commit()
+    return trial_plan
+
+
+def test_expired_free_trial_does_not_block_a_real_purchase(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    _install_trial_subscription(db, account["id"], current_expiry=500, now=100)
+
+    result = _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                       key="trial-expired-purchase-0001", now=1_000)
+    assert result["plan_code"] == "WL"
+    row = db._conn.execute(
+        "SELECT current_plan_version_id FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()
+    real_wl = db.plan_catalog.get_plan_version("WL")
+    assert row["current_plan_version_id"] == real_wl["id"]
+
+
+def test_still_active_free_trial_still_blocks_a_different_purchase(db):
+    from src.subscription_renewal import PlanMismatch
+
+    account = db.accounts.create_account("DIRECT", now=1)
+    _install_trial_subscription(db, account["id"], current_expiry=1_000_000, now=100)
+
+    with pytest.raises(PlanMismatch):
+        _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                 key="trial-active-purchase-0001", now=1_000)
+
+
+def test_expired_billed_plan_still_blocks_a_different_purchase(db):
+    """Regression pin: the expired-free-trial exception must never widen to
+    billing_required=1 plans -- an expired REAL (paid) plan still requires
+    the same-plan-only guard (renewal, not silent plan-switch)."""
+    from src.subscription_renewal import PlanMismatch
+
+    account = db.accounts.create_account("DIRECT", now=1)
+    _purchase(db, account["id"], plan_code="BASIC", duration_days=30,
+             key="billed-expired-key-0001", now=100)
+    with pytest.raises(PlanMismatch):
+        _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                 key="billed-expired-key-0002", now=100 + 31 * 86400)
+
+
 def test_unknown_plan_and_unknown_duration_are_rejected(db):
     from src.subscription_renewal import RenewalError
 
@@ -229,3 +290,124 @@ def test_wl_period_start_is_utc_hour_aligned_for_a_partial_hour_purchase(db):
     assert result["wl_periods"][0]["starts_at"] == 3_600  # WL period floors to the hour
     assert result["wl_periods"][0]["starts_at"] % 3600 == 0
     assert result["wl_periods"][0]["ends_at"] % 3600 == 0
+
+
+# --- PH5-13 promo: append_promo_wl_period ------------------------------------
+
+
+def _append_promo(db, account_id, *, days, quota_bytes, key, now, plan_version_id=None,
+                  operation="PROMO_EXTEND_WL_PERIOD"):
+    return db.subscription_renewal.append_promo_wl_period(
+        account_id=account_id, days=days, quota_bytes=quota_bytes,
+        operation=operation, plan_version_id=plan_version_id,
+        mutation_source="ADMIN", payment_channel="ADMIN_GRANT",
+        actor_type="PRIMARY_ADMIN", actor_ref="owner:test",
+        reason="promo test", idempotency_key=key, now=now,
+    )
+
+
+def test_append_promo_wl_period_extends_existing_wl_subscription_without_touching_plan(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    base = _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                     key="promo-base-purchase-0001", now=1_000)
+    base_period = base["wl_periods"][0]
+
+    result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
+                           key="promo-extend-key-0001", now=2_000)
+
+    assert result["wl_periods"][0]["starts_at"] == base_period["ends_at"]  # no gap
+    assert result["wl_periods"][0]["ends_at"] == base_period["ends_at"] + 7 * 86400
+
+    sub = db._conn.execute(
+        "SELECT current_plan_version_id FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()
+    wl_plan = db.plan_catalog.get_plan_version("WL")
+    assert sub["current_plan_version_id"] == wl_plan["id"]  # untouched
+
+    # Original period's own row is completely untouched.
+    original = db._conn.execute(
+        "SELECT starts_at,ends_at,base_quota_bytes FROM mgboost_wl_periods "
+        "WHERE sequence_no=1 AND account_id=?", (account["id"],),
+    ).fetchone()
+    assert (original["starts_at"], original["ends_at"], original["base_quota_bytes"]) == (
+        base_period["starts_at"], base_period["ends_at"], 100_000_000_000,
+    )
+
+
+def test_append_promo_wl_period_anchors_on_max_period_ends_at_not_current_expiry(db):
+    """After an ADMIN_EXPIRY_ADJUSTMENT (which moves ONLY current_expiry, never
+    WL periods), a promo period must still anchor on the real WL chronology
+    (MAX(ends_at)), not the now-diverged current_expiry."""
+    account = db.accounts.create_account("DIRECT", now=1)
+    base = _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                     key="promo-anchor-base-0001", now=1_000)
+    base_period = base["wl_periods"][0]
+
+    # Simulate exactly what ADMIN_EXPIRY_ADJUSTMENT (PH7-01) does: move ONLY
+    # current_expiry, never touch WL periods (that store's own writer is
+    # exercised separately in tests/test_admin_operational_admin.py; here we
+    # only need the resulting divergent DB state, not its auth plumbing).
+    moved_expiry = base["new_expiry"] + 10 * 86400
+    db._conn.execute(
+        "UPDATE mgboost_subscriptions SET current_expiry=?,row_version=row_version+1 "
+        "WHERE account_id=?", (moved_expiry, account["id"]),
+    )
+    db._conn.commit()
+
+    result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
+                           key="promo-anchor-key-0001", now=3_000)
+    assert result["wl_periods"][0]["starts_at"] == base_period["ends_at"]
+    assert result["wl_periods"][0]["starts_at"] != moved_expiry
+
+
+def test_append_promo_wl_period_is_idempotent(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    _purchase(db, account["id"], plan_code="WL", duration_days=30,
+             key="promo-idem-base-0001", now=1_000)
+
+    first = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
+                          key="promo-idem-key-0001", now=2_000)
+    second = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
+                           key="promo-idem-key-0001", now=5_000)
+    assert second["already_applied"] is True
+    assert second["wl_periods"] == first["wl_periods"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_wl_periods WHERE account_id=?", (account["id"],),
+    ).fetchone()["c"] == 2  # base + exactly one promo period, no duplicate
+
+
+def test_append_promo_wl_period_creates_fresh_subscription_with_real_plan_version_for_trial(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    trial_plan = db.accounts.create_plan_version({
+        "plan_code": "WL_TRIAL", "version": 1, "display_name": "WL Trial",
+        "plan_kind": "COMMERCIAL", "billing_required": False,
+        "device_limit_mode": "LIMITED", "device_limit": 1,
+        "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
+        "terms": {},
+    }, now=100)
+
+    result = _append_promo(db, account["id"], days=1, quota_bytes=10_000_000_000,
+                           key="promo-trial-key-0001", now=1_000,
+                           plan_version_id=trial_plan["id"], operation="PROMO_TRIAL_GRANT")
+
+    sub = db._conn.execute(
+        "SELECT current_plan_version_id,status FROM mgboost_subscriptions WHERE account_id=?",
+        (account["id"],),
+    ).fetchone()
+    assert sub["current_plan_version_id"] == trial_plan["id"]
+    assert sub["status"] == "ACTIVE"
+
+    entitlement = db.entitlements.calculate(account_id=account["id"], now=1_000)
+    assert entitlement["plan"]["code"] == "WL_TRIAL"
+    assert entitlement["device"]["limit"] == 1
+    assert entitlement["wl"]["base_quota_bytes"] == 10_000_000_000
+
+
+def test_append_promo_wl_period_requires_plan_version_for_brand_new_subscription(db):
+    from src.subscription_renewal import RenewalError
+
+    account = db.accounts.create_account("DIRECT", now=1)
+    with pytest.raises(RenewalError):
+        _append_promo(db, account["id"], days=1, quota_bytes=10_000_000_000,
+                      key="promo-trial-noplan-key-01", now=1_000)
