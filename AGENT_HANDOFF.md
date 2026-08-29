@@ -1,3 +1,64 @@
+# AGENT_HANDOFF — PH5-13 Promo codes: backend + full ingress implemented locally, deploy pending
+
+Updated: 2026-08-30 (local implementation session on top of `2641527`; no
+push, no deploy, no production DB touched). **Supersedes the "promo codes
+not started" notes elsewhere in this file; the opaque-404 known-issue
+section below is unaffected and stays the top open bug.**
+
+## What exists now (4 commits on top of 2641527)
+
+1. `7697b0c` — review fixes to the promo core: `append_promo_wl_period`
+   anchor is now `max(MAX(wl_periods.ends_at), subscription.current_expiry,
+   now)` (a promo EXTEND never lands its WL period inside an already-paid
+   term after an ADMIN_EXPIRY_ADJUSTMENT divergence); the expired-free-plan
+   PlanMismatch exception is scoped strictly to `plan_code == 'WL_TRIAL'`.
+2. Self-service ingress — user-scoped `PromoStore.
+   redeem_for_telegram_user` (no admin capability; the proven Telegram
+   OWNER identity is the principal; existing accounts only; effects only
+   via `append_promo_wl_period` — STANDARD-plan extend and account
+   bootstrap stay support-only). Bot: «🎟 Ввести промокод» + FSM flow.
+   LK: `POST /lk/api/promo/redeem` behind `_require_mgmt_session` with a
+   mandatory client `request_id`. Idempotency is deterministic per event
+   (bot: `promo-redeem-v1:{chat_id}:{message_id}`; LK:
+   `promo-redeem-v1:lk:{tg}:{request_id}`) — Telegram redelivery replays,
+   never double-applies; the server never mints a key.
+3. Admin UI — `src/routes/admin_promo.py` (`/admin/promo/definitions`
+   create/list/disable, `/admin/promo/redemptions`) + `frontend/assets/
+   admin/promo_ops.js` manager modal (accounts page button «Промокоды…»).
+4. PURCHASE_DISCOUNT — `reserve_purchase_for_telegram_user` (durable
+   RESERVED with `reserved_until`, per-user limit applies) → bind inside
+   `create_invoice` (immutable discount snapshot on `stars_invoices`:
+   `promo_redemption_id`/`original_stars_price`/`discount_minor`,
+   immutability trigger + unique index; discounted `stars_price`, floor
+   1⭐) → pre_checkout acceptance is the COMMITTED gate (CAS; a lost race
+   answers `ok=False`, no money moves) → REDEEM in the capture
+   transaction. TTL sweeper (`stars.py` `_tick`) cancels unbound past-TTL
+   reservations and only bound ones whose invoice is canonically unpayable;
+   COMMITTED rows are never TTL-cancelled — the checkout/TTL/late-payment
+   double-spend race reviewed with the owner is closed by construction.
+
+## Review decisions baked in (owner-driven, do not regress)
+
+- Per-event idempotency keys only; `uuid4` keys are forbidden for user
+  ingress (defeats replay safety).
+- `per_user_limit` snapshots into the redemption row (SQLite partial
+  indexes cannot JOIN); same-user reuse of a single-use code is
+  PromoConflict → HTTP 409 / «уже применён» in the bot.
+- PH5-13 schema migration has NEVER been applied in production — the
+  2026-08-30 schema amendments (per_user_limit, COMMITTED status, bound_*
+  columns, stars discount snapshot) are safe pre-deploy edits.
+
+## Still open / next steps
+
+- **Deploy** of the whole promo stack needs the usual explicit go-ahead;
+  deploy must run `scripts/seed_promo_wl_trial_plan.py` once before any
+  TRIAL_GRANT can redeem (fails closed otherwise).
+- MANUAL_RUB discount binding: the columns exist on
+  `mgboost_manual_payment_records`, the reservation machinery is store-side
+  done; `manual_payment.create_record` wiring is NOT.
+- E2E canary: real redeem via bot + real Stars discounted purchase.
+- The opaque-404 known issue (section below) is unrelated and still open.
+
 # AGENT_HANDOFF — KNOWN OPEN BUG: opaque-subscription uniform 404 gives zero diagnostic signal for real support cases (account_id=21)
 
 Updated: 2026-08-29 (read-only prod support-triage session, SSH `selara_vps`

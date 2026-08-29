@@ -1533,10 +1533,35 @@ reviews of this diff could not resolve in agreement.**
   - Full regression after fixes: 1396 passed, 0 failed. `git diff --check`
     clean; touched JS/Python compile clean.
 
-## [ ] PH5-13 — Promo codes v1 (planned, implementation NOT started)
+## [~] PH5-13 — Promo codes v1 (backend + bot/LK/admin ingress DONE locally
+2026-08-30; NO push/deploy — production rollout still pending explicit go-ahead)
 
-**Owner decision recorded 2026-08-29 (DL-060/DL-061); this is planning only
-— no promo engine code exists yet, nothing below is DONE.**
+**Implemented (commits 43d27f1, 7697b0c, + two 2026-08-30 commits; suite
+1597 passed):** `src/promo.py` (`PromoStore`: definitions with
+`per_user_limit`, `redeem_extend_or_trial` admin path, user-scoped
+`redeem_for_telegram_user` / `reserve_purchase_for_telegram_user` without
+admin capability — the proven Telegram OWNER identity is the principal;
+transactional PURCHASE_DISCOUNT bind/commit/redeem helpers +
+`release_expired_reservations` sweeper), `src/promo_schema.py`
+(migrations, per-user snapshot index `ux_promo_single_use_user`, immutable
+discount snapshot columns+trigger on `stars_invoices`), ingress — бот
+(«🎟 Ввести промокод», deterministic per-event idempotency
+`promo-redeem-v1:{chat_id}:{message_id}`, purchase-discount reservations
+apply to the next Stars invoice), `POST /lk/api/promo/redeem` (mgmt-session
+gate, mandatory client `request_id`), admin UI (`src/routes/admin_promo.py`
++ `frontend/assets/admin/promo_ops.js`). Review fixes: promo WL-period
+anchor `max(MAX(wl ends), current_expiry, now)`; PlanMismatch expired-free
+exception narrowed strictly to `plan_code == 'WL_TRIAL'`; PURCHASE_DISCOUNT
+lifecycle `RESERVED → COMMITTED → REDEEMED` — pre_checkout acceptance is
+the COMMITTED gate, REDEEM rides the capture transaction, TTL sweeper
+releases unbound past-TTL and only invoice-canonically-unpayable bound
+reservations (never COMMITTED) — the checkout/TTL/late-payment double-spend
+race is closed by construction.
+**Still open:** production deploy (needs explicit go-ahead; PH5-13 schema
+edits are pre-deploy-only and safe to amend until then); MANUAL_RUB-side
+discount binding (Stars path done; manual records columns exist, wiring
+not); e2e canary of a real redeem.**
+
 
 **Depends:** PH5-01/02/04/05/09 (single canonical account/subscription/
 entitlement/period lifecycle below the payment/source layer), PH7-09/10
@@ -2798,7 +2823,7 @@ domain/backend primitive with no UI. Reuses the existing PH5-02
 financial rows, `PrimaryAdminAuthority`-gated, idempotent. Admin UI to
 drive it, account-creation/rebind UI, `MANUAL_RUB` UI/wiring, subscription
 extension UI, opaque-subscription/entitlement/devices display, and promo
-definition/redemption management (depends on PH5-13) all remain OPEN —
+definition/redemption management is now DONE (PH5-13 2026-08-30: routes/admin_promo.py + promo_ops.js) —
 this item is NOT done.
 
 **Depends:** PH3-01 (canonical account), PH2-05 (Telegram ownership/rebind
