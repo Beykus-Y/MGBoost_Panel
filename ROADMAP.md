@@ -1557,10 +1557,18 @@ the COMMITTED gate, REDEEM rides the capture transaction, TTL sweeper
 releases unbound past-TTL and only invoice-canonically-unpayable bound
 reservations (never COMMITTED) — the checkout/TTL/late-payment double-spend
 race is closed by construction.
-**Still open:** production deploy (needs explicit go-ahead; PH5-13 schema
-edits are pre-deploy-only and safe to amend until then); MANUAL_RUB-side
-discount binding (Stars path done; manual records columns exist, wiring
-not); e2e canary of a real redeem.**
+**Review closure 2026-08-30:** all nine independent findings are fixed with
+regressions: explicit rollback ownership for Stars `pre_checkout`, full FSM
+reservation forwarding, serialized `per_user_limit`, failure-state reset,
+locked promo reads, v2 immutable snapshot trigger, zero-price floor, public
+PromoStore payment interface and complete admin read model. Production had
+already applied `ph5_13_promo_codes_v1`, so the trigger repair is additive
+`ph5_13_promo_codes_v2_snapshot_immutable`, never a v1 checksum rewrite.
+`WL_TRIAL` is now idempotently bootstrapped and exact-shape-verified during
+normal `Database()` startup. `PURCHASE_DISCOUNT` is explicitly
+**TELEGRAM_STARS-only v1**; `MANUAL_RUB` has no binding/wiring and must not be
+advertised as discounted. Remaining gates are full regression,
+migration/backup-restore and controlled production canary.**
 
 
 **Depends:** PH5-01/02/04/05/09 (single canonical account/subscription/

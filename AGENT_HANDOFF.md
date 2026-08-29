@@ -1,9 +1,11 @@
 # AGENT_HANDOFF — PH5-13 Promo codes: backend + full ingress implemented locally, deploy pending
 
-Updated: 2026-08-30 (local implementation session on top of `2641527`; no
-push, no deploy, no production DB touched). **Supersedes the "promo codes
-not started" notes elsewhere in this file; the opaque-404 known-issue
-section below is unaffected and stays the top open bug.**
+Updated: 2026-08-30 (review-remediation in progress; no push/deploy yet).
+**Correction to the prior handoff:** read-only production forensic found
+`ph5_13_promo_codes_v1` already applied at production `2641527`; do not
+rewrite its checksum. The immutable trigger fix is additive
+`ph5_13_promo_codes_v2_snapshot_immutable`. The opaque-404 known issue below
+is unaffected.
 
 ## What exists now (4 commits on top of 2641527)
 
@@ -44,18 +46,18 @@ section below is unaffected and stays the top open bug.**
 - `per_user_limit` snapshots into the redemption row (SQLite partial
   indexes cannot JOIN); same-user reuse of a single-use code is
   PromoConflict → HTTP 409 / «уже применён» in the bot.
-- PH5-13 schema migration has NEVER been applied in production — the
-  2026-08-30 schema amendments (per_user_limit, COMMITTED status, bound_*
-  columns, stars discount snapshot) are safe pre-deploy edits.
+- `PURCHASE_DISCOUNT` is TELEGRAM_STARS-only v1. `MANUAL_RUB` has no promo
+  binding and must not be presented as discounted.
+- `WL_TRIAL` is idempotently bootstrapped at normal `Database()` startup with
+  exact versioned-shape verification; no forgotten manual seed script is
+  required for normal deploy.
 
 ## Still open / next steps
 
-- **Deploy** of the whole promo stack needs the usual explicit go-ahead;
-  deploy must run `scripts/seed_promo_wl_trial_plan.py` once before any
-  TRIAL_GRANT can redeem (fails closed otherwise).
-- MANUAL_RUB discount binding: the columns exist on
-  `mgboost_manual_payment_records`, the reservation machinery is store-side
-  done; `manual_payment.create_record` wiring is NOT.
+- **Deploy** needs the remaining green gates and controlled canary; the owner
+  has authorized deploy after those gates.
+- MANUAL_RUB discount binding remains intentionally absent; do not add UI/API
+  claims that it works.
 - E2E canary: real redeem via bot + real Stars discounted purchase.
 - The opaque-404 known issue (section below) is unrelated and still open.
 
