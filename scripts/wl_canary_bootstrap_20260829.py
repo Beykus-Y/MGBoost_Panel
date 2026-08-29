@@ -96,14 +96,23 @@ def _preflight(db: Database) -> dict:
             "-- this is not a first-device bootstrap, refusing"
         )
 
-    existing_credentials = conn.execute(
-        "SELECT COUNT(*) FROM mgboost_subscription_credentials WHERE account_id=?",
+    # A stray PENDING_DELIVERY row would mean a prior run crashed between
+    # prepare() and activate() -- ambiguous, refuse and investigate rather
+    # than silently reissuing on top of it. An existing ACTIVE-only
+    # credential (e.g. a prior bootstrap attempt that issued/activated a
+    # credential but then failed at the HTTP-resolve stage, as this
+    # account's first attempt did) is a legitimate reissue case:
+    # `activate()` atomically revokes the previous ACTIVE row in the same
+    # transaction -- exactly the real bot's `/newsub` rotation semantics.
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM mgboost_subscription_credentials "
+        "WHERE account_id=? AND status='PENDING_DELIVERY'",
         (EXPECTED_ACCOUNT_ID,),
     ).fetchone()[0]
-    if existing_credentials != 0:
+    if pending != 0:
         raise PreflightFailed(
-            f"account already has {existing_credentials} subscription credential row(s) "
-            "-- refusing to issue a second one"
+            f"account has {pending} PENDING_DELIVERY credential row(s) -- "
+            "ambiguous prior-run state, refusing to reissue on top of it"
         )
 
     return {"public_id": account["public_id"]}
