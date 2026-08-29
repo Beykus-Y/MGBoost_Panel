@@ -1,6 +1,7 @@
 """PH5-13 promo codes schema: migration applies, checksum-gated, verifies."""
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -86,6 +87,46 @@ def test_v2_repairs_an_existing_v1_trigger_without_rewriting_v1_marker(db):
     assert db._conn.execute(
         "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
     ).fetchone() is not None
+
+
+def test_backup_then_v2_migration_then_restore_keeps_recoverable_v1_snapshot(db):
+    """Exercise the production order: consistent backup -> additive migrate -> restore.
+
+    The restored copy is deliberately the pre-v2 state.  This proves that the
+    v2 trigger repair neither mutates the v1 migration marker nor makes a
+    SQLite backup unrecoverable.
+    """
+    from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
+
+    db._conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
+    db._conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
+    db._conn.execute(
+        "CREATE TRIGGER trg_stars_invoices_promo_snapshot_immutable "
+        "BEFORE UPDATE OF promo_redemption_id,original_stars_price,discount_minor ON stars_invoices "
+        "WHEN OLD.promo_redemption_id IS NOT NULL AND "
+        "(NEW.promo_redemption_id IS NOT OLD.promo_redemption_id OR "
+        "NEW.original_stars_price IS NOT OLD.original_stars_price OR "
+        "NEW.discount_minor IS NOT OLD.discount_minor) "
+        "BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END"
+    )
+    db._conn.commit()
+
+    backup_path = os.path.join(os.path.dirname(db._conn.execute("PRAGMA database_list").fetchone()[2]), "promo-pre-v2.sqlite3")
+    backup_conn = sqlite3.connect(backup_path)
+    db._conn.backup(backup_conn)
+    backup_conn.close()
+
+    assert apply_promo_schema_v2(db._conn, now=1234) is True
+    assert db._conn.execute(
+        "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
+    ).fetchone() is not None
+
+    restored = sqlite3.connect(backup_path)
+    assert restored.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    assert restored.execute(
+        "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
+    ).fetchone() is None
+    restored.close()
 
 
 def test_promo_definition_code_must_be_uppercase(db):
