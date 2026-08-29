@@ -621,52 +621,42 @@ class PromoStore(_RedemptionTxMixin):
         idem_hash = _idempotency_hash(idempotency_key)
         request_hash = _request_hash({"code": clean_code, "telegram_id": int(telegram_id)})
 
-        with self._lock:
-            existing = self._conn.execute(
-                "SELECT * FROM mgboost_promo_redemptions WHERE idempotency_key_hash=?",
-                (idem_hash,),
-            ).fetchone()
-        if existing is not None:
-            if existing["request_hash"] != request_hash:
-                raise PromoConflict("idempotency key reused with a different request")
-            if existing["status"] == "CANCELLED":
-                raise PromoConflict("reservation was cancelled -- request a new one")
-            return self._reservation_result(existing, already=True)
-
-        definition = self._conn.execute(
-            "SELECT * FROM mgboost_promo_definitions WHERE code=?", (clean_code,),
-        ).fetchone()
-        if definition is None or definition["status"] != "ACTIVE":
-            raise PromoNotFound(f"no ACTIVE promo code {clean_code!r}")
-        if definition["effect_kind"] != "PURCHASE_DISCOUNT":
-            raise PromoError(f"{definition['effect_kind']} is not a purchase discount")
-        version_row = self._conn.execute(
-            "SELECT * FROM mgboost_promo_versions WHERE promo_id=? AND status='ACTIVE'",
-            (definition["id"],),
-        ).fetchone()
-        if version_row is None:
-            raise PromoNotFound(f"promo code {clean_code!r} has no active version")
-
-        account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
-        if account is None:
-            raise PromoNotFound(
-                f"no active account for telegram_id={telegram_id}"
-            )
-        per_user_limit = int(definition["per_user_limit"])
+        # Every eligibility read below is part of the same BEGIN IMMEDIATE
+        # transaction as the limit check and reservation write.  This is
+        # important not only for cross-process SQLite serialization, but for
+        # the shared connection: a second thread must never run a read in the
+        # middle of this transaction and then roll back its owner.
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                existing_after_lock = self._conn.execute(
+                existing = self._conn.execute(
                     "SELECT * FROM mgboost_promo_redemptions WHERE idempotency_key_hash=?",
                     (idem_hash,),
                 ).fetchone()
-                if existing_after_lock is not None:
-                    self._conn.commit()
-                    if existing_after_lock["request_hash"] != request_hash:
+                if existing is not None:
+                    if existing["request_hash"] != request_hash:
                         raise PromoConflict("idempotency key reused with a different request")
-                    if existing_after_lock["status"] == "CANCELLED":
+                    if existing["status"] == "CANCELLED":
                         raise PromoConflict("reservation was cancelled -- request a new one")
-                    return self._reservation_result(existing_after_lock, already=True)
+                    self._conn.commit()
+                    return self._reservation_result(existing, already=True)
+                definition = self._conn.execute(
+                    "SELECT * FROM mgboost_promo_definitions WHERE code=?", (clean_code,),
+                ).fetchone()
+                if definition is None or definition["status"] != "ACTIVE":
+                    raise PromoNotFound(f"no ACTIVE promo code {clean_code!r}")
+                if definition["effect_kind"] != "PURCHASE_DISCOUNT":
+                    raise PromoError(f"{definition['effect_kind']} is not a purchase discount")
+                version_row = self._conn.execute(
+                    "SELECT * FROM mgboost_promo_versions WHERE promo_id=? AND status='ACTIVE'",
+                    (definition["id"],),
+                ).fetchone()
+                if version_row is None:
+                    raise PromoNotFound(f"promo code {clean_code!r} has no active version")
+                account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
+                if account is None:
+                    raise PromoNotFound(f"no active account for telegram_id={telegram_id}")
+                per_user_limit = int(definition["per_user_limit"])
                 prior = self._conn.execute(
                     "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
                     "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
