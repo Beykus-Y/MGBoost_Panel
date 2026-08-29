@@ -17,6 +17,14 @@
 
 ### Added
 
+- PH5-13 admin UI промокодов (implemented locally, NO push/deploy): backend
+  `src/routes/admin_promo.py` — `POST/GET /admin/promo/definitions`,
+  `POST /admin/promo/definitions/<code>/disable`,
+  `GET /admin/promo/redemptions` (все за `require_admin_auth` + primary
+  capability, bounded-валидация); фронт `frontend/assets/admin/promo_ops.js`
+  — модалка-менеджер (кнопка «Промокоды…» на странице аккаунтов): список
+  definitions с созданием/отключением и последние redemptions для саппорта
+  (включая CANCELLED резервы).
 - PH5-13 Promo codes v1, self-service redemption slice (implemented locally,
   NO push/deploy): новый user-scoped `PromoStore.redeem_for_telegram_user`
   (без primary-admin capability — действующий принципал это PROVEN Telegram

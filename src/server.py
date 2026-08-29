@@ -88,6 +88,12 @@ from .routes.admin_devices import (
 )
 from .routes.admin_expiry import handle_expiry_adjustment, handle_expiry_preview
 from .routes.admin_grant import handle_admin_account_create, handle_admin_grant_apply
+from .routes.admin_promo import (
+    handle_admin_promo_create,
+    handle_admin_promo_disable,
+    handle_admin_promo_list,
+    handle_admin_promo_redemptions,
+)
 from .routes.admin_ownership import handle_telegram_ownership_rebind
 from .routes.admin_routing import (
     handle_routing_host_add,
@@ -231,6 +237,12 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/accounts$"), lambda h: handle_admin_account_create(h)),
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/admin-grant$"),
      lambda h, account_id: handle_admin_grant_apply(h, account_id)),
+    # PH5-13: promo definitions management + redemption inspection.
+    ("POST",   re.compile(r"^/admin/promo/definitions$"), lambda h: handle_admin_promo_create(h)),
+    ("GET",    re.compile(r"^/admin/promo/definitions$"), lambda h: handle_admin_promo_list(h)),
+    ("POST",   re.compile(r"^/admin/promo/definitions/(?P<code>[A-Z0-9_]{3,64})/disable$"),
+     lambda h, code: handle_admin_promo_disable(h, code)),
+    ("GET",    re.compile(r"^/admin/promo/redemptions$"), lambda h: handle_admin_promo_redemptions(h)),
     # PH5-12 delivery routing: live host inventory + STANDARD membership.
     ("GET",    re.compile(r"^/admin/routing/hosts$"),   lambda h: handle_routing_hosts(h)),
     ("POST",   re.compile(r"^/admin/routing/hosts/add$"),    lambda h: handle_routing_host_add(h)),

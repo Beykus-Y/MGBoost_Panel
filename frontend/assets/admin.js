@@ -27,6 +27,17 @@ const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(mod
   routingUi=module.createRoutingUi({adminFetch,html,renderHtml,toast});
   return routingUi;
 });
+let promoOps=null;
+const PROMO_OPS_READY = (async()=>{
+  const promoCore=await import(`./admin/core.js${_MODULE_VERSION}`);
+  const {createModals}=await import(`./admin/modals.js${_MODULE_VERSION}`);
+  const module=await import(`./admin/promo_ops.js${_MODULE_VERSION}`);
+  const {openModal,confirmFlow}=createModals({html,renderHtml});
+  promoOps=module.createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
+    formatTimestamp:promoCore.formatTimestamp,humanLabel:promoCore.humanLabel,adminFetch});
+  return promoOps;
+})();
+window.__PROMO_OPS_READY=PROMO_OPS_READY;
 
 const TRAFFIC_PERIODS = {
   '1h': { label: 'за 1 час', ms: 60 * 60 * 1000 },
