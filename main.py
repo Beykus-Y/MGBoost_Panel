@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from src.config import LISTEN_HOST, LISTEN_PORT
 from src.database import Database
+from src.promo import ensure_wl_trial_plan_version
 from src.service_marzban import ServiceMarzbanClient
 from src.server import Server
 from src.bot_runner import BotRunner
@@ -8,6 +9,9 @@ from src.bot_runner import BotRunner
 if __name__ == "__main__":
     db = Database()
     db.migrate_from_json()
+    # The seed is versioned and idempotent.  Keep it in the application
+    # bootstrap rather than Database() so isolated stores remain neutral.
+    ensure_wl_trial_plan_version(db.accounts)
 
     marzban = ServiceMarzbanClient()
     marzban.assert_credential_boundary()
