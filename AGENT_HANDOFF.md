@@ -48,7 +48,7 @@ is unaffected.
   PromoConflict → HTTP 409 / «уже применён» in the bot.
 - `PURCHASE_DISCOUNT` is TELEGRAM_STARS-only v1. `MANUAL_RUB` has no promo
   binding and must not be presented as discounted.
-- `WL_TRIAL` is idempotently bootstrapped at normal `Database()` startup with
+- `WL_TRIAL` is idempotently bootstrapped at normal `main.py` application startup with
   exact versioned-shape verification; no forgotten manual seed script is
   required for normal deploy.
 

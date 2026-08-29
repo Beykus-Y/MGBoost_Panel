@@ -1565,7 +1565,7 @@ PromoStore payment interface and complete admin read model. Production had
 already applied `ph5_13_promo_codes_v1`, so the trigger repair is additive
 `ph5_13_promo_codes_v2_snapshot_immutable`, never a v1 checksum rewrite.
 `WL_TRIAL` is now idempotently bootstrapped and exact-shape-verified during
-normal `Database()` startup. `PURCHASE_DISCOUNT` is explicitly
+normal `main.py` application startup after legacy JSON migration. `PURCHASE_DISCOUNT` is explicitly
 **TELEGRAM_STARS-only v1**; `MANUAL_RUB` has no binding/wiring and must not be
 advertised as discounted. Remaining gates are full regression,
 migration/backup-restore and controlled production canary.**
