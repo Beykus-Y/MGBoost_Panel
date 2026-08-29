@@ -203,15 +203,16 @@ class SubscriptionRenewalStore:
                             "commercial purchase must not overwrite it"
                         )
                     if subscription["current_plan_code"] not in (None, plan_code):
-                        # PH5-13 promo trial exception: a free (billing_required=0)
-                        # plan whose term has already expired is not a live
-                        # commitment -- it must never block a real purchase of a
-                        # DIFFERENT plan. A billing_required=1 plan (or a still-
-                        # live free trial) still hits PlanMismatch unchanged --
-                        # this is narrowly "an expired free trial doesn't count",
-                        # never general upgrade/downgrade (PH5-06 unchanged).
+                        # PH5-13 promo trial exception: an EXPIRED WL_TRIAL is
+                        # not a live commitment -- it must never block a real
+                        # purchase of a DIFFERENT plan. Scoped strictly to the
+                        # registered trial plan: any other billing_required=0
+                        # plan (and any still-live trial) hits PlanMismatch
+                        # unchanged -- never general upgrade/downgrade
+                        # (PH5-06 unchanged).
                         expired_free_trial = (
-                            subscription["current_plan_billing_required"] == 0
+                            subscription["current_plan_code"] == "WL_TRIAL"
+                            and subscription["current_plan_billing_required"] == 0
                             and subscription["current_expiry"] is not None
                             and subscription["current_expiry"] <= timestamp
                         )
@@ -369,13 +370,15 @@ class SubscriptionRenewalStore:
         version -- this IS what legitimizes the trial's entitlement; never
         left unset for a subscription that doesn't already have one).
 
-        The WL-period anchor is `max(MAX(existing wl_periods.ends_at), now)`
-        -- deliberately NOT `subscription.current_expiry`, which can diverge
-        from the real WL-period chronology after an `ADMIN_EXPIRY_ADJUSTMENT`
-        (PH7-01), which moves `current_expiry` alone. `current_expiry` itself
-        is extended by the same DL-044 `max(current_expiry, now) + days`
-        formula, kept in step via one CAS UPDATE (or INSERT for a fresh
-        subscription). Idempotent by `idempotency_key`, same
+        The WL-period anchor is
+        `max(MAX(existing wl_periods.ends_at), subscription.current_expiry,
+        now)`: the promo period must never start before the subscription's
+        own canonical end, otherwise an `ADMIN_EXPIRY_ADJUSTMENT` (PH7-01,
+        which moves `current_expiry` alone) can leave the promo period
+        stranded inside an already-paid-for term instead of extending the
+        subscription past it. `current_expiry` itself is extended by the
+        same DL-044 `max(current_expiry, now) + days` formula, kept in step
+        via one CAS UPDATE (or INSERT for a fresh subscription). Idempotent by `idempotency_key`, same
         `mgboost_entitlement_mutations.idempotency_key_hash` boundary as
         every other PH5 writer."""
         timestamp = int(time.time()) if now is None else int(now)
@@ -437,7 +440,9 @@ class SubscriptionRenewalStore:
                     "SELECT MAX(ends_at) FROM mgboost_wl_periods WHERE account_id=?",
                     (int(account_id),),
                 ).fetchone()[0]
-                period_anchor = max(existing_max_ends_at or 0, timestamp)
+                period_anchor = max(
+                    existing_max_ends_at or 0, current_expiry or 0, timestamp
+                )
                 period_start = align_to_utc_hour(period_anchor)
                 period_end = period_start + int(days) * 86400
 

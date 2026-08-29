@@ -198,8 +198,11 @@ def test_unlimited_subscription_is_never_overwritten_by_a_commercial_purchase(db
 
 
 def _install_trial_subscription(db, account_id, *, current_expiry, now=100):
+    # Exactly the real trial plan code: the PH5-13 expired-trial exception in
+    # apply_same_plan_purchase is scoped to `plan_code == "WL_TRIAL"` and must
+    # not match any other free plan.
     trial_plan = db.accounts.create_plan_version({
-        "plan_code": "WL_TRIAL_TEST", "version": 1, "display_name": "WL Trial",
+        "plan_code": "WL_TRIAL", "version": 1, "display_name": "WL Trial",
         "plan_kind": "COMMERCIAL", "billing_required": False,
         "device_limit_mode": "LIMITED", "device_limit": 1,
         "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
@@ -253,6 +256,34 @@ def test_expired_billed_plan_still_blocks_a_different_purchase(db):
     with pytest.raises(PlanMismatch):
         _purchase(db, account["id"], plan_code="WL", duration_days=30,
                  key="billed-expired-key-0002", now=100 + 31 * 86400)
+
+
+def test_expired_non_trial_free_plan_still_blocks_a_different_purchase(db):
+    """Regression pin: the expired-trial exception is scoped strictly to the
+    WL_TRIAL plan code -- an expired NON-trial billing_required=0 plan is a
+    live plan identity and must still hit PlanMismatch, exactly as before
+    PH5-13 (no general "expired free plan" upgrade/downgrade loophole)."""
+    from src.subscription_renewal import PlanMismatch
+
+    account = db.accounts.create_account("DIRECT", now=1)
+    legacy_free = db.accounts.create_plan_version({
+        "plan_code": "FREE_LEGACY", "version": 1, "display_name": "Legacy Free",
+        "plan_kind": "COMMERCIAL", "billing_required": False,
+        "device_limit_mode": "LIMITED", "device_limit": 1,
+        "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 30,
+        "terms": {},
+    }, now=100)
+    db._conn.execute(
+        "INSERT INTO mgboost_subscriptions "
+        "(account_id,current_plan_version_id,status,started_at,current_expiry,"
+        "created_at,updated_at) VALUES (?,?,'ACTIVE',100,500,100,100)",
+        (account["id"], legacy_free["id"]),
+    )
+    db._conn.commit()
+
+    with pytest.raises(PlanMismatch):
+        _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                 key="free-legacy-expired-key-01", now=1_000)
 
 
 def test_unknown_plan_and_unknown_duration_are_rejected(db):
@@ -335,30 +366,58 @@ def test_append_promo_wl_period_extends_existing_wl_subscription_without_touchin
     )
 
 
-def test_append_promo_wl_period_anchors_on_max_period_ends_at_not_current_expiry(db):
-    """After an ADMIN_EXPIRY_ADJUSTMENT (which moves ONLY current_expiry, never
-    WL periods), a promo period must still anchor on the real WL chronology
-    (MAX(ends_at)), not the now-diverged current_expiry."""
-    account = db.accounts.create_account("DIRECT", now=1)
-    base = _purchase(db, account["id"], plan_code="WL", duration_days=30,
-                     key="promo-anchor-base-0001", now=1_000)
-    base_period = base["wl_periods"][0]
-
-    # Simulate exactly what ADMIN_EXPIRY_ADJUSTMENT (PH7-01) does: move ONLY
-    # current_expiry, never touch WL periods (that store's own writer is
-    # exercised separately in tests/test_admin_operational_admin.py; here we
-    # only need the resulting divergent DB state, not its auth plumbing).
-    moved_expiry = base["new_expiry"] + 10 * 86400
+def _simulate_admin_expiry_adjustment(db, account_id, *, new_expiry):
+    """Simulate exactly what ADMIN_EXPIRY_ADJUSTMENT (PH7-01) does: move ONLY
+    current_expiry, never touch WL periods (that store's own writer is
+    exercised separately in tests/test_admin_operational_admin.py; here we
+    only need the resulting divergent DB state, not its auth plumbing)."""
     db._conn.execute(
         "UPDATE mgboost_subscriptions SET current_expiry=?,row_version=row_version+1 "
-        "WHERE account_id=?", (moved_expiry, account["id"]),
+        "WHERE account_id=?", (new_expiry, account_id),
     )
     db._conn.commit()
 
+
+def test_append_promo_wl_period_anchors_on_current_expiry_when_it_leads_wl_periods(db):
+    """ADMIN_EXPIRY_ADJUSTMENT moved current_expiry FORWARD past the WL-period
+    chronology: the promo period must anchor on current_expiry so the promo
+    EXTENDS the subscription past its canonical end -- never a period stranded
+    inside an already-paid-for term."""
+    account = db.accounts.create_account("DIRECT", now=1)
+    base = _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                     key="promo-anchor-fwd-base-01", now=1_000)
+    base_period = base["wl_periods"][0]
+
+    moved_expiry = base["new_expiry"] + 10 * 86400
+    _simulate_admin_expiry_adjustment(db, account["id"], new_expiry=moved_expiry)
+
     result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
-                           key="promo-anchor-key-0001", now=3_000)
+                           key="promo-anchor-fwd-key-001", now=3_000)
+    # WL periods floor to the UTC hour (DL-020); the subscription expiry line
+    # stays exact-second. Both extend from the same moved_expiry origin.
+    from src.subscription_renewal import align_to_utc_hour
+    expected_start = align_to_utc_hour(moved_expiry)
+    assert result["wl_periods"][0]["starts_at"] == expected_start
+    assert result["wl_periods"][0]["ends_at"] == expected_start + 7 * 86400
+    assert result["new_expiry"] == moved_expiry + 7 * 86400
+
+
+def test_append_promo_wl_period_anchors_on_max_period_ends_at_when_it_leads(db):
+    """ADMIN_EXPIRY_ADJUSTMENT moved current_expiry BACKWARD below the real WL
+    chronology (admin shortened): the promo period must stay seamless with the
+    existing WL periods (MAX(ends_at)), never overlap or go backwards."""
+    account = db.accounts.create_account("DIRECT", now=1)
+    base = _purchase(db, account["id"], plan_code="WL", duration_days=30,
+                     key="promo-anchor-back-base-01", now=1_000)
+    base_period = base["wl_periods"][0]
+
+    shortened_expiry = base_period["ends_at"] - 10 * 86400
+    _simulate_admin_expiry_adjustment(db, account["id"], new_expiry=shortened_expiry)
+
+    result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
+                           key="promo-anchor-back-key-01", now=3_000)
     assert result["wl_periods"][0]["starts_at"] == base_period["ends_at"]
-    assert result["wl_periods"][0]["starts_at"] != moved_expiry
+    assert result["wl_periods"][0]["ends_at"] == base_period["ends_at"] + 7 * 86400
 
 
 def test_append_promo_wl_period_is_idempotent(db):
