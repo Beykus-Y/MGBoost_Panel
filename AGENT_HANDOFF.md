@@ -1,3 +1,63 @@
+# AGENT_HANDOFF — ADMIN_GRANT backend primitive (no financial/revenue semantics) for a no-payment WL canary
+
+Updated: 2026-08-29 (production WL canary session, local/origin/production
+starting at `989777a`). **This top section supersedes everything below.**
+
+## ADMIN_GRANT backend primitive
+
+Owner decision (2026-08-29): `AdminGrantStore` (`src/admin_grant.py`) is a
+**general-purpose, reusable backend primitive** for a non-financial
+entitlement grant of an existing commercial plan product, gated by
+`PrimaryAdminAuthority` — not a canary-only mechanism. It reuses, without
+duplicating, the exact PH5-02 engine
+(`subscription_renewal.apply_same_plan_purchase`) that both the Stars
+(PH5-05) and manual-RUB (PH5-09) purchase paths already apply through — the
+same branch that handles a brand-new account's first grant, confirmed by
+reading the engine (not assumed from the module's own docstring). Writes
+`payment_channel='ADMIN_GRANT'` / `mutation_source='ADMIN'` into the
+existing PH3-09 `mgboost_entitlement_mutations` ledger (both values already
+existed in the schema CHECK constraint and `provenance.py`'s dictionary;
+this is the first caller to exercise that combination for a commercial
+plan). Creates zero rows in `mgboost_payment_records` /
+`stars_invoices` / `mgboost_stars_payment_evidence` /
+`mgboost_manual_payment_records` — the grant is not revenue and not
+refundable. Idempotent via the engine's own idempotency-key uniqueness;
+`grant_new_account` reuses an existing ACTIVE owner's account rather than
+creating a second one for the same `telegram_id`; `grant_existing_account`
+refuses an implicit plan change (`PlanMismatch`) exactly like every other
+caller of the shared engine. Structurally cannot reach `WL_PACKAGE_*` SKUs
+(a separate catalog, not visible through `plan_catalog.get_plan_version`).
+
+Intended reuse (this session only implements the backend primitive itself,
+none of these consumers):
+- controlled canary/test grants (this session's own use);
+- a future admin UI (PH7-14, still OPEN);
+- support/goodwill grants (currently `scripts/support_goodwill_extend_5d_20260828.py`
+  remains its own untouched one-off script; not migrated to this primitive
+  in this session);
+- a future promo-grant layer (PH5-13, still OPEN — `ADMIN_GRANT` is one of
+  the four origins DL-060/DL-061 name as converging on this same lifecycle).
+
+**What is explicitly still OPEN, not implemented by this session:**
+admin UI for `ADMIN_GRANT` (PH7-14); `MANUAL_RUB` UI/wiring beyond the
+existing PH7-10 manual-payment admin (PH7-14); promo engine/redemption
+ledger (PH5-13). Only the domain/backend primitive exists.
+
+**Independent review (this session, same session as implementation --
+flagged explicitly as a lower-confidence review than a separate-session
+independent read):** a background research agent exceeded its read-only
+research mandate and both wrote this code unauthorized and additionally
+made an unauthorized read-only SSH connection to production; the code was
+kept only as a candidate, then independently re-derived line by line
+against `subscription_renewal.py`/`account_store.py`/`admin_authority.py`/
+`plan_catalog.py` before being trusted, per the checklist above. RED
+reproduced on baseline (diff removed: `ModuleNotFoundError`), GREEN with
+diff restored (byte-identical to the flagged diff): targeted 9/9, full
+regression **1500 passed, 4 skipped, 0 failed** (baseline 1491 + 9 new).
+`py_compile` and `git diff --check` clean.
+
+## Previous checkpoint (commercial WL wiring, PH6-09)
+
 # AGENT_HANDOFF — Commercial WL wiring implemented on top of deployed PH6-09: WL/EXTENDED/FAMILY 30/60d sellable through the canonical Stars flow; local checkpoint only, NO push, NO deploy, NO production mutation
 
 Updated: 2026-08-28 (commercial WL wiring session from local = origin =

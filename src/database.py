@@ -66,6 +66,7 @@ from .stars_purchase_schema import apply_stars_purchase_schema
 from .stars_purchase import StarsPurchaseStore
 from .manual_payment_schema import apply_manual_payment_schema
 from .manual_payment import ManualPaymentStore
+from .admin_grant import AdminGrantStore
 from .entitlement_engine import EntitlementEngine
 from .subscription_renewal import SubscriptionRenewalStore
 from .provenance import ProvenanceStore
@@ -201,6 +202,10 @@ class Database:
             self.wl_package_catalog, self.primary_admin_authority,
         )
         self.manual_payments.bind_database(self)
+        self.admin_grants = AdminGrantStore(
+            self._conn, self._lock, self.accounts, self.subscription_renewal,
+            self.primary_admin_authority,
+        )
 
     def _create_tables(self):
         self._conn.executescript("""

@@ -1533,6 +1533,59 @@ reviews of this diff could not resolve in agreement.**
   - Full regression after fixes: 1396 passed, 0 failed. `git diff --check`
     clean; touched JS/Python compile clean.
 
+## [ ] PH5-13 — Promo codes v1 (planned, implementation NOT started)
+
+**Owner decision recorded 2026-08-29 (DL-060/DL-061); this is planning only
+— no promo engine code exists yet, nothing below is DONE.**
+
+**Depends:** PH5-01/02/04/05/09 (single canonical account/subscription/
+entitlement/period lifecycle below the payment/source layer), PH7-09/10
+(admin plan/entitlement + manual-payment admin as the closest existing
+analogs for the future admin management UI).
+
+**Scope (three effect classes, minimum v1 set):**
+- `EXTEND_SUBSCRIPTION` — arbitrary N days. STANDARD/NONE: ordinary expiry
+  extension. LIMITED/WL: a new immutable WL period of N days appended after
+  current subscription chronology, no overlap/gap; current period and its
+  usage are never mutated/reset. Quota prorates from the plan's base
+  30-day quota: `raw_quota = wl_quota_30d / 30 * N`, then
+  `promo_quota = ceil(raw_quota / 10_000_000_000) * 10_000_000_000` (1 GB =
+  1_000_000_000 bytes, decimal, ceil to nearest 10 GB, never floor/nearest).
+- `TRIAL_GRANT` — only if no active subscription and the account's
+  `trial_class` has never been redeemed. First planned trial: `WL_TRIAL`,
+  1 day, device_limit=1, wl_mode=LIMITED, quota = same prorating rule
+  applied to 100 GB/30d → 10 GB (no separate hardcoded trial-quota path).
+  Anti-abuse is scoped by `trial_class`, not by promo-code string: one
+  ownership identity → one redemption per `trial_class` (not a bare
+  `promo_code_used` flag).
+- `PURCHASE_DISCOUNT` — reduces price on a purchase; creates no entitlement
+  by itself. Flow: SKU → promo eligibility → original price → discount →
+  final price → invoice/manual purchase. Invoice/payment stores an
+  immutable snapshot (original price, promo id/version, discount, final
+  price); editing/disabling the promo afterward never retroactively changes
+  an existing invoice. Redemption lifecycle: `AVAILABLE → RESERVED →
+  REDEEMED` (not "used" merely on code entry); an unpaid invoice releases
+  its reservation via TTL or an equivalently safe existing invoice-lifecycle
+  guarantee; duplicate payment callbacks stay idempotent.
+
+**Architecture constraint:** promo codes create no second subscription
+engine. `STARS` / `MANUAL_RUB` / `ADMIN_GRANT` / `PROMO_GRANT` all
+ultimately converge on the one existing canonical account/subscription/
+entitlement/period lifecycle below the payment/source layer. Promo
+*definition* describes effect/policy; a separate redemption ledger is the
+durable audit/history. Do not build the definition/eligibility/
+reservation-ledger/effect-application/admin-UI state machine before it is
+actually needed.
+
+**Accept:** exact prorating table pinned by DL-060 (WL 100GB/30d: 1d→10GB,
+3d→10GB, 7d→30GB, 10d→40GB, 15d→50GB, 20d→70GB, 30d→100GB; EXTENDED/FAMILY
+150GB/30d: 1d→10GB, 3d→20GB, 7d→40GB, 10d→50GB, 15d→80GB, 20d→100GB,
+30d→150GB). **Tests (when implementation starts):** prorating table exact
+match, ceil-not-floor/nearest, trial_class single-redemption across
+different promo codes, invoice price-snapshot immutability after promo
+edit/disable, duplicate-callback idempotency, no second engine (promo
+effects land through the same apply path as PH5-02/05/09).
+
 # Phase 6 — WL quota
 
 ## [x] PH6-01 — Runtime topology allowlist/assertions
@@ -2732,6 +2785,46 @@ split-out remains the open Wave A item above.
 Executed via a new, reviewed, hardcoded-target script (`scripts/dl057_megochel_consolidation.py`, iterated twice in production after two real bugs it exposed in itself -- a 15-character `idempotency_key` one byte under the 16-minimum, and a preflight that mis-required the genesis child to still be "non-terminal" and so couldn't resume after the already-applied `REVOKE` -- both fixed and redeployed before the ordering-guaranteed re-run completed cleanly; the underlying primitives' own idempotency made every retry safe, including the real Marzban `REVOKE` never re-rotating): `REVOKE` (`lc_twdq6bl3hi2scoy2rq2kpumuj4`, `APPLIED`, real Marzban genesis child `mgc_2uipd27le766vdd7lt4kjpj5pi` disabled + UUID rotated) -> `FREE` (`APPLIED`, slot 1/generation 1 -> `RELEASED`, slot -> `FREE`) -> `close_account(5)` (subscription id 5 -> `CANCELLED`, account 5 -> `CLOSED`) -> `create_merge(absorbed=5, survivor=6)` (`mgboost_account_merges` id 1, `ACTIVE`, `decision_ref='DL-057-megochel-consolidation-2026-08-27'`) -> `set_display_name(6, 'Megochel')` -> `increase_device_limit(6, +3)` (subscription id 6 unchanged, plan -> `LEGACY_PAID_COMPAT_V1_D6`, `device_limit=6`, `wl_mode` still `UNLIMITED`, `current_expiry` still `NULL`).
 Post-mutation evidence, all read-only against the live DB: account 5 `CLOSED`/subscription `CANCELLED`/generation 19 `RELEASED`/slot `FREE`/zero `ACTIVE` generations anywhere for account 5; exactly one `mgboost_account_merges` row (`5->6`, `ACTIVE`) with exactly one `CREATED` event; account 6 unchanged `ACTIVE` status, unchanged Telegram identity row (id 6, `telegram_id=1623120036`, still not revoked), unchanged opaque credential (id 9, same `generation=1`/`row_version=2`/`last_used_at`), exactly one live subscription (id 6, same row, now `LEGACY_PAID_COMPAT_V1_D6`), new `display_name='Megochel'`; both `mgboost_legacy_account_aliases` rows (`MegochelPC`->5, `MegochelAndroid`->6) byte-for-byte unchanged; `db.legacy_bridge.resolve_account_for_legacy_username('MegochelPC')` and `resolve_account_id(db, 5)` both now return `6`; both real legacy Marzban users (`MegochelPC` id 4, `MegochelAndroid` id 5) confirmed `active` with traffic still accruing normally, completely untouched by this operation; unrelated account 2 (`DISABLED`, pre-existing PH3-08 canary) and the other 16 `ACTIVE` accounts unchanged (18 total, as before); all 5 services active, zero errors/tracebacks/5xx in `mgboost-panel` logs across the whole operation; `admin_read_models.account_detail()`/`account_summaries()` confirmed showing `display_name='Megochel'` for account 6 and the new `consolidation` block correctly cross-referencing both sides. Local/origin/production all at `d5ed3b7`.
 
+## [ ] PH7-14 — Pre-launch admin/operator tooling (planned; backend primitive for one bullet implemented 2026-08-29, everything else still OPEN)
+
+**Owner decision recorded 2026-08-29 (DL-061); planning only.**
+
+**Backend primitive implemented 2026-08-29 (`src/admin_grant.py`,
+`AdminGrantStore`; local checkpoint, not yet deployed at doc-write time —
+see AGENT_HANDOFF.md top section for the full review):** covers only the
+"grant a plan through an audited `ADMIN_GRANT`" bullet below, as a
+domain/backend primitive with no UI. Reuses the existing PH5-02
+`apply_same_plan_purchase` engine (no second subscription engine), zero
+financial rows, `PrimaryAdminAuthority`-gated, idempotent. Admin UI to
+drive it, account-creation/rebind UI, `MANUAL_RUB` UI/wiring, subscription
+extension UI, opaque-subscription/entitlement/devices display, and promo
+definition/redemption management (depends on PH5-13) all remain OPEN —
+this item is NOT done.
+
+**Depends:** PH3-01 (canonical account), PH2-05 (Telegram ownership/rebind
+lifecycle), PH5-04/09 (entitlement engine, manual-payment record), PH5-13
+(promo definitions/redemption ledger), PH7-09/10 (closest existing analogs:
+safe plan/entitlement admin, manual external-payment admin UI).
+
+**Scope, before public launch an operator must be able to, through
+canonical audited paths (no raw SQL, no direct Marzban mutation):**
+- create a canonical account;
+- safely link/rebind Telegram ownership;
+- grant a plan through an audited `ADMIN_GRANT` (free/support/test/
+  promo-like, no revenue);
+- record a real manual sale through the existing canonical `MANUAL_RUB`
+  (PH5-09), kept structurally separate from `ADMIN_GRANT`;
+- extend a subscription;
+- retrieve/display the opaque subscription;
+- view entitlement / WL periods / devices;
+- manage promo definitions and redemption state (once PH5-13 exists).
+
+**Hard separation (DL-061):** `ADMIN_GRANT` and `MANUAL_RUB` must never be
+mixed or interchangeable — `ADMIN_GRANT` never counts as revenue,
+`MANUAL_RUB` always does. An admin mechanism that defaults to an unbounded/
+god-mode entitlement does not satisfy this item; every `ADMIN_GRANT` is
+scoped to an exact plan/duration like any other canonical entitlement.
+
 # Phase 8 — Hardening and scale
 
 ## [ ] PH8-01 — Production-safe bounded HTTP concurrency — P2
@@ -3864,6 +3957,79 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   approved expansion коммерческий LIMITED WL нельзя включать без ручного
   разового вмешательства при каждом обновлении topology.
 - **Связано:** PH0-05, PH6-01, PH6-06, PH6-07, PH6-09.
+
+## DL-060 — Promo Codes v1: три effect-класса, prorating rule, no second engine
+
+- **Дата:** 2026-08-29.
+- **Решение (owner):** promo engine v1 (PH5-13, планирование, реализация
+  не начата) должен на старте поддерживать минимум три класса эффектов:
+  1. `EXTEND_SUBSCRIPTION` — произвольное N дней. STANDARD/NONE: обычное
+     продление expiry. LIMITED/WL: новый immutable WL period на N дней,
+     идёт после текущей subscription chronology без overlap/gap; текущий
+     period и его usage не мутируются и не reset'ятся.
+  2. `TRIAL_GRANT` — только если нет активной подписки и `trial_class` ещё
+     не был redeemed этой ownership identity. Первый planned trial:
+     `WL_TRIAL`, 1 день, device_limit=1, wl_mode=LIMITED, quota по общему
+     prorating rule (не отдельная hardcoded quota-логика). Anti-abuse по
+     `trial_class`, не по конкретному коду: одна ownership identity → одна
+     redemption на `trial_class`, не просто `promo_code_used=true`.
+  3. `PURCHASE_DISCOUNT` — уменьшает цену покупки, сам entitlement не
+     создаёт. Invoice/payment хранит immutable snapshot (original price,
+     promo id/version, discount, final price); изменение/disable promo
+     после создания invoice не меняет существующий invoice задним числом.
+     Redemption lifecycle: `AVAILABLE → RESERVED → REDEEMED`, не просто
+     ввод кода. Неоплаченный invoice отпускает reservation по TTL либо
+     через эквивалентную безопасную семантику существующего canonical
+     invoice lifecycle. Duplicate payment callbacks остаются idempotent.
+- **Prorating rule (exact wording, owner-specified):**
+  `raw_quota = wl_quota_30d / 30 * N`, затем
+  `promo_quota = ceil(raw_quota / 10_000_000_000) * 10_000_000_000`
+  (decimal GB, 1 GB = 1_000_000_000 bytes; округление всегда ceil, никогда
+  floor/nearest). Для WL 100 GB/30d: 1d→10GB, 3d→10GB, 7d→30GB, 10d→40GB,
+  15d→50GB, 20d→70GB, 30d→100GB. Для EXTENDED/FAMILY 150 GB/30d: 1d→10GB,
+  3d→20GB, 7d→40GB, 10d→50GB, 15d→80GB, 20d→100GB, 30d→150GB. `WL_TRIAL`
+  (1 день, база 100 GB/30d) получает свою quota тем же правилом → 10 GB,
+  без отдельной формулы.
+- **Архитектурная граница:** promo codes не создают второй subscription
+  engine. `STARS` / `MANUAL_RUB` / `ADMIN_GRANT` / `PROMO_GRANT` сходятся
+  на ОДНОМ существующем canonical account/subscription/entitlement/period
+  lifecycle ниже payment/source layer. Promo definition описывает
+  effect/policy; отдельный redemption ledger — durable audit/history.
+  Не проектировать заранее лишнюю state machine (definition/eligibility/
+  reservation-ledger/effect-application/admin-UI) до реальной необходимости
+  в ней.
+- **Кто:** owner.
+- **Почему:** зафиксировать точную семантику before implementation, чтобы
+  будущая реализация не изобретала собственный prorating/anti-abuse/
+  invoice-immutability дизайн ad hoc и не плодила параллельный engine рядом
+  с PH5-02/04/05/09.
+- **Статус:** planning only — implementation остаётся OPEN (PH5-13).
+- **Связано:** PH5-01/02/04/05/09, PH5-13, DL-044, DL-061.
+
+## DL-061 — ADMIN_GRANT и MANUAL_RUB не смешиваются; pre-launch admin/operator tooling
+
+- **Дата:** 2026-08-29.
+- **Решение (owner):** до public launch необходим отдельный admin/operator
+  функциональный блок (PH7-14, планирование, реализация не начата),
+  позволяющий: создать canonical account; безопасно привязать/rebind
+  Telegram ownership; выдать plan через audited `ADMIN_GRANT`; отдельно
+  зарегистрировать реальную ручную оплату через существующий canonical
+  `MANUAL_RUB` (PH5-09); продлить subscription; получить/показать opaque
+  subscription; видеть entitlement/WL periods/devices; управлять promo
+  definitions и redemption state (после PH5-13).
+- **Жёсткое разделение:** `ADMIN_GRANT` (free/support/test/promo-like
+  grant, revenue не увеличивает) и `MANUAL_RUB` (реальная ручная продажа,
+  учитывается как payment/revenue) никогда не смешиваются и не
+  взаимозаменяемы. Механизм, который по умолчанию выдаёт бессрочный/
+  god-mode entitlement, этому требованию не удовлетворяет — любой
+  `ADMIN_GRANT` scoped на конкретный plan/duration, как любой другой
+  canonical entitlement.
+- **Кто:** owner.
+- **Почему:** зафиксировать финансовый и audit-инвариант заранее — free
+  grant (support/test/promo) не должен искажать revenue-отчётность, и
+  наоборот, ручная продажа не должна выглядеть как бесплатный grant.
+- **Статус:** planning only — implementation остаётся OPEN (PH7-14).
+- **Связано:** PH3-01, PH2-05, PH5-04/09, PH5-13, PH7-09/10, DL-060.
 
 # Contradictions and migration hazards
 
