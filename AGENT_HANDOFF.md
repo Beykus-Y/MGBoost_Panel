@@ -1,7 +1,90 @@
-# AGENT_HANDOFF — ADMIN_GRANT backend primitive (no financial/revenue semantics) for a no-payment WL canary
+# AGENT_HANDOFF — ADMIN_GRANT deployed to production; no-payment WL canary (account_id=20) live end-to-end through real PH6 runtime
 
 Updated: 2026-08-29 (production WL canary session, local/origin/production
-starting at `989777a`). **This top section supersedes everything below.**
+`173cb4f`, started at `989777a`). **This top section supersedes everything
+below, including the ADMIN_GRANT-primitive section right under it (that
+section's own "local checkpoint" framing is superseded -- it IS deployed,
+see below).**
+
+## Outcome
+
+`ADMIN_GRANT PRODUCTION VERDICT: PASS`. `NO-PAYMENT WL CANARY PRODUCTION
+VERDICT: PASS`. Full production evidence in this session's own
+conversation record; summary here for the next agent.
+
+- **ADMIN_GRANT deployed** (`c1ae3d4` -> `bb8d56e`, three commits: the
+  primitive, then `repair_missing_provisioning_wiring` after production
+  first-device bootstrap caught a real gap -- see below). Zero-impact gate
+  passed both times (byte-identical cardinalities pre/post except the
+  intended new rows).
+- **Real gap found and fixed by the canary itself, not by review:**
+  `AdminGrantStore.grant_new_account` originally only reused PH5-02's
+  entitlement engine, not PH5-11's account-bootstrap wiring
+  (`mgboost_legacy_account_aliases` PRIMARY `tpl-<public_id>` /
+  `mgboost_direct_account_reviews`) -- without it, `opaque_resolver.
+  resolve_account_device` fails closed for every account, migrated or
+  not. Fixed by reusing the exact same tables/values (`ownership_
+  provenance=OWNER_APPROVED` instead of PH5-11's `EVIDENCE_PROVEN`), plus
+  a new `mgboost_admin_grant_template_jobs` job queue (PH5-11's own
+  `mgboost_signup_template_jobs.invoice_id` is `NOT NULL` by design --
+  an ADMIN_GRANT account has no invoice and gets none fabricated).
+  `repair_missing_provisioning_wiring` backfilled the already-created
+  canary account. RED/GREEN + full regression at every step (final:
+  1506 passed, 4 skipped, 0 failed).
+- **Second, unrelated production incident found by the canary:**
+  `mgboost-marzban-broker.service` had been running since **2026-08-25**,
+  before PH6-07 (WL enforcement, deployed 2026-08-28) ever added the
+  `child.user.wl.set` broker operation -- the running process had it
+  loaded neither on disk drift nor code bug, just a stale in-memory
+  import. Every real WL INCLUDE/EXCLUDE op in the whole system (not just
+  the canary) was silently retrying forever (`RETRY`, no recorded error
+  -- `wl_enforcement.py`'s `_dispatch_frozen_manifest`/`retry_later` path
+  computes the exception class locally but never persists it, a real
+  observability gap worth fixing separately). Diagnosed by reproducing
+  `service_marzban.set_child_wl_state` directly (traceback: `HTTPError
+  404` from the broker's own routing, operation not registered in the
+  stale process). Owner-authorized restart of `mgboost-marzban-broker.
+  service` (no code change) fixed it; the very next SCHEDULED cycle
+  converged the canary's op to `APPLIED` with zero manual dispatch.
+  **Action item for a future session: audit whether any other real WL
+  account was silently stuck in `RETRY` during 2026-08-25..29 because of
+  this, and consider whether broker restarts need to be a standard step
+  after any deploy that touches broker-side operations.**
+- **Canary end-to-end, all through canonical production code, zero raw
+  SQL:** `AdminGrantStore.grant_new_account` (telegram_id `8703542062`,
+  owner-confirmed controlled test identity) -> account_id 20, public_id
+  `acct_51iMmDClJ-qPxGAIzSBFRv9k`, subscription_id 20, exactly 1 WL period
+  (100 GB/30d/D3/LIMITED), zero rows in any financial table. Opaque
+  credential issued/activated through the exact bot `/newsub` primitives
+  (`subscription_credentials.prepare`/`activate`). First device bootstrapped
+  via a REAL HTTPS GET against `https://sub.beykus.fun/<token>` (device
+  User-Agent `Happ/3.26.3 (Android)` -- the exact compat_registry-allowlisted
+  tuple, not a fuzzy match) -- slot #1/generation #1, child
+  `mgc_dufvvwaq3hpsfvwdvi7cvnzasu`, own Marzban-minted UUID (confirmed
+  different from the template's), delivery = exactly STANDARD ∪ current
+  approved WL (25 inbound tags, verified both right after bootstrap and
+  again after enforcement converged). Real scheduled collector cycles
+  picked the child up (`children_seen` 37 -> 38, exactly +1, `bytes_delta=0`
+  correctly below quota); real scheduled enforcement converged the account
+  to `ACTIVE`/`INCLUDED` (`accounts_enabled: 1`, `ops_applied: 1`,
+  `ops_errored: 0`) with zero manual dispatch after the broker restart.
+  `entitlements.calculate(account_id=20)`: `effective_remaining_bytes=
+  100_000_000_000`, `consumed_bytes=0`, `contributing_children=1`.
+  Isolation confirmed pre/post at every mutation step: STANDARD canary
+  (generation #48/account 19) and all other 18 real accounts byte-identical
+  cardinalities except the canary's own new rows; `quick_check=ok`, `FK=0`
+  throughout; encrypted backup+restore `PASS` before every deploy.
+- **Scripts added** (all committed, all hardcoded to exactly this canary,
+  none reusable as a general tool): `scripts/wl_admin_grant_canary_20260829.py`,
+  `scripts/wl_canary_bootstrap_20260829.py`,
+  `scripts/wl_canary_repair_wiring_20260829.py`.
+- **Not done, deliberately:** no exhaustion, no reset, no manual usage
+  injection, no `ADMIN_RESET`. Account 20 is left ACTIVE as a controlled
+  WL test account for a future exhaustion/reset E2E session -- do not
+  delete it, do not give it any privilege beyond the exact WL 30d grant.
+- **Final local/origin/production HEAD: `173cb4f`.**
+
+## Previous checkpoint (ADMIN_GRANT primitive, local-only at write time)
 
 ## ADMIN_GRANT backend primitive
 
