@@ -41,6 +41,7 @@ const HUMAN_LABELS=Object.freeze({
   SUBSCRIPTION_CREDENTIAL:'Credential',OWNERSHIP_REBIND:'Владелец Telegram',
   CREATED:'Создан',CONFIRMED:'Подтверждён',ADMIN_GRANTED:'Начислен админом',
   EXTERNAL_PAYMENT:'Внешний платёж',TELEGRAM_STARS:'Telegram Stars',
+  ADMIN_GRANT:'Бесплатная выдача (ADMIN_GRANT)',
   MANUAL_PAYMENT_SRC:'Ручной платёж',SYSTEM:'Система',ADMIN:'Админ',
   ORDINARY:'Обычный rebind',COMPROMISE:'Компрометация',BASIC:'Базовый',
   BASIC_PLUS:'Базовый Плюс',BASIC_PRO:'Базовый Про',WL:'WL',

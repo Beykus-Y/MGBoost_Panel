@@ -15,6 +15,7 @@ import pytest
 
 from src.routes import admin_devices as AD
 from src.routes import admin_expiry as AE
+from src.routes import admin_grant as AG
 from src.routes import admin_ownership as AO
 from src.routes import admin_payments as AP
 from src.security import AdminSessionStore
@@ -598,6 +599,117 @@ def test_compromise_rebind_rotates_opaque_credential(db):
         "SELECT status FROM mgboost_subscription_credentials WHERE account_id=? "
         "ORDER BY generation DESC LIMIT 1", (account["id"],)).fetchone()
     assert post_old["status"] == "REVOKED" and latest["status"] == "ACTIVE"
+
+
+# ---------------------------------------------------------------------------
+# ADMIN_GRANT routes (PH7-14): create account + free plan grant
+
+
+def test_admin_grant_routes_deny_unauthenticated_and_non_primary(db):
+    h = make_handler(db, payload={"telegram_id": 900000001, "reason": "x" * 10,
+                                  "idempotency_key": "k" * 20}, authenticated=False)
+    AG.handle_admin_account_create(h)
+    assert h.status == 401
+
+    h = make_handler(db, payload={"telegram_id": 900000001, "reason": "x" * 10,
+                                  "idempotency_key": "k" * 20}, primary=False)
+    AG.handle_admin_account_create(h)
+    assert h.status == 403
+
+    account, _ = build_topology_account(db, tag="admgrant-authz")
+    h = make_handler(db, payload={"plan_code": "WL", "duration_days": 30,
+                                  "reason": "x" * 10, "idempotency_key": "k" * 20},
+                     authenticated=False)
+    AG.handle_admin_grant_apply(h, str(account["id"]))
+    assert h.status == 401
+
+    h = make_handler(db, payload={"plan_code": "WL", "duration_days": 30,
+                                  "reason": "x" * 10, "idempotency_key": "k" * 20},
+                     primary=False)
+    AG.handle_admin_grant_apply(h, str(account["id"]))
+    assert h.status == 403
+
+
+def test_admin_account_create_route_creates_and_replays_idempotently(db):
+    payload = {"telegram_id": 900000002, "reason": "support: new customer, phone order",
+              "idempotency_key": "route-create-idem-key-0001"}
+    h = make_handler(db, payload=payload)
+    AG.handle_admin_account_create(h)
+    assert h.status == 200
+    body = h.json()
+    assert body["reused"] is False
+    account_id = body["account_id"]
+
+    h2 = make_handler(db, payload=payload)
+    AG.handle_admin_account_create(h2)
+    assert h2.status == 200
+    assert h2.json()["account_id"] == account_id
+
+    assert db._conn.execute("SELECT COUNT(*) c FROM mgboost_accounts WHERE id=?",
+                            (account_id,)).fetchone()["c"] == 1
+
+
+def test_admin_account_create_route_rejects_bad_input(db):
+    h = make_handler(db, payload={"telegram_id": "not-an-int", "reason": "x" * 10,
+                                  "idempotency_key": "k" * 20})
+    AG.handle_admin_account_create(h)
+    assert h.status == 400
+
+    h = make_handler(db, payload={"telegram_id": 900000003, "reason": "short",
+                                  "idempotency_key": "k" * 20})
+    AG.handle_admin_account_create(h)
+    assert h.status == 400
+
+
+def test_admin_grant_apply_route_grants_exact_wl_terms_with_zero_financial_rows(db):
+    create_h = make_handler(db, payload={"telegram_id": 900000004,
+                                         "reason": "support: free WL trial via admin",
+                                         "idempotency_key": "route-grant-create-key-01"})
+    AG.handle_admin_account_create(create_h)
+    account_id = create_h.json()["account_id"]
+
+    # duration_days is validated against the same mgboost_plan_durations
+    # catalog (30/60 only) as every other apply_same_plan_purchase caller --
+    # ADMIN_GRANT's real difference from MANUAL_RUB is that no price is
+    # checked/charged, not duration flexibility. 60 days = 2 WL periods.
+    grant_h = make_handler(db, payload={"plan_code": "WL", "duration_days": 60,
+                                        "reason": "support: free WL trial via admin",
+                                        "idempotency_key": "route-grant-apply-key-01"})
+    AG.handle_admin_grant_apply(grant_h, str(account_id))
+    assert grant_h.status == 200
+    body = grant_h.json()
+    assert body["account_id"] == account_id
+    assert body["already_applied"] is False
+    assert len(body["wl_periods"]) == 2
+
+    term = db._conn.execute(
+        "SELECT wl_mode_snapshot,wl_quota_bytes_snapshot,duration_days FROM "
+        "mgboost_subscription_terms WHERE account_id=?", (account_id,)).fetchone()
+    assert term["wl_mode_snapshot"] == "LIMITED"
+    assert term["wl_quota_bytes_snapshot"] == 100_000_000_000
+    assert term["duration_days"] == 60
+
+    assert db._conn.execute("SELECT COUNT(*) c FROM mgboost_payment_records").fetchone()["c"] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_manual_payment_records").fetchone()["c"] == 0
+
+
+def test_admin_grant_apply_route_returns_409_on_plan_mismatch(db):
+    account, _ = build_topology_account(db, tag="admgrant-mismatch")
+    paid_wl_subscription(db, account["id"], plan="WL", days=30)
+
+    h = make_handler(db, payload={"plan_code": "EXTENDED", "duration_days": 30,
+                                  "reason": "attempted implicit plan change via admin",
+                                  "idempotency_key": "route-grant-mismatch-key-01"})
+    AG.handle_admin_grant_apply(h, str(account["id"]))
+    assert h.status == 409
+
+
+def test_admin_grant_apply_route_404s_on_unknown_account(db):
+    h = make_handler(db, payload={"plan_code": "WL", "duration_days": 30,
+                                  "reason": "x" * 10, "idempotency_key": "k" * 20})
+    AG.handle_admin_grant_apply(h, "999999")
+    assert h.status == 404
 
 
 # ---------------------------------------------------------------------------

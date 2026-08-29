@@ -87,6 +87,7 @@ from .routes.admin_devices import (
     handle_device_sync,
 )
 from .routes.admin_expiry import handle_expiry_adjustment, handle_expiry_preview
+from .routes.admin_grant import handle_admin_account_create, handle_admin_grant_apply
 from .routes.admin_ownership import handle_telegram_ownership_rebind
 from .routes.admin_routing import (
     handle_routing_host_add,
@@ -223,6 +224,11 @@ _ROUTES = [
     # OPD-39/DL-041: primary-admin Telegram ownership rebind.
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/telegram/rebind$"),
      lambda h, account_id: handle_telegram_ownership_rebind(h, account_id)),
+    # PH7-14: create a canonical DIRECT account (no grant), and ADMIN_GRANT
+    # a plan onto an existing account -- both over the existing AdminGrantStore.
+    ("POST",   re.compile(r"^/admin/accounts$"), lambda h: handle_admin_account_create(h)),
+    ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/admin-grant$"),
+     lambda h, account_id: handle_admin_grant_apply(h, account_id)),
     # PH5-12 delivery routing: live host inventory + STANDARD membership.
     ("GET",    re.compile(r"^/admin/routing/hosts$"),   lambda h: handle_routing_hosts(h)),
     ("POST",   re.compile(r"^/admin/routing/hosts/add$"),    lambda h: handle_routing_host_add(h)),

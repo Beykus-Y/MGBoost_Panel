@@ -158,6 +158,54 @@ class AdminGrantStore:
                 self._conn.rollback()
                 raise
 
+    def _resolve_or_create_account(
+        self, *, actor: str, telegram_id: int, reason: str, now: int,
+    ) -> tuple[dict, bool]:
+        """Shared create-or-reuse step for `create_account_only` and
+        `grant_new_account`: never a second account for the same
+        `telegram_id`. Returns `(account, reused)`."""
+        account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
+        if account is not None:
+            return account, True
+        account = self._accounts.create_account("DIRECT", now=now)
+        self._ensure_direct_provisioning_wiring(
+            account_id=account["id"], public_id=account["public_id"],
+            decision_ref=reason, actor=actor, now=now,
+        )
+        self._accounts.link_telegram_owner(
+            account["id"], int(telegram_id),
+            provenance=_TELEGRAM_IDENTITY_PROVENANCE, actor=actor, now=now,
+        )
+        return account, False
+
+    def create_account_only(
+        self, capability, *, telegram_id: int, reason: str,
+        idempotency_key: str, now: int | None = None,
+    ) -> dict:
+        """Create-or-reuse exactly one DIRECT account owned by `telegram_id`,
+        with the full first-device-bootstrap-capable provisioning wiring,
+        but grant NO plan. For the "create the account now, decide
+        ADMIN_GRANT vs MANUAL_RUB afterward" flow -- `ManualPaymentStore.
+        create_record` requires an existing `account_id`, and this is the
+        only public way to create one with working wiring outside a paid
+        signup. `idempotency_key` is accepted for API symmetry with the
+        grant methods but is not itself load-bearing here: `telegram_id`
+        reuse is already the real idempotency boundary (`_resolve_or_create_
+        account`), and account creation carries no engine-level replay
+        state to key on."""
+        actor = self._require_primary(capability)
+        clean_reason = _clean_reason(reason)
+        if not isinstance(idempotency_key, str) or not 16 <= len(idempotency_key) <= 512:
+            raise AdminGrantError("idempotency_key must be a string between 16 and 512 characters")
+        timestamp = int(time.time()) if now is None else int(now)
+        account, reused = self._resolve_or_create_account(
+            actor=actor, telegram_id=telegram_id, reason=clean_reason, now=timestamp,
+        )
+        return {
+            "account_id": account["id"], "account_public_id": account["public_id"],
+            "reused": reused,
+        }
+
     def repair_missing_provisioning_wiring(
         self, capability, *, account_id: int, reason: str, now: int | None = None,
     ) -> bool:
@@ -268,18 +316,9 @@ class AdminGrantStore:
         actor = self._require_primary(capability)
         clean_reason = _clean_reason(reason)
         timestamp = int(time.time()) if now is None else int(now)
-        account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
-        if account is None:
-            account = self._accounts.create_account("DIRECT", now=timestamp)
-            self._ensure_direct_provisioning_wiring(
-                account_id=account["id"], public_id=account["public_id"],
-                decision_ref=clean_reason, actor=actor, now=timestamp,
-            )
-            self._accounts.link_telegram_owner(
-                account["id"], int(telegram_id),
-                provenance=_TELEGRAM_IDENTITY_PROVENANCE,
-                actor=actor, now=timestamp,
-            )
+        account, _reused = self._resolve_or_create_account(
+            actor=actor, telegram_id=telegram_id, reason=clean_reason, now=timestamp,
+        )
         return self.grant_existing_account(
             capability, account_id=account["id"], plan_code=plan_code,
             duration_days=duration_days, reason=reason,

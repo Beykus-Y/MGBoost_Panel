@@ -370,3 +370,105 @@ def test_record_template_result_transitions_job_out_of_pending(db):
     assert job["state"] == "READY"
     assert job["attempts"] == 1
     assert job["ready_at"] == 2000
+
+
+# --- create_account_only (admin UI: create account, grant later or MANUAL_RUB) --
+
+
+def test_create_account_only_requires_primary_admin_capability(db):
+    with pytest.raises(PrimaryAdminAuthorizationError):
+        db.admin_grants.create_account_only(
+            _bad_capability(), telegram_id=222002000,
+            reason="admin UI create-only test", idempotency_key="admin-grant-test-create-000001",
+        )
+
+
+def test_create_account_only_creates_wiring_with_zero_subscription_rows(db):
+    cap = _capability(db)
+    result = db.admin_grants.create_account_only(
+        cap, telegram_id=222002111, reason="admin UI create-only test",
+        idempotency_key="admin-grant-test-create-000002", now=1000,
+    )
+    assert result["reused"] is False
+    account_id = result["account_id"]
+
+    account = db.accounts.get_account(account_id)
+    assert account["account_source"] == "DIRECT"
+    assert account["status"] == "ACTIVE"
+
+    identity = db._conn.execute(
+        "SELECT telegram_id,role,provenance FROM mgboost_telegram_identities WHERE account_id=?",
+        (account_id,),
+    ).fetchone()
+    assert tuple(identity) == (222002111, "OWNER", "ADMIN_REBIND")
+
+    alias = db._conn.execute(
+        "SELECT legacy_username,alias_role,ownership_provenance FROM "
+        "mgboost_legacy_account_aliases WHERE account_id=?", (account_id,),
+    ).fetchone()
+    assert alias["legacy_username"] == f"tpl-{result['account_public_id']}"
+    assert alias["alias_role"] == "PRIMARY"
+
+    # Zero engine activity: no subscription, no terms, no mutation, no
+    # financial rows -- this call only creates the account, nothing else.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_subscriptions WHERE account_id=?", (account_id,),
+    ).fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_entitlement_mutations WHERE account_id=?", (account_id,),
+    ).fetchone()[0] == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_payment_records").fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_manual_payment_records"
+    ).fetchone()[0] == 0
+
+
+def test_create_account_only_reuses_existing_telegram_account(db):
+    cap = _capability(db)
+    first = db.admin_grants.create_account_only(
+        cap, telegram_id=222002222, reason="admin UI create-only first call",
+        idempotency_key="admin-grant-test-create-000003", now=1000,
+    )
+    second = db.admin_grants.create_account_only(
+        cap, telegram_id=222002222, reason="admin UI create-only second call",
+        idempotency_key="admin-grant-test-create-000004", now=2000,
+    )
+    assert second["account_id"] == first["account_id"]
+    assert second["reused"] is True
+    assert db._conn.execute("SELECT COUNT(*) FROM mgboost_accounts").fetchone()[0] == 1
+
+
+def test_create_account_only_then_grant_existing_account_succeeds(db):
+    """The MANUAL_RUB flow's real dependency: create the account first, then
+    grant/sell it a plan through a SEPARATE call, and the provisioning
+    wiring created by create_account_only must not be duplicated or
+    conflict with grant_existing_account's own (no-op, already wired)
+    pass through the same helper."""
+    cap = _capability(db)
+    created = db.admin_grants.create_account_only(
+        cap, telegram_id=222002333, reason="admin UI create-only before grant",
+        idempotency_key="admin-grant-test-create-000005", now=1000,
+    )
+    granted = db.admin_grants.grant_existing_account(
+        cap, account_id=created["account_id"], plan_code="WL", duration_days=30,
+        reason="admin UI grant after create-only", idempotency_key="admin-grant-test-create-000006",
+        now=2000,
+    )
+    assert granted["account_id"] == created["account_id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_account_aliases WHERE account_id=?",
+        (created["account_id"],),
+    ).fetchone()[0] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_subscriptions WHERE account_id=?",
+        (created["account_id"],),
+    ).fetchone()[0] == 1
+
+
+def test_create_account_only_rejects_short_idempotency_key(db):
+    cap = _capability(db)
+    with pytest.raises(AdminGrantError):
+        db.admin_grants.create_account_only(
+            cap, telegram_id=222002444, reason="admin UI create-only bad key",
+            idempotency_key="short",
+        )
