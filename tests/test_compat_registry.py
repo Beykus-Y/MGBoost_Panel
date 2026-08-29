@@ -17,8 +17,30 @@ def test_case_and_whitespace_insensitive_but_still_exact():
     assert cr.classify("Happ", " 3.26.3 ", "ANDROID") == cr.SUPPORTED
 
 
-def test_same_client_unknown_version_is_unknown():
-    assert cr.classify("happ", "99.99.99", "android") == cr.UNKNOWN
+def test_newer_version_above_baseline_is_supported():
+    # happ/android's lowest vetted SUPPORTED version is 3.24.1; a newer
+    # numeric version no longer needs its own registry entry.
+    assert cr.classify("happ", "99.99.99", "android") == cr.SUPPORTED
+
+
+def test_older_version_below_baseline_is_unknown():
+    assert cr.classify("happ", "3.20.0", "android") == cr.UNKNOWN
+
+
+def test_baseline_does_not_cross_platform():
+    # incy/android's baseline (3.3.0) must not leak into incy/windows, which
+    # has no vetted evidence at all.
+    assert cr.classify("incy", "9.9.9", "windows") == cr.UNKNOWN
+
+
+def test_non_numeric_version_falls_back_to_exact_match():
+    assert cr.classify("streisand", "48-beta", "darwin") == cr.UNKNOWN
+    assert cr.classify("streisand", "48", "darwin") == cr.UNSUPPORTED_MISSING_HWID
+
+
+def test_min_supported_version_is_the_lowest_vetted_entry():
+    assert cr._MIN_SUPPORTED_VERSION[("incy", "android")] == (3, 3, 0)
+    assert cr._MIN_SUPPORTED_VERSION[("happ", "android")] == (3, 24, 1)
 
 
 def test_supported_client_wrong_platform_is_unknown():

@@ -1,7 +1,77 @@
-# AGENT_HANDOFF — ADMIN_GRANT deployed to production; no-payment WL canary (account_id=20) live end-to-end through real PH6 runtime
+# AGENT_HANDOFF — KNOWN OPEN BUG: opaque-subscription uniform 404 gives zero diagnostic signal for real support cases (account_id=21)
+
+Updated: 2026-08-29 (read-only prod support-triage session, SSH `selara_vps`
+-> `178.250.186.127`/`mgboost.ddns.net`, production HEAD `7e5691e`, no code
+or DB changes made). **This section is an addendum recording a known issue
+found via live support triage -- it does not supersede the ADMIN_GRANT/WL
+canary section below, which remains the last full status update.**
+
+## Known issue: real paying customer stuck behind the uniform 404, no way to tell why
+
+**Report:** account_id=21 (`acct_lxbcNpaB_IajwC24vVAbE77f`, telegram_id
+`8717814164`) — support (Анастасия) reported the customer gets `Http error
+404` when opening their own subscription link and cannot add the
+subscription.
+
+**Root cause, confirmed against the real production DB/logs (read-only):**
+account 21 was created via ADMIN_GRANT at 17:31:56 MSK 2026-08-29, credential
+17 issued/activated via the bot's `/newsub` at 17:41:08 (ACTIVE, not
+expired/revoked, subscription valid to 2026-09). At 17:49:37 MSK the
+customer's real device hit `https://sub.beykus.fun/<token>` and got the
+uniform-invalid `404` from `_invalid_subscription_response`
+(`src/routes/sub.py`) -- confirmed via `mgboost-sensitive-access.log` (23-byte
+body, distinct from nginx's own 146/181-byte 404 page, i.e. the request did
+reach the app). Traced the exact code path
+(`opaque_resolver.resolve_account_device`, `src/opaque_resolver.py:67`):
+`refresh_desired_state` passed (parent not expired/disabled), then
+`hwid_gate.evaluate()` (`src/hwid_gate.py:76`) denied the request *before*
+any Marzban/broker call -- confirmed zero `child.user.*` broker log lines and
+zero rows in `mgboost_device_slots`/`mgboost_device_slot_generations` for
+account_id=21 at that timestamp or since.
+
+**The actual product gap:** `hwid_gate.evaluate()` can deny for any of
+`DENY_UNSUPPORTED_CLIENT` (client/version/platform not an exact match in the
+static `src/compat_registry.py` allowlist), `DENY_MISSING_HWID` (client sent
+no HWID candidate) or `DENY_MALFORMED_HWID` (HWID candidate present but
+unusable) -- `resolve_account_device` collapses all three (plus invalid
+token, expired parent, slot-limit, cross-account HWID) into the exact same
+opaque `404` by design (PH2-01's own documented anti-oracle contract). This
+is correct for an anonymous attacker, but it also means **support has zero
+way to tell a real customer why their own valid link doesn't work** -- not
+from the response, and not from telemetry either: unlike the legacy
+`/sub/{token}` path (`_observe_compatibility_fail_open`), `opaque_resolver.py`
+never calls `compat_telemetry` at all, so `mgboost_hwid_compat_daily` has no
+row for this denial either. Confirmed no telemetry gap is specific to this
+account -- it's structural: the opaque path has no observability for any
+denied device, for any account.
+
+**2026-08-29 update from support:** customer says their client is **Incy**
+with the "send HWID" toggle already enabled. `compat_registry.py`'s only
+`SUPPORTED` Incy tuples are exactly `(incy, 2.5.2, ios)`, `(incy, 3.5.4,
+android)` and `(incy, 3.3.0, android)` -- no other Incy version or platform
+(e.g. Windows/macOS Incy, or any other Incy version) is in the allowlist, so
+even with HWID sending on, `compat_registry.classify()` returns `UNKNOWN` ->
+`DENY_UNSUPPORTED_CLIENT` for anything outside those three exact tuples. Most
+likely explanation pending confirmation of the customer's exact Incy
+version+platform. Still open: get the exact `(client, version, platform)`
+from the customer to confirm, and if it's a legitimate real client, add the
+tuple to `_REGISTRY` (git-tracked, requires `REGISTRY_VERSION` bump).
+
+**Requested product fix (owner, 2026-08-29, not yet designed/implemented):**
+for the HWID-related deny outcomes specifically (`DENY_MISSING_HWID`,
+`DENY_UNSUPPORTED_CLIENT`), replace the fully blackbox uniform `404` with an
+informative stub telling the user to switch client or enable HWID sending in
+their app -- **without** reintroducing a validity oracle for the genuinely
+security-sensitive cases (invalid/unknown/revoked/expired token,
+malformed/cross-account HWID, slot limit), which must keep returning the
+current uniform response. Needs careful design before touching
+`_invalid_subscription_response`/`resolve_account_device` -- not done in
+this session (read-only).
+
+## Previous checkpoint (ADMIN_GRANT deployed to production; no-payment WL canary, account_id=20)
 
 Updated: 2026-08-29 (production WL canary session, local/origin/production
-`173cb4f`, started at `989777a`). **This top section supersedes everything
+`173cb4f`, started at `989777a`). **This section supersedes everything
 below, including the ADMIN_GRANT-primitive section right under it (that
 section's own "local checkpoint" framing is superseded -- it IS deployed,
 see below).**

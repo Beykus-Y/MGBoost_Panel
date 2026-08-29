@@ -1,18 +1,33 @@
 """PH3-04 versioned client/version/platform compatibility registry.
 
 This is a static, git-tracked, human-reviewable allowlist -- not a database
-table and not fuzzy matching. Every entry requires an exact
-`(client, version, platform)` match against the same bounded, lowercased
-dimensions PH3-07 telemetry already normalizes (`compat_telemetry._dimension`),
-so a registry lookup and a telemetry observation always agree on the same
-normalized identity space.
+table and not fuzzy matching on client/platform. Every entry requires an
+exact `(client, version, platform)` match against the same bounded,
+lowercased dimensions PH3-07 telemetry already normalizes
+(`compat_telemetry._dimension`), so a registry lookup and a telemetry
+observation always agree on the same normalized identity space.
 
 Only `SUPPORTED` entries ever let the future PH3-04 HWID gate proceed past
-the client-compatibility check. Any tuple not present here -- including a
-newer/older version of an otherwise-supported client -- classifies as
-`UNKNOWN`, which the gate treats identically to "not compatible". This is a
-deliberate conservative allowlist: it never guesses that "one version of a
-client is fine, so every version must be fine."
+the client-compatibility check. `client` and `platform` are still exact-match
+only -- an unlisted client family, or a listed client on a platform it has no
+vetted evidence for, is always `UNKNOWN`.
+
+2026-08-29 (owner decision, following the account_id=21 support case):
+`version` is no longer exact-match-only for `SUPPORTED` entries. For each
+`(client, platform)` pair with at least one numeric-versioned `SUPPORTED`
+entry, the *lowest* vetted version is treated as a minimum-supported
+baseline (`_MIN_SUPPORTED_VERSION`, built in `_build_min_supported_versions`
+purely from existing registry evidence -- no new tuple is invented); any
+request whose numeric version parses and is `>=` that baseline also
+classifies as `SUPPORTED`, so a newer patch/minor release of an
+already-vetted client no longer needs its own registry entry. This is a
+deliberate, bounded loosening of the original "never guess a newer version
+is fine" stance: it still never guesses across client or platform
+boundaries, and a version that fails to parse as dot-separated integers (or
+is below the baseline) falls back to the old exact-match-or-`UNKNOWN`
+behavior. `UNSUPPORTED_MISSING_HWID`/`UNSUPPORTED_MALFORMED_HWID` records are
+unaffected -- they stay exact-match, since they document specific negative
+observations rather than a supported baseline.
 
 No raw HWID, UUID, subscription token, username, IP or Telegram ID belongs in
 this file, ever.
@@ -44,9 +59,10 @@ class CompatibilityRecord:
     caveat: str
 
 
-# REGISTRY_VERSION must be bumped whenever an entry is added, removed or
-# reclassified, so a diff always carries an explicit version bump.
-REGISTRY_VERSION = 1
+# REGISTRY_VERSION must be bumped whenever an entry is added, removed,
+# reclassified, or whenever the classify() lookup semantics themselves
+# change (as in the 2026-08-29 min-supported-version change below).
+REGISTRY_VERSION = 2
 
 # --- SUPPORTED: exact (client, version, platform) tuples with positive,
 # reviewed evidence that the real client actually sends a well-formed HWID
@@ -142,15 +158,61 @@ def _build_index(records) -> dict[tuple[str, str, str], CompatibilityRecord]:
 _INDEX: dict[tuple[str, str, str], CompatibilityRecord] = _build_index(_REGISTRY)
 
 
+def _parse_numeric_version(version: str) -> tuple[int, ...] | None:
+    """Dot-separated non-negative integers only (e.g. "3.26.3", "48"). Any
+    other shape (missing segment, non-digit segment, empty string) returns
+    None so the caller falls back to exact-match behavior instead of
+    guessing an ordering."""
+    parts = version.split(".")
+    if not parts or any(p == "" or not p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def _build_min_supported_versions(
+    records,
+) -> dict[tuple[str, str], tuple[int, ...]]:
+    """Lowest numeric-parseable SUPPORTED version per (client, platform),
+    derived only from evidence already in `records` -- never a new value."""
+    baselines: dict[tuple[str, str], tuple[int, ...]] = {}
+    for record in records:
+        if record.classification != SUPPORTED:
+            continue
+        parsed = _parse_numeric_version(record.version)
+        if parsed is None:
+            continue
+        key = (record.client, record.platform)
+        if key not in baselines or parsed < baselines[key]:
+            baselines[key] = parsed
+    return baselines
+
+
+_MIN_SUPPORTED_VERSION: dict[tuple[str, str], tuple[int, ...]] = (
+    _build_min_supported_versions(_REGISTRY)
+)
+
+
 def classify(client_name, client_version, platform) -> str:
-    """Exact, deterministic lookup only -- never a substring/fuzzy match."""
-    key = (
-        _dimension(client_name, maximum=64, fallback="unknown"),
-        _dimension(client_version, maximum=64, fallback="unknown"),
-        _dimension(platform, maximum=32, fallback="unknown"),
-    )
-    record = _INDEX.get(key)
-    return record.classification if record else UNKNOWN
+    """Client and platform are always exact-match. Version is exact-match
+    first; if that misses, a numeric version at or above the vetted
+    minimum-supported baseline for this (client, platform) also counts as
+    SUPPORTED -- see the module docstring. Never a substring/fuzzy match on
+    client or platform."""
+    client = _dimension(client_name, maximum=64, fallback="unknown")
+    version = _dimension(client_version, maximum=64, fallback="unknown")
+    plat = _dimension(platform, maximum=32, fallback="unknown")
+
+    record = _INDEX.get((client, version, plat))
+    if record is not None:
+        return record.classification
+
+    baseline = _MIN_SUPPORTED_VERSION.get((client, plat))
+    if baseline is not None:
+        parsed = _parse_numeric_version(version)
+        if parsed is not None and parsed >= baseline:
+            return SUPPORTED
+
+    return UNKNOWN
 
 
 def registry_snapshot() -> tuple[dict, ...]:
