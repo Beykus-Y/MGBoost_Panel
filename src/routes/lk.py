@@ -655,3 +655,80 @@ def handle_lk_mgmt_exchange(handler):
         result["session_id"],
         max_age=ttl_seconds,
     )
+
+
+_PROMO_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{8,128}$")
+
+
+def handle_lk_promo_redeem(handler):
+    """PH5-13 self-service promo redemption from the LK. Gated by the SAME
+    `_require_mgmt_session` boundary as every destructive LK action -- never
+    the bare legacy subscription token alone (possession of a legacy link is
+    not ownership proof). The acting principal is the account's canonical
+    OWNER telegram identity. The client MUST supply a stable `request_id`:
+    it is the LK-side half of the deterministic per-event idempotency key
+    (the server never mints one), so a retried request replays the same
+    redemption instead of applying the promo twice."""
+    ip = _get_real_ip(handler)
+    if not _check_rate_limit(ip):
+        _error(handler, 429, "Too many requests")
+        return
+    username = _resolve_username_from_session(handler)
+    if not username:
+        _error(handler, 400, "Missing token", reason="management_session_required")
+        return
+    if not _require_mgmt_session(handler, username):
+        return
+    account_id = _account_id_for_legacy_username(handler, username)
+    if account_id is None:
+        _error(handler, 404, "Account not found")
+        return
+    db = handler.server.db
+    owner = db._conn.execute(
+        "SELECT telegram_id FROM mgboost_telegram_identities "
+        "WHERE account_id=? AND role='OWNER' AND revoked_at IS NULL",
+        (account_id,),
+    ).fetchone()
+    if owner is None:
+        _error(handler, 404, "Account not found")
+        return
+    try:
+        body = _read_body(handler)
+        data = json.loads(body) if body else {}
+    except (ValueError, json.JSONDecodeError):
+        _error(handler, 400, "Invalid request body")
+        return
+    if not isinstance(data, dict):
+        _error(handler, 400, "Invalid request body")
+        return
+    code = str(data.get("code") or "").strip()
+    request_id = str(data.get("request_id") or "").strip()
+    if not 3 <= len(code) <= 64:
+        _error(handler, 400, "Invalid promo code")
+        return
+    if not _PROMO_REQUEST_ID_RE.fullmatch(request_id):
+        _error(handler, 400, "request_id required", reason="request_id_required")
+        return
+    telegram_id = int(owner["telegram_id"])
+    idempotency_key = f"promo-redeem-v1:lk:{telegram_id}:{request_id}"
+    from ..promo import PromoConflict, PromoError, PromoIneligible, PromoNotFound
+    try:
+        result = db.promo.redeem_for_telegram_user(
+            code=code, telegram_id=telegram_id, idempotency_key=idempotency_key,
+        )
+    except PromoNotFound:
+        _error(handler, 404, "Promo code not found or inactive")
+        return
+    except PromoConflict:
+        _error(handler, 409, "Promo code conflict", reason="already_redeemed")
+        return
+    except PromoIneligible:
+        _error(handler, 409, "Promo code not applicable", reason="ineligible")
+        return
+    except PromoError:
+        _error(handler, 400, "Promo redemption failed")
+        return
+    _json_ok(handler, {
+        "status": result["status"],
+        "already_applied": bool(result.get("already_applied")),
+    })

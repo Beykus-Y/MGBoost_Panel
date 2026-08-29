@@ -47,6 +47,7 @@ _SCHEMA_STATEMENTS = (
             )),
         trial_class TEXT
             CHECK(trial_class IS NULL OR length(trial_class) BETWEEN 1 AND 64),
+        per_user_limit INTEGER NOT NULL DEFAULT 1 CHECK(per_user_limit >= 1),
         status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED')),
         created_by_actor TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -96,8 +97,9 @@ _SCHEMA_STATEMENTS = (
         owner_telegram_id INTEGER,
         account_id INTEGER,
         status TEXT NOT NULL
-            CHECK(status IN ('PENDING_APPLY','REDEEMED','RESERVED','CANCELLED')),
+            CHECK(status IN ('PENDING_APPLY','REDEEMED','RESERVED','COMMITTED','CANCELLED')),
         reserved_until INTEGER,
+        per_user_limit_snapshot INTEGER NOT NULL DEFAULT 1 CHECK(per_user_limit_snapshot >= 1),
         applied_mutation_id INTEGER,
         idempotency_key_hash TEXT NOT NULL UNIQUE,
         request_hash TEXT NOT NULL,
@@ -122,6 +124,12 @@ _SCHEMA_STATEMENTS = (
     CREATE UNIQUE INDEX IF NOT EXISTS ux_promo_trial_class_identity
         ON mgboost_promo_redemptions(trial_class, owner_telegram_id)
         WHERE status IN ('PENDING_APPLY','REDEEMED') AND trial_class IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_promo_single_use_user
+        ON mgboost_promo_redemptions(promo_id, owner_telegram_id)
+        WHERE per_user_limit_snapshot = 1 AND status != 'CANCELLED'
+            AND owner_telegram_id IS NOT NULL
     """,
     """
     CREATE INDEX IF NOT EXISTS ix_mgboost_promo_redemptions_account
@@ -150,14 +158,16 @@ SCHEMA_CHECKSUM = hashlib.sha256(
 
 _REQUIRED_COLUMNS = {
     "mgboost_promo_definitions": {
-        "id", "code", "effect_kind", "trial_class", "status", "created_by_actor",
+        "id", "code", "effect_kind", "trial_class", "per_user_limit", "status",
+        "created_by_actor",
     },
     "mgboost_promo_versions": {
         "id", "promo_id", "version", "effect_params_json", "status",
     },
     "mgboost_promo_redemptions": {
         "id", "promo_id", "promo_version", "trial_class", "owner_telegram_id",
-        "account_id", "status", "reserved_until", "applied_mutation_id",
+        "account_id", "status", "reserved_until", "per_user_limit_snapshot",
+        "applied_mutation_id",
         "idempotency_key_hash", "request_hash", "row_version",
     },
     "mgboost_manual_payment_records": {
@@ -169,6 +179,7 @@ _REQUIRED_COLUMNS = {
 _REQUIRED_OBJECTS = {
     "ux_mgboost_promo_active_version",
     "ux_promo_trial_class_identity",
+    "ux_promo_single_use_user",
     "ix_mgboost_promo_redemptions_account",
 }
 

@@ -17,6 +17,37 @@
 
 ### Added
 
+- PH5-13 Promo codes v1, self-service redemption slice (implemented locally,
+  NO push/deploy): новый user-scoped `PromoStore.redeem_for_telegram_user`
+  (без primary-admin capability — действующий принципал это PROVEN Telegram
+  OWNER identity; только существующие аккаунты, только эффекты через
+  `append_promo_wl_period`: TRIAL_GRANT и EXTEND на WL/LIMITED; STANDARD/NONE
+  продление и авто-создание аккаунта остаются support-флоу); ingress — кнопка
+  «🎟 Ввести промокод» и FSM-флоу в боте, `POST /lk/api/promo/redeem` в ЛК
+  (гейт `_require_mgmt_session`, обязательный клиентский `request_id`).
+  Идемпотентность детерминирована событием: бот —
+  `promo-redeem-v1:{chat_id}:{message_id}` (повторная доставка Telegram
+  реплеит ту же redemption), ЛК — `promo-redeem-v1:lk:{tg}:{request_id}`;
+  сервер никогда не генерирует ключ сам.
+- `per_user_limit` на promo definitions (снимок `per_user_limit_snapshot` в
+  redemptions): повторное применение single-use кода тем же пользователем —
+  `PromoConflict`; race-backstop — partial unique index
+  `ux_promo_single_use_user` (SQLite-индекс без JOIN, снимок в строке).
+
+### Fixed
+
+- (retro за 7697b0c) Якорь промо WL-периода
+  `max(MAX(wl_periods.ends_at), subscription.current_expiry, now)` — промо
+  больше не может воткнуть период внутрь уже оплаченного срока после
+  расхождения от ADMIN_EXPIRY_ADJUSTMENT; PlanMismatch-исключение для
+  истёкшего бесплатного плана сужено строго до `plan_code == 'WL_TRIAL'`.
+- Схема PH5-13 расширена ДО деплоя (миграция ещё не применялась в проде):
+  `per_user_limit`/`per_user_limit_snapshot`, статус `COMMITTED` задел под
+  PURCHASE_DISCOUNT slice.
+
+
+### Added
+
 - Commercial WL wiring (2026-08-28, implemented locally, checkpoint only —
   NO push/deploy, реальная покупка не выполнялась): тарифы WL 199/349⭐,
   Расширенный 249/399⭐ и Семейный 299/449⭐ (30/60 дней, device limit

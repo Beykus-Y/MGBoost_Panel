@@ -141,11 +141,15 @@ class PromoStore:
 
     def create_definition(
         self, capability, *, code: str, effect_kind: str, trial_class: str | None,
-        effect_params: dict, reason: str, idempotency_key: str, now: int | None = None,
+        effect_params: dict, reason: str, idempotency_key: str,
+        per_user_limit: int = 1, now: int | None = None,
     ) -> dict:
         actor = self._require_primary(capability)
         clean_reason = _clean_reason(reason)
         clean_code = _clean_code(code)
+        if isinstance(per_user_limit, bool) or not isinstance(per_user_limit, int) \
+                or per_user_limit < 1:
+            raise PromoError("per_user_limit must be a positive integer")
         if effect_kind not in EFFECT_KINDS:
             raise PromoError(f"unknown effect_kind {effect_kind!r}")
         if effect_kind == "TRIAL_GRANT":
@@ -168,9 +172,11 @@ class PromoStore:
                     raise PromoConflict(f"promo code {clean_code!r} already exists")
                 cursor = self._conn.execute(
                     "INSERT INTO mgboost_promo_definitions "
-                    "(code,effect_kind,trial_class,status,created_by_actor,created_at,updated_at) "
-                    "VALUES (?,?,?,'ACTIVE',?,?,?)",
-                    (clean_code, effect_kind, trial_class, actor, timestamp, timestamp),
+                    "(code,effect_kind,trial_class,per_user_limit,status,"
+                    "created_by_actor,created_at,updated_at) "
+                    "VALUES (?,?,?,?,'ACTIVE',?,?,?)",
+                    (clean_code, effect_kind, trial_class, per_user_limit,
+                     actor, timestamp, timestamp),
                 )
                 promo_id = cursor.lastrowid
                 self._conn.execute(
@@ -261,7 +267,50 @@ class PromoStore:
         self, capability, *, code: str, telegram_id: int, reason: str,
         idempotency_key: str, now: int | None = None,
     ) -> dict:
+        """Support/admin-driven redemption (full primary-admin capability).
+        Unlike `redeem_for_telegram_user` this path may bootstrap a fresh
+        account for TRIAL_GRANT and may EXTEND a non-WL (STANDARD/NONE)
+        plan via `subscription_admin_ops.apply_adjustment`."""
         actor = self._require_primary(capability)
+        return self._redeem(
+            capability=capability,
+            code=code, telegram_id=telegram_id, reason=reason,
+            idempotency_key=idempotency_key, now=now,
+            actor_type=ACTOR_TYPE, actor_ref=actor, self_service=False,
+        )
+
+    def redeem_for_telegram_user(
+        self, *, code: str, telegram_id: int, idempotency_key: str,
+        now: int | None = None,
+    ) -> dict:
+        """PH5-13 user self-service redemption (bot / LK ingress). NO admin
+        capability is involved: the acting principal IS the proven Telegram
+        OWNER identity (`mgboost_telegram_identities`, the same canonical
+        lookup the Stars/`/newsub` flows trust), carried in by the
+        Telegram-authenticated transport -- eligibility is enforced by the
+        promo rules (ACTIVE code, trial-class uniqueness, account state),
+        not by an admin session. Deliberately narrower than the admin path:
+        the account must already exist (no bootstrap creation) and only
+        effects routed through `append_promo_wl_period` are reachable
+        (TRIAL_GRANT; EXTEND_SUBSCRIPTION on a WL/LIMITED plan). A
+        STANDARD/NONE-plan EXTEND needs the support flow
+        (`redeem_extend_or_trial`)."""
+        if isinstance(telegram_id, bool) or not isinstance(telegram_id, int) or telegram_id <= 0:
+            raise PromoError("telegram_id must be a positive integer")
+        return self._redeem(
+            capability=None,
+            code=code, telegram_id=telegram_id,
+            reason="telegram user self-service promo redemption",
+            idempotency_key=idempotency_key, now=now,
+            actor_type="TELEGRAM_USER", actor_ref=f"telegram:{telegram_id}",
+            self_service=True,
+        )
+
+    def _redeem(
+        self, *, capability, code: str, telegram_id: int, reason: str,
+        idempotency_key: str, now: int | None, actor_type: str, actor_ref: str,
+        self_service: bool,
+    ) -> dict:
         clean_reason = _clean_reason(reason)
         clean_code = _clean_code(code)
         if isinstance(telegram_id, bool) or not isinstance(telegram_id, int) or telegram_id <= 0:
@@ -326,6 +375,7 @@ class PromoStore:
             # already-created account, never a duplicate.
             account_id, trial_class, owner_telegram_id = self._resolve_redemption_target(
                 capability=capability, definition=definition, telegram_id=telegram_id,
+                self_service=self_service,
                 reason=clean_reason, idem_hash=idem_hash, timestamp=timestamp,
             )
             if definition["effect_kind"] == "TRIAL_GRANT":
@@ -340,6 +390,21 @@ class PromoStore:
                         f"trial_class {trial_class!r} already redeemed by this "
                         "Telegram identity"
                     )
+            # Per-user limit (admin path included -- a single-use code is
+            # single-use for support too). The partial unique index
+            # `ux_promo_single_use_user` is the concurrency backstop for the
+            # per_user_limit=1 case; this count check handles limits > 1.
+            per_user_limit = int(definition["per_user_limit"])
+            prior = self._conn.execute(
+                "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
+                "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
+                (definition["id"], owner_telegram_id),
+            ).fetchone()["c"]
+            if prior >= per_user_limit:
+                raise PromoConflict(
+                    "promo code has already been redeemed the maximum number "
+                    "of times by this Telegram identity"
+                )
 
             # --- Phase 1: durable intent, own transaction, committed
             # before any effect mutation (crash-consistency -- see module
@@ -350,12 +415,13 @@ class PromoStore:
                     cursor = self._conn.execute(
                         "INSERT INTO mgboost_promo_redemptions "
                         "(promo_id,promo_version,trial_class,owner_telegram_id,account_id,"
-                        "status,idempotency_key_hash,request_hash,actor_type,actor_ref,reason,"
+                        "status,reserved_until,per_user_limit_snapshot,"
+                        "idempotency_key_hash,request_hash,actor_type,actor_ref,reason,"
                         "created_at,updated_at) "
-                        "VALUES (?,?,?,?,?,'PENDING_APPLY',?,?,?,?,?,?,?)",
+                        "VALUES (?,?,?,?,?,'PENDING_APPLY',NULL,?,?,?,?,?,?,?,?)",
                         (definition["id"], version_row["version"], trial_class, owner_telegram_id,
-                         account_id, idem_hash, request_hash, ACTOR_TYPE, actor, clean_reason,
-                         timestamp, timestamp),
+                         account_id, per_user_limit, idem_hash, request_hash, actor_type,
+                         actor_ref, clean_reason, timestamp, timestamp),
                     )
                     redemption_id = cursor.lastrowid
                     self._conn.commit()
@@ -373,7 +439,8 @@ class PromoStore:
         effect_idem_key = f"promo-redemption-v1:{redemption_id:012d}"
         effect_result = self._apply_effect(
             capability=capability, definition=definition, effect_params=effect_params,
-            account_id=account_id, actor=actor, reason=clean_reason,
+            account_id=account_id, self_service=self_service, actor_type=actor_type,
+            actor=actor_ref, reason=clean_reason,
             idempotency_key=effect_idem_key, now=timestamp,
         )
 
@@ -393,16 +460,24 @@ class PromoStore:
         }
 
     def _resolve_redemption_target(
-        self, *, capability, definition, telegram_id, reason, idem_hash, timestamp,
+        self, *, capability, definition, telegram_id, self_service, reason,
+        idem_hash, timestamp,
     ) -> tuple[int, str | None, int]:
         """Resolves account_id + (trial_class, owner_telegram_id) snapshot
         for a NEW redemption (never called on replay). TRIAL_GRANT may
         create the account (reuses the public, already-reviewed
         `AdminGrantStore.create_account_only` -- no duplicated bootstrap
-        wiring); EXTEND_SUBSCRIPTION requires an existing account."""
+        wiring) EXCEPT on the self-service path, where the account must
+        already exist (no admin capability to authorize the bootstrap);
+        EXTEND_SUBSCRIPTION requires an existing account."""
         account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
         if definition["effect_kind"] == "TRIAL_GRANT":
             if account is None:
+                if self_service:
+                    raise PromoNotFound(
+                        f"no active account for telegram_id={telegram_id}; a self-service "
+                        "TRIAL_GRANT requires an existing account -- contact support"
+                    )
                 created = self._admin_grants.create_account_only(
                     capability, telegram_id=telegram_id, reason=reason,
                     idempotency_key=f"promo-trial-account-v1:{idem_hash[:40]}", now=timestamp,
@@ -428,8 +503,8 @@ class PromoStore:
         return account["id"], None, int(telegram_id)
 
     def _apply_effect(
-        self, *, capability, definition, effect_params, account_id, actor, reason,
-        idempotency_key, now,
+        self, *, capability, definition, effect_params, account_id, self_service,
+        actor_type, actor, reason, idempotency_key, now,
     ) -> dict:
         days = int(effect_params["days"])
         if definition["effect_kind"] == "TRIAL_GRANT":
@@ -440,7 +515,7 @@ class PromoStore:
                 account_id=account_id, days=days, quota_bytes=quota_bytes,
                 operation="PROMO_TRIAL_GRANT", plan_version_id=plan_version_id,
                 mutation_source=MUTATION_SOURCE, payment_channel=PAYMENT_CHANNEL,
-                actor_type=ACTOR_TYPE, actor_ref=actor, reason=reason,
+                actor_type=actor_type, actor_ref=actor, reason=reason,
                 idempotency_key=idempotency_key, now=now,
             )
         # EXTEND_SUBSCRIPTION
@@ -456,7 +531,7 @@ class PromoStore:
                     account_id=account_id, days=days, quota_bytes=quota_bytes,
                     operation="PROMO_EXTEND_WL_PERIOD", plan_version_id=None,
                     mutation_source=MUTATION_SOURCE, payment_channel=PAYMENT_CHANNEL,
-                    actor_type=ACTOR_TYPE, actor_ref=actor, reason=reason,
+                    actor_type=actor_type, actor_ref=actor, reason=reason,
                     idempotency_key=idempotency_key, now=now,
                 )
             except RenewalError as exc:
@@ -464,6 +539,13 @@ class PromoStore:
         # STANDARD/NONE: reuse the existing, already-reviewed PH7-01 writer
         # unchanged -- it never touches WL periods, exactly right for a
         # non-WL plan (DL-060: "STANDARD/NONE — обычное продление expiry").
+        # Admin-capability-gated, therefore unreachable on the self-service
+        # path by construction (checked, not assumed).
+        if self_service:
+            raise PromoIneligible(
+                "self-service promo EXTEND requires a WL/LIMITED plan -- "
+                "contact support for a non-WL extension"
+            )
         result = self._subscription_admin_ops.apply_adjustment(
             capability, account_id=account_id, adjustment_kind="EXTEND_DAYS", value=days,
             reason=reason, idempotency_key=idempotency_key, now=now,

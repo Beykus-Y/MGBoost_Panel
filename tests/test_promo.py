@@ -397,3 +397,102 @@ def test_idempotency_key_reused_with_different_request_conflicts(db):
             cap, code="CONFLICTTEST", telegram_id=910000002, reason="a completely different reason",
             idempotency_key="promo-reuse-key-000000000001", now=3_000,
         )
+
+
+# --- self-service user redemption (bot / LK ingress, no admin capability) -----
+
+
+def test_user_redeem_extends_wl_subscription_without_any_admin_capability(db):
+    _define(db, _capability(db), code="USERWL7", effect_kind="EXTEND_SUBSCRIPTION",
+           effect_params={"days": 7})
+    account, base = _wl_account(db, telegram_id=920000001, now=1_000)
+
+    result = db.promo.redeem_for_telegram_user(
+        code="userwl7", telegram_id=920000001,
+        idempotency_key="promo-redeem-v1:920000001:11111", now=2_000,
+    )
+    assert result["status"] == "REDEEMED"
+    period = result["effect_result"]["wl_periods"][0]
+    assert period["starts_at"] == base["wl_periods"][0]["ends_at"]
+    row = db._conn.execute(
+        "SELECT actor_type,actor_ref FROM mgboost_promo_redemptions WHERE id=?",
+        (result["redemption_id"],),
+    ).fetchone()
+    assert row["actor_type"] == "TELEGRAM_USER"
+    assert row["actor_ref"] == "telegram:920000001"
+
+
+def test_user_redeem_replays_same_idempotency_key_and_never_applies_twice(db):
+    """The Telegram/LK transports may redeliver the SAME event; the
+    deterministic (chat_id, message_id)-derived key must replay the original
+    redemption, never grant a second period."""
+    _define(db, _capability(db), code="USERREPLAY", effect_kind="EXTEND_SUBSCRIPTION",
+           effect_params={"days": 7})
+    account, _base = _wl_account(db, telegram_id=920000002, now=1_000)
+    key = "promo-redeem-v1:920000002:22222"
+
+    first = db.promo.redeem_for_telegram_user(
+        code="USERREPLAY", telegram_id=920000002, idempotency_key=key, now=2_000,
+    )
+    second = db.promo.redeem_for_telegram_user(
+        code="USERREPLAY", telegram_id=920000002, idempotency_key=key, now=3_000,
+    )
+    assert second["already_applied"] is True
+    assert second["redemption_id"] == first["redemption_id"]
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_wl_periods WHERE account_id=?", (account["id"],),
+    ).fetchone()["c"] == 2  # base + exactly one promo period
+
+
+def test_user_redeem_trial_requires_existing_account_no_bootstrap(db):
+    """Self-service TRIAL_GRANT must not auto-create accounts -- that path
+    routes through the admin-capability-gated AdminGrantStore bootstrap."""
+    _define(db, _capability(db), code="USERTRY", effect_kind="TRIAL_GRANT",
+           trial_class="WL_TRIAL", effect_params={"days": 1})
+    with pytest.raises(PromoNotFound):
+        db.promo.redeem_for_telegram_user(
+            code="USERTRY", telegram_id=930000001,
+            idempotency_key="promo-redeem-v1:930000001:33333", now=1_000,
+        )
+    assert db._conn.execute("SELECT COUNT(*) c FROM mgboost_accounts").fetchone()["c"] == 0
+
+
+def test_user_redeem_trial_for_existing_inactive_subscription_identity(db):
+    _define(db, _capability(db), code="USERTRY2", effect_kind="TRIAL_GRANT",
+           trial_class="WL_TRIAL", effect_params={"days": 1})
+    account = db.accounts.create_account("DIRECT", now=1)
+    db.accounts.link_telegram_owner(account["id"], 930000002, provenance="ADMIN_REBIND",
+                                    actor="test", now=1)
+    result = db.promo.redeem_for_telegram_user(
+        code="USERTRY2", telegram_id=930000002,
+        idempotency_key="promo-redeem-v1:930000002:44444", now=1_000,
+    )
+    assert result["status"] == "REDEEMED"
+    entitlement = db.entitlements.calculate(account_id=result["account_id"], now=1_000)
+    assert entitlement["plan"]["code"] == "WL_TRIAL"
+
+
+def test_user_redeem_standard_plan_extend_is_ineligible_needs_support_flow(db):
+    _define(db, _capability(db), code="USERBASIC7", effect_kind="EXTEND_SUBSCRIPTION",
+           effect_params={"days": 7})
+    account = db.accounts.create_account("DIRECT", now=1)
+    db.accounts.link_telegram_owner(account["id"], 920000003, provenance="ADMIN_REBIND",
+                                    actor="test", now=1)
+    db.subscription_renewal.apply_same_plan_purchase(
+        account_id=account["id"], plan_code="BASIC", duration_days=30,
+        payment_channel="TELEGRAM_STARS", mutation_source="DIRECT_PURCHASE",
+        actor_type="TELEGRAM_USER", idempotency_key="promo-user-basic-base-01", now=1_000,
+    )
+    with pytest.raises(PromoIneligible):
+        db.promo.redeem_for_telegram_user(
+            code="USERBASIC7", telegram_id=920000003,
+            idempotency_key="promo-redeem-v1:920000003:55555", now=2_000,
+        )
+
+
+def test_user_redeem_rejects_invalid_telegram_id(db):
+    with pytest.raises(PromoError):
+        db.promo.redeem_for_telegram_user(
+            code="ANYCODE", telegram_id=-1,
+            idempotency_key="promo-redeem-v1:-1:666666666", now=1_000,
+        )

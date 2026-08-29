@@ -398,12 +398,13 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         waiting_link = State()
         in_dialog = State()
         waiting_human = State()
+        waiting_promo_code = State()
 
     def kb_main():
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")],
-                [KeyboardButton(text="🔧 Управление устройствами")],
+                [KeyboardButton(text="🔧 Управление устройствами"), KeyboardButton(text="🎟 Ввести промокод")],
                 [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="⭐️ Продлить подписку")],
             ],
             resize_keyboard=True,
@@ -1226,6 +1227,76 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return
 
         await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
+
+    @dp.message(SupportStates.in_dialog, F.text == "🎟 Ввести промокод")
+    async def msg_promo_menu(message: Message, state: FSMContext):
+        """PH5-13 self-service promo redemption entry. Any later duplicate
+        delivery of the SAME code message replays idempotently in
+        `_promo_redeem_message` via the (chat_id, message_id) key -- the
+        state machine here is UX only, never the race-safety mechanism."""
+        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+        if account is None:
+            await message.answer(
+                "Промокоды применяются к подтверждённому аккаунту. "
+                "Если вы уже наш клиент — обратитесь к администратору."
+            )
+            return
+        await state.set_state(SupportStates.waiting_promo_code)
+        await message.answer(
+            "Введите промокод одним сообщением:",
+            reply_markup=kb_waiting(),
+        )
+
+    @dp.message(SupportStates.waiting_promo_code)
+    async def _promo_redeem_message(message: Message, state: FSMContext):
+        if message.text == "⬅️ Назад к боту":
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("Вернулись в диалог с ботом.", reply_markup=kb_main())
+            return
+        code = (message.text or "").strip()
+        if not code:
+            await message.answer("Отправьте промокод текстом одним сообщением.")
+            return
+        # Deterministic per-event idempotency: Telegram redelivers the same
+        # update with the same (chat_id, message_id), so a retry/timeout
+        # replays the SAME redemption instead of applying the promo twice.
+        # Deliberately NOT a random UUID -- that would defeat replay safety.
+        idempotency_key = f"promo-redeem-v1:{message.chat.id}:{message.message_id}"
+        from .promo import PromoConflict, PromoError, PromoIneligible, PromoNotFound
+        try:
+            result = await _run_sync(lambda: db.promo.redeem_for_telegram_user(
+                code=code, telegram_id=message.from_user.id,
+                idempotency_key=idempotency_key,
+            ))
+        except PromoNotFound:
+            await message.answer("❌ Промокод не найден или больше не активен. Попробуйте другой.")
+            return
+        except PromoConflict:
+            await message.answer("⚠️ Этот промокод уже был применён ранее.")
+            return
+        except PromoIneligible:
+            await message.answer("❌ Промокод неприменим к вашему аккаунту. Уточните условия у поддержки.")
+            return
+        except PromoError:
+            await message.answer("❌ Не удалось применить промокод. Попробуйте позже или обратитесь к поддержке.")
+            return
+        except Exception:
+            logger.exception("promo redeem failed")
+            await message.answer("❌ Не удалось применить промокод. Попробуйте позже.")
+            return
+        effect = result.get("effect_result") or {}
+        days = effect.get("days")
+        if result.get("already_applied"):
+            text = "ℹ️ Этот промокод уже был применён к вашему аккаунту."
+        elif days:
+            text = f"✅ Промокод применён: +{days} дн."
+            new_expiry = effect.get("new_expiry")
+            if new_expiry:
+                text += f"\nПодписка действует до {time.strftime('%d.%m.%Y %H:%M UTC', time.gmtime(int(new_expiry)))}."
+        else:
+            text = "✅ Промокод применён."
+        await state.set_state(SupportStates.in_dialog)
+        await message.answer(text, reply_markup=kb_main())
 
     @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
     async def msg_call_human(message: Message, state: FSMContext):

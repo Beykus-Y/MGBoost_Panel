@@ -121,6 +121,7 @@ from .routes.lk import (
     handle_lk_opaque_subscription_issue,
     handle_lk_opaque_subscription_status,
     handle_lk_page,
+    handle_lk_promo_redeem,
     handle_lk_usage,
 )
 from .routes.opaque_sub import handle_opaque_sub
@@ -141,6 +142,7 @@ _ROUTES = [
     ("PATCH",  re.compile(r"^/lk/api/devices/(?P<device_id>\d+)$"), lambda h, device_id: handle_lk_device_rename(h, device_id)),
     ("GET",    re.compile(r"^/lk/api/opaque-subscription$"),    lambda h: handle_lk_opaque_subscription_status(h)),
     ("POST",   re.compile(r"^/lk/api/opaque-subscription/issue$"), lambda h: handle_lk_opaque_subscription_issue(h)),
+    ("POST",   re.compile(r"^/lk/api/promo/redeem$"),              lambda h: handle_lk_promo_redeem(h)),
     ("GET",    re.compile(r"^/(?:.*?/)?assets/(?P<path>.+)$"),  lambda h, path: handle_static_asset(h, path)),
     ("GET",    re.compile(r"^/sub/(?P<token>[^/]+)$"),         lambda h, token: handle_sub(h, token)),
     ("POST",   re.compile(r"^/admin/session/login$"),          lambda h: handle_admin_session_login(h)),
