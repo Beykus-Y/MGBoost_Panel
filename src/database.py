@@ -20,7 +20,8 @@ from .commercial_signup import CommercialSignupStore
 from .commercial_signup_schema import apply_commercial_signup_schema
 from .admin_grant_schema import apply_admin_grant_schema
 from .promo_schema import apply_promo_schema
-from .promo import PromoStore
+from .promo_schema_v2 import apply_promo_schema_v2
+from .promo import PromoStore, ensure_wl_trial_plan_version
 from .delivery_routing import DeliveryRoutingStore
 from .delivery_routing_schema import apply_delivery_routing_schema
 from .account_store import AccountStore
@@ -145,6 +146,9 @@ class Database:
             else None
         )
         self.accounts = AccountStore(self._conn, self._lock)
+        # PH5-13 bootstrap is idempotent and verifies the exact declared
+        # trial shape, so TRIAL_GRANT never relies on a forgotten manual seed.
+        ensure_wl_trial_plan_version(self.accounts)
         self.device_slots = DeviceSlotStore(self._conn, self._lock)
         self.primary_admin_authority = PrimaryAdminAuthority(
             PRIMARY_MGBOOST_ADMIN_ACTOR_ID, PRIMARY_MGBOOST_ADMIN_LOGIN
@@ -489,6 +493,7 @@ class Database:
         apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
         apply_promo_schema(self._conn)
+        apply_promo_schema_v2(self._conn)
         apply_subscription_credential_schema(self._conn)
         apply_legacy_bridge_schema(self._conn)
         apply_ownership_rebind_schema(self._conn)

@@ -1225,15 +1225,20 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await call.message.answer("Неверный тариф.")
             return
         try:
+            state_data = await state.get_data() if hasattr(state, "get_data") else {}
+            promo_reservation_id = state_data.get("promo_reservation_id")
             invoice = db.stars_purchases.create_invoice(
                 telegram_id=call.from_user.id, plan_code=plan_code, duration_days=duration_days,
                 ttl_seconds=3600,
+                promo_redemption_id=promo_reservation_id,
             )
         except Exception as exc:
             logger.info("Canonical Stars invoice rejected: %s", type(exc).__name__)
             await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
             return
 
+        if promo_reservation_id is not None and hasattr(state, "update_data"):
+            await state.update_data(promo_reservation_id=None)
         await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
 
     @dp.message(SupportStates.in_dialog, F.text == "🎟 Ввести промокод")
@@ -1267,13 +1272,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 ttl_seconds=3600, idempotency_key=reservation_id,
             ))
         except PromoNotFound:
-            await message.answer("❌ Промокод не найден или не применим. Попробуйте другой.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Промокод не найден или не применим. Попробуйте другой.", reply_markup=kb_main())
             return
         except PromoConflict:
-            await message.answer("⚠️ Этот промокод уже был использован вами ранее.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("⚠️ Этот промокод уже был использован вами ранее.", reply_markup=kb_main())
             return
         except (PromoIneligible, PromoError):
-            await message.answer("❌ Не удалось применить промокод. Обратитесь к поддержке.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Не удалось применить промокод. Обратитесь к поддержке.", reply_markup=kb_main())
             return
         await state.update_data(promo_reservation_id=result["redemption_id"])
         await state.set_state(SupportStates.in_dialog)
@@ -1309,20 +1317,25 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 idempotency_key=idempotency_key,
             ))
         except PromoNotFound:
-            await message.answer("❌ Промокод не найден или больше не активен. Попробуйте другой.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Промокод не найден или больше не активен. Попробуйте другой.", reply_markup=kb_main())
             return
         except PromoConflict:
-            await message.answer("⚠️ Этот промокод уже был применён ранее.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("⚠️ Этот промокод уже был применён ранее.", reply_markup=kb_main())
             return
         except PromoIneligible:
-            await message.answer("❌ Промокод неприменим к вашему аккаунту. Уточните условия у поддержки.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Промокод неприменим к вашему аккаунту. Уточните условия у поддержки.", reply_markup=kb_main())
             return
         except PromoError:
-            await message.answer("❌ Не удалось применить промокод. Попробуйте позже или обратитесь к поддержке.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Не удалось применить промокод. Попробуйте позже или обратитесь к поддержке.", reply_markup=kb_main())
             return
         except Exception:
             logger.exception("promo redeem failed")
-            await message.answer("❌ Не удалось применить промокод. Попробуйте позже.")
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("❌ Не удалось применить промокод. Попробуйте позже.", reply_markup=kb_main())
             return
         effect = result.get("effect_result") or {}
         days = effect.get("days")

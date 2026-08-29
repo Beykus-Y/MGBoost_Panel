@@ -1,9 +1,10 @@
 """PH5-13 promo codes: EXTEND_SUBSCRIPTION and TRIAL_GRANT effects.
 
-`PURCHASE_DISCOUNT` (reservation/redemption against a manual-RUB payment)
-is a separate, not-yet-built slice -- `create_definition` accepts the
-`effect_kind` for forward-compatibility, but `redeem_extend_or_trial`
-only ever handles `EXTEND_SUBSCRIPTION`/`TRIAL_GRANT`.
+`PURCHASE_DISCOUNT` is deliberately **TELEGRAM_STARS-only in v1**. Its
+reservation/invoice lifecycle lives in ``StarsPurchaseStore``; there is no
+MANUAL_RUB binding or discount accounting path, so no caller may represent a
+manual payment as promo-discounted. ``redeem_extend_or_trial`` only ever
+handles ``EXTEND_SUBSCRIPTION``/``TRIAL_GRANT``.
 
 Design invariants (owner-reviewed, see ROADMAP.md DL-060/DL-061 and the
 plan this module implements):
@@ -125,11 +126,12 @@ def _discount_from_effect_params(effect_params: dict, catalog_price: int) -> int
     minor = effect_params.get("discount_minor")
     if (percent is None) == (minor is None):
         raise PromoError("exactly one of discount_percent/discount_minor is required")
+    if isinstance(catalog_price, bool) or not isinstance(catalog_price, int):
+        raise PromoError("catalog_price must be an integer")
     if percent is not None:
         if isinstance(percent, bool) or not isinstance(percent, int) or not 1 <= percent <= 100:
             raise PromoError("discount_percent must be an integer between 1 and 100")
-        return max(1, int(catalog_price) - int(catalog_price) * percent // 100) \
-            if catalog_price > 1 else int(catalog_price)
+        return max(1, catalog_price - catalog_price * percent // 100)
     if isinstance(minor, bool) or not isinstance(minor, int) or minor <= 0:
         raise PromoError("discount_minor must be a positive integer")
     return max(1, int(catalog_price) - int(minor))
@@ -140,7 +142,12 @@ class _RedemptionTxMixin:
     inheritance-free composition: these methods assume the caller already
     holds `self._lock` AND an open BEGIN IMMEDIATE on `self._conn`."""
 
-    def _reservation_row_locked(self, redemption_id: int):
+    def purchase_reservation_locked(self, redemption_id: int):
+        """Public transaction-bound interface for payment adapters.
+
+        The caller must hold this store's shared lock and have an active
+        ``BEGIN IMMEDIATE`` on the shared connection.
+        """
         return self._conn.execute(
             "SELECT r.*,v.effect_params_json,d.effect_kind "
             "FROM mgboost_promo_redemptions r "
@@ -149,13 +156,13 @@ class _RedemptionTxMixin:
             "WHERE r.id=?", (int(redemption_id),),
         ).fetchone()
 
-    def bind_reservation_locked(self, *, redemption_id: int, telegram_id: int,
-                                bound_kind: str, bound_invoice_id: int, now: int) -> dict:
+    def bind_purchase_reservation_locked(self, *, redemption_id: int, telegram_id: int,
+                                         bound_kind: str, bound_invoice_id: int, now: int) -> dict:
         """Bind a live RESERVED purchase reservation to a specific invoice,
         inside the invoice's own create transaction. The reservation stays
         RESERVED -- binding only fixes its invoice; TTL cleanup stops
         touching it while that invoice is alive and payable."""
-        row = self._reservation_row_locked(int(redemption_id))
+        row = self.purchase_reservation_locked(int(redemption_id))
         if row is None or row["effect_kind"] != "PURCHASE_DISCOUNT":
             raise PromoNotFound("no such purchase reservation")
         if int(row["owner_telegram_id"] or -1) != int(telegram_id):
@@ -172,7 +179,7 @@ class _RedemptionTxMixin:
         return {"effect_params": json.loads(row["effect_params_json"]),
                 "reserved_until": row["reserved_until"]}
 
-    def commit_reservation_locked(self, *, redemption_id: int, invoice_id: int, now: int) -> None:
+    def commit_purchase_reservation_locked(self, *, redemption_id: int, invoice_id: int, now: int) -> None:
         """pre_checkout acceptance gate: CAS RESERVED->COMMITTED. Failure
         means the reservation was cancelled (cleanup raced ahead of the
         delayed checkout) -- the caller must reject the checkout so no money
@@ -186,7 +193,7 @@ class _RedemptionTxMixin:
         if updated.rowcount != 1:
             raise PromoConflict("reservation is no longer valid for checkout")
 
-    def redeem_reservation_locked(self, *, redemption_id: int, invoice_id: int, now: int) -> None:
+    def redeem_purchase_reservation_locked(self, *, redemption_id: int, invoice_id: int, now: int) -> None:
         """Payment-capture gate: CAS -> REDEEMED inside the capture
         transaction. Zero rows aborts the caller's transaction (one payment
         == one redemption). A late successful_payment on a CANCELLED
@@ -327,12 +334,17 @@ class PromoStore(_RedemptionTxMixin):
         clean_code = _clean_code(code)
         timestamp = int(time.time()) if now is None else int(now)
         with self._lock:
-            updated = self._conn.execute(
-                "UPDATE mgboost_promo_definitions SET status='DISABLED',updated_at=? "
-                "WHERE code=? AND status='ACTIVE'",
-                (timestamp, clean_code),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                updated = self._conn.execute(
+                    "UPDATE mgboost_promo_definitions SET status='DISABLED',updated_at=? "
+                    "WHERE code=? AND status='ACTIVE'",
+                    (timestamp, clean_code),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         if updated.rowcount != 1:
             raise PromoNotFound(f"no ACTIVE promo code {clean_code!r} to disable")
         return {"code": clean_code, "status": "DISABLED"}
@@ -516,28 +528,26 @@ class PromoStore(_RedemptionTxMixin):
                         f"trial_class {trial_class!r} already redeemed by this "
                         "Telegram identity"
                     )
-            # Per-user limit (admin path included -- a single-use code is
-            # single-use for support too). The partial unique index
-            # `ux_promo_single_use_user` is the concurrency backstop for the
-            # per_user_limit=1 case; this count check handles limits > 1.
+            # The count is intentionally made inside the write transaction
+            # below. BEGIN IMMEDIATE serializes this check and insertion in
+            # every local worker and across SQLite processes.
             per_user_limit = int(definition["per_user_limit"])
-            prior = self._conn.execute(
-                "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
-                "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
-                (definition["id"], owner_telegram_id),
-            ).fetchone()["c"]
-            if prior >= per_user_limit:
-                raise PromoConflict(
-                    "promo code has already been redeemed the maximum number "
-                    "of times by this Telegram identity"
-                )
-
             # --- Phase 1: durable intent, own transaction, committed
             # before any effect mutation (crash-consistency -- see module
             # docstring). --------------------------------------------------
             with self._lock:
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
+                    prior = self._conn.execute(
+                        "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
+                        "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
+                        (definition["id"], owner_telegram_id),
+                    ).fetchone()["c"]
+                    if prior >= per_user_limit:
+                        raise PromoConflict(
+                            "promo code has already been redeemed the maximum number "
+                            "of times by this Telegram identity"
+                        )
                     cursor = self._conn.execute(
                         "INSERT INTO mgboost_promo_redemptions "
                         "(promo_id,promo_version,trial_class,owner_telegram_id,account_id,"
@@ -572,12 +582,17 @@ class PromoStore(_RedemptionTxMixin):
 
         # --- Phase 3: mark redeemed, separate transaction. -----------------
         with self._lock:
-            self._conn.execute(
-                "UPDATE mgboost_promo_redemptions SET status='REDEEMED',"
-                "applied_mutation_id=?,updated_at=? WHERE id=? AND status='PENDING_APPLY'",
-                (effect_result.get("mutation_id"), timestamp, redemption_id),
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "UPDATE mgboost_promo_redemptions SET status='REDEEMED',"
+                    "applied_mutation_id=?,updated_at=? WHERE id=? AND status='PENDING_APPLY'",
+                    (effect_result.get("mutation_id"), timestamp, redemption_id),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
         return {
             "redemption_id": redemption_id, "account_id": account_id,
@@ -604,12 +619,16 @@ class PromoStore(_RedemptionTxMixin):
         clean_code = _clean_code(code)
         timestamp = int(time.time()) if now is None else int(now)
         idem_hash = _idempotency_hash(idempotency_key)
+        request_hash = _request_hash({"code": clean_code, "telegram_id": int(telegram_id)})
 
-        existing = self._conn.execute(
-            "SELECT * FROM mgboost_promo_redemptions WHERE idempotency_key_hash=?",
-            (idem_hash,),
-        ).fetchone()
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT * FROM mgboost_promo_redemptions WHERE idempotency_key_hash=?",
+                (idem_hash,),
+            ).fetchone()
         if existing is not None:
+            if existing["request_hash"] != request_hash:
+                raise PromoConflict("idempotency key reused with a different request")
             if existing["status"] == "CANCELLED":
                 raise PromoConflict("reservation was cancelled -- request a new one")
             return self._reservation_result(existing, already=True)
@@ -634,19 +653,30 @@ class PromoStore(_RedemptionTxMixin):
                 f"no active account for telegram_id={telegram_id}"
             )
         per_user_limit = int(definition["per_user_limit"])
-        prior = self._conn.execute(
-            "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
-            "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
-            (definition["id"], int(telegram_id)),
-        ).fetchone()["c"]
-        if prior >= per_user_limit:
-            raise PromoConflict(
-                "promo code has already been redeemed the maximum number "
-                "of times by this Telegram identity"
-            )
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                existing_after_lock = self._conn.execute(
+                    "SELECT * FROM mgboost_promo_redemptions WHERE idempotency_key_hash=?",
+                    (idem_hash,),
+                ).fetchone()
+                if existing_after_lock is not None:
+                    self._conn.commit()
+                    if existing_after_lock["request_hash"] != request_hash:
+                        raise PromoConflict("idempotency key reused with a different request")
+                    if existing_after_lock["status"] == "CANCELLED":
+                        raise PromoConflict("reservation was cancelled -- request a new one")
+                    return self._reservation_result(existing_after_lock, already=True)
+                prior = self._conn.execute(
+                    "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
+                    "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
+                    (definition["id"], int(telegram_id)),
+                ).fetchone()["c"]
+                if prior >= per_user_limit:
+                    raise PromoConflict(
+                        "promo code has already been redeemed the maximum number "
+                        "of times by this Telegram identity"
+                    )
                 cursor = self._conn.execute(
                     "INSERT INTO mgboost_promo_redemptions "
                     "(promo_id,promo_version,trial_class,owner_telegram_id,account_id,"
@@ -656,7 +686,7 @@ class PromoStore(_RedemptionTxMixin):
                     "VALUES (?,?,NULL,?,?,'RESERVED',?,?,?,?,?,?,?,?,?)",
                     (definition["id"], version_row["version"], int(telegram_id),
                      account["id"], timestamp + int(ttl_seconds), per_user_limit,
-                     idem_hash, _request_hash({"code": clean_code, "telegram_id": int(telegram_id)}),
+                     idem_hash, request_hash,
                      "TELEGRAM_USER", f"telegram:{telegram_id}",
                      "telegram user purchase-discount reservation", timestamp, timestamp),
                 )
@@ -685,6 +715,20 @@ class PromoStore(_RedemptionTxMixin):
             "reserved_until": row["reserved_until"],
             "already": already,
         }
+
+    def list_recent_redemptions(self, *, limit: int = 100) -> list[dict]:
+        """Support read model; routes do not reach into the shared connection."""
+        rows = self._conn.execute(
+            "SELECT r.id,r.promo_id,d.code AS promo_code,r.promo_version,r.trial_class,"
+            "r.owner_telegram_id,r.account_id,r.status,r.reserved_until,"
+            "r.per_user_limit_snapshot,r.bound_kind,r.bound_invoice_id,"
+            "r.actor_type,r.actor_ref,r.reason,r.created_at,r.updated_at "
+            "FROM mgboost_promo_redemptions r "
+            "JOIN mgboost_promo_definitions d ON d.id=r.promo_id "
+            "ORDER BY r.id DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _resolve_redemption_target(
         self, *, capability, definition, telegram_id, self_service, reason,
@@ -825,18 +869,24 @@ def ensure_wl_trial_plan_version(accounts, *, now: int | None = None) -> dict:
         "SELECT * FROM mgboost_plan_versions WHERE plan_code=? ORDER BY version DESC LIMIT 1",
         (WL_TRIAL_PLAN_CODE,),
     ).fetchone()
-    if existing is not None:
-        return dict(existing)
-    return accounts.create_plan_version(
-        {
+    expected = {
             "plan_code": WL_TRIAL_PLAN_CODE, "version": 1, "display_name": "WL Trial",
             "plan_kind": "COMMERCIAL", "billing_required": False,
             "device_limit_mode": "LIMITED", "device_limit": 1,
             "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
             "terms": {"catalog": "ph5-13-promo-wl-trial-v1", "device_limit": 1, "wl_quota_gb": 10},
-        },
-        now=now,
-    )
+    }
+    if existing is None:
+        return accounts.create_plan_version(expected, now=now)
+    result = dict(existing)
+    required = {
+        "version": 1, "plan_kind": "COMMERCIAL", "billing_required": 0,
+        "device_limit_mode": "LIMITED", "device_limit": 1, "wl_mode": "LIMITED",
+        "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
+    }
+    if any(result.get(key) != value for key, value in required.items()) or json.loads(result["terms_json"]) != expected["terms"]:
+        raise PromoError("existing WL_TRIAL plan_version does not match ph5-13-promo-wl-trial-v1")
+    return result
 
 
 # --- PURCHASE_DISCOUNT: reservation lifecycle ---------------------------------
@@ -845,16 +895,16 @@ def ensure_wl_trial_plan_version(accounts, *, now: int | None = None) -> dict:
 #   RESERVED   durable hold written by `reserve_purchase_for_telegram_user`
 #              (own transaction, before any invoice exists).
 #   bind       at invoice creation: the caller's invoice transaction sets
-#              bound_kind/bound_invoice_id (`_bind_reservation_locked`); the
+#              bound_kind/bound_invoice_id (`bind_purchase_reservation_locked`); the
 #              reservation stays RESERVED -- its TTL no longer decides its
 #              fate once the invoice is alive and payable.
-#   COMMITTED  at pre_checkout acceptance (`_commit_reservation_locked` CAS
+#   COMMITTED  at pre_checkout acceptance (`commit_purchase_reservation_locked` CAS
 #              RESERVED->COMMITTED). After this point the promo can never
 #              return to the pool -- the financial double-spend window
 #              (checkout accepted -> TTL -> code reused -> late payment) is
 #              closed by construction.
 #   REDEEMED   inside the payment capture transaction
-#              (`_redeem_reservation_locked` CAS RESERVED/COMMITTED ->
+#              (`redeem_purchase_reservation_locked` CAS RESERVED/COMMITTED ->
 #              REDEEMED); zero rows roll back the whole capture.
 #   CANCELLED  terminal, never revived: unbound TTL expiry, or the bound
 #              invoice reaching a canonical unpayable state

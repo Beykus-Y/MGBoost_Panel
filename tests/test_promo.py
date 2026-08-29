@@ -540,6 +540,22 @@ def test_reserve_requires_existing_account_and_replays_same_key(db):
         "SELECT COUNT(*) c FROM mgboost_promo_redemptions").fetchone()["c"] == 1
 
 
+def test_reservation_idempotency_key_reused_for_other_code_conflicts(db):
+    _define_discount(db, "DISCIDA", percent=10)
+    _define_discount(db, "DISCIDB", percent=20)
+    _wl_account(db, telegram_id=960000101, now=1_000)
+    key = "promo-reserve-v1:960000101:replay"
+    db.promo.reserve_purchase_for_telegram_user(
+        code="DISCIDA", telegram_id=960000101, ttl_seconds=3600,
+        idempotency_key=key, now=1_000,
+    )
+    with pytest.raises(PromoConflict):
+        db.promo.reserve_purchase_for_telegram_user(
+            code="DISCIDB", telegram_id=960000101, ttl_seconds=3600,
+            idempotency_key=key, now=1_001,
+        )
+
+
 def test_per_user_limit_blocks_second_reservation_for_same_code(db):
     _define_discount(db, "DISCONCE", minor=5)
     account, _ = _wl_account(db, telegram_id=960000002, now=1_000)
@@ -665,6 +681,7 @@ def test_cleanup_cancels_unbound_reservation_and_returns_code_to_pool(db):
 def test_discount_floor_is_one_star_never_zero(db):
     from src.promo import _discount_from_effect_params
     assert _discount_from_effect_params({"discount_percent": 100}, 100) == 1
+    assert _discount_from_effect_params({"discount_percent": 100}, 0) == 1
     assert _discount_from_effect_params({"discount_minor": 999999}, 5) == 1
 
 
@@ -691,3 +708,40 @@ def test_checkout_rejected_when_reservation_lost_the_race(db):
         db.stars_purchases.validate_invoice_for_checkout(invoice["id"], 960000008, now=1_200)
     invoice_row = db.get_invoice(invoice["id"])
     assert invoice_row["status"] == "created"  # unchanged, no money moved
+    assert not db._conn.in_transaction
+    # A new write must be able to open BEGIN IMMEDIATE on the shared
+    # connection immediately after the delayed pre_checkout failure.
+    _define_discount(db, "POSTRACE", minor=1)
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("limit,existing,expected_successes", [(1, 0, 1), (2, 1, 1)])
+def test_purchase_reservation_per_user_limit_is_serialized(db, limit, existing, expected_successes):
+    """Distinct concurrent keys may never pass the same per-user quota."""
+    import concurrent.futures
+    _define_discount(db, f"RACELIMIT{limit}", minor=1)
+    db._conn.execute(
+        "UPDATE mgboost_promo_definitions SET per_user_limit=? WHERE code=?",
+        (limit, f"RACELIMIT{limit}"),
+    )
+    db._conn.commit()
+    _wl_account(db, telegram_id=970000000 + limit, now=1_000)
+    if existing:
+        _make_reservation(db, f"RACELIMIT{limit}", 970000000 + limit, key_suffix="existing")
+
+    def reserve(key):
+        try:
+            return _make_reservation(db, f"RACELIMIT{limit}", 970000000 + limit, key_suffix=key)
+        except PromoConflict:
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, ("parallel-a", "parallel-b")))
+    assert sum(result is not None for result in results) == expected_successes
+    count = db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_promo_redemptions r "
+        "JOIN mgboost_promo_definitions d ON d.id=r.promo_id "
+        "WHERE d.code=? AND r.status!='CANCELLED'",
+        (f"RACELIMIT{limit}",),
+    ).fetchone()["c"]
+    assert count == limit

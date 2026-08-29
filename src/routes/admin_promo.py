@@ -125,14 +125,4 @@ def handle_admin_promo_redemptions(handler):
     shown so released/failed reservations stay visible to support."""
     if not require_admin_auth(handler):
         return
-    db = handler.server.db
-    rows = db._conn.execute(
-        "SELECT r.id,r.promo_id,d.code AS promo_code,r.promo_version,r.trial_class,"
-        "r.owner_telegram_id,r.account_id,r.status,r.reserved_until,"
-        "r.per_user_limit_snapshot,r.actor_type,r.actor_ref,r.reason,"
-        "r.created_at,r.updated_at "
-        "FROM mgboost_promo_redemptions r "
-        "JOIN mgboost_promo_definitions d ON d.id=r.promo_id "
-        "ORDER BY r.id DESC LIMIT 100",
-    ).fetchall()
-    json_response(handler, 200, {"redemptions": [dict(row) for row in rows]})
+    json_response(handler, 200, {"redemptions": handler.server.db.promo.list_recent_redemptions()})

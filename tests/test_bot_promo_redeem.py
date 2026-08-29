@@ -42,9 +42,14 @@ def _get_handler(dp_observer, name):
 
 
 @pytest.fixture
-def handlers(db):
+def handlers(db, monkeypatch):
     from aiogram import Dispatcher
-    from src.bot_support import setup_support_handlers
+    import src.bot_support as bot_support
+
+    async def inline_run_sync(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(bot_support, "_run_sync", inline_run_sync)
 
     dp = Dispatcher()
 
@@ -55,7 +60,7 @@ def handlers(db):
         def get_user(self, username, _token):
             return {"username": username}
 
-    setup_support_handlers(dp, db, marzban=DummyMarzban())
+    bot_support.setup_support_handlers(dp, db, marzban=DummyMarzban())
     return {
         "menu": _get_handler(dp.message, "msg_promo_menu"),
         "redeem": _get_handler(dp.message, "_promo_redeem_message"),
@@ -76,9 +81,16 @@ class _FakeChat:
 class _FakeState:
     def __init__(self):
         self.value = None
+        self.data = {}
 
     async def set_state(self, value):
         self.value = value
+
+    async def get_data(self):
+        return dict(self.data)
+
+    async def update_data(self, **kwargs):
+        self.data.update(kwargs)
 
 
 class _FakeMessage:
@@ -170,9 +182,10 @@ def test_redeem_new_message_same_code_is_conflict_not_second_apply(db, handlers)
     ).fetchone()["c"] == 1
 
 
-def test_redeem_unknown_code_keeps_waiting_state(db, handlers):
+def test_redeem_unknown_code_returns_to_main_dialog(db, handlers):
     _wl_account(db, 555000004)
     state = _FakeState()
     msg = _FakeMessage(555000004, chat_id=555000004, message_id=31, text="NOSUCH")
     asyncio.run(handlers["redeem"](msg, state))
     assert any("не найден" in a for a in msg.answers)
+    assert state.value == "SupportStates:in_dialog"

@@ -41,9 +41,51 @@ def test_manual_payment_records_gained_promo_columns(db):
 
 def test_migration_is_idempotent_and_checksum_pinned(db):
     from src.promo_schema import apply_promo_schema
+    from src.promo_schema_v2 import apply_promo_schema_v2
 
     applied_again = apply_promo_schema(db._conn)
     assert applied_again is False  # already applied at Database() construction
+    assert apply_promo_schema_v2(db._conn) is False
+
+
+def test_discount_snapshot_cannot_be_attached_later_to_an_existing_invoice(db):
+    """The immutable trigger protects NULL -> non-NULL, not only rewrites."""
+    db._conn.execute(
+        "INSERT INTO stars_invoices (created_by_telegram_id,marzban_username,tariff_name,"
+        "duration_days,stars_price,status,expires_at,created_at) "
+        "VALUES (1,'legacy','Legacy',30,10,'created',999,1)"
+    )
+    invoice_id = db._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    with pytest.raises(Exception):
+        db._conn.execute(
+            "UPDATE stars_invoices SET promo_redemption_id=1,original_stars_price=10,discount_minor=1 "
+            "WHERE id=?", (invoice_id,)
+        )
+    db._conn.rollback()
+
+
+def test_v2_repairs_an_existing_v1_trigger_without_rewriting_v1_marker(db):
+    from src.promo_schema import MIGRATION_ID as v1_id
+    from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
+    db._conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
+    db._conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
+    db._conn.execute(
+        "CREATE TRIGGER trg_stars_invoices_promo_snapshot_immutable "
+        "BEFORE UPDATE OF promo_redemption_id,original_stars_price,discount_minor ON stars_invoices "
+        "WHEN OLD.promo_redemption_id IS NOT NULL AND "
+        "(NEW.promo_redemption_id IS NOT OLD.promo_redemption_id OR "
+        "NEW.original_stars_price IS NOT OLD.original_stars_price OR "
+        "NEW.discount_minor IS NOT OLD.discount_minor) "
+        "BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END"
+    )
+    db._conn.commit()
+    assert apply_promo_schema_v2(db._conn, now=1234) is True
+    assert db._conn.execute(
+        "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v1_id,)
+    ).fetchone() is not None
+    assert db._conn.execute(
+        "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
+    ).fetchone() is not None
 
 
 def test_promo_definition_code_must_be_uppercase(db):

@@ -968,3 +968,55 @@ def test_successful_payment_routes_signup_invoice_through_capture_paid(db):
     assert row["account_id"] == account["id"]
     assert db.list_stars_orphan_payments() == []
     assert handlers["trigger"].is_set()
+
+
+def test_promo_discount_reservation_is_forwarded_by_real_stars_button(db):
+    """The bot's actual ``stars_buy`` callback must not lose the FSM hold."""
+    from aiogram import Dispatcher
+    from src.bot_support import setup_support_handlers
+
+    _canonical_owner(db, telegram_id=333)
+    db.set_setting("stars:enabled", "1")
+    db._conn.execute(
+        "INSERT INTO mgboost_promo_definitions "
+        "(code,effect_kind,per_user_limit,status,created_by_actor,created_at,updated_at) "
+        "VALUES ('BOTDISCOUNT','PURCHASE_DISCOUNT',1,'ACTIVE','test',1000,1000)"
+    )
+    promo_id = db._conn.execute("SELECT id FROM mgboost_promo_definitions WHERE code='BOTDISCOUNT'").fetchone()[0]
+    db._conn.execute(
+        "INSERT INTO mgboost_promo_versions "
+        "(promo_id,version,effect_params_json,status,created_by_actor,created_at) "
+        "VALUES (?,1,'{\"discount_percent\":50}','ACTIVE','test',1000)", (promo_id,)
+    )
+    db._conn.commit()
+    reservation = db.promo.reserve_purchase_for_telegram_user(
+        code="BOTDISCOUNT", telegram_id=333, ttl_seconds=3600,
+        idempotency_key="promo-reserve-v1:333:callback", now=1_000,
+    )
+    dp = Dispatcher()
+    setup_support_handlers(dp, db, marzban=None)
+    handler = _get_handler(dp.callback_query, "cb_stars_buy")
+
+    class Bot:
+        def __init__(self): self.calls = []
+        async def send_invoice(self, **kwargs): self.calls.append(kwargs)
+    class Message:
+        bot = Bot()
+        async def answer(self, *_args, **_kwargs): pass
+    class Call:
+        from_user = FakeFromUser(333)
+        data = "stars_buy:BASIC:30"
+        message = Message()
+        async def answer(self): pass
+    class State:
+        def __init__(self): self.data = {"promo_reservation_id": reservation["redemption_id"]}
+        async def get_data(self): return dict(self.data)
+        async def update_data(self, **kwargs): self.data.update(kwargs)
+
+    state = State()
+    asyncio.run(handler(Call(), state))
+    invoice = db.list_stars_invoices()[0]
+    assert invoice["promo_redemption_id"] == reservation["redemption_id"]
+    assert invoice["stars_price"] < invoice["price_amount_snapshot"]
+    assert invoice["original_stars_price"] == invoice["price_amount_snapshot"]
+    assert state.data["promo_reservation_id"] is None
