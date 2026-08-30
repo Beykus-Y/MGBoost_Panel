@@ -43,8 +43,8 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
     function renderManager(){
       renderHtml(modal.el.querySelector('.modal-body'),html`
         <div class="ops-actions">
-          <button class="primary" data-action="promo-create">+ Создать промокод</button>
-          <button data-action="promo-refresh">Обновить</button>
+          <button class="primary" data-promo-act="create">+ Создать промокод</button>
+          <button data-promo-act="refresh">Обновить</button>
         </div>
         <h4>Определения</h4>
         ${definitions.length?html`<table class="list"><thead><tr>
@@ -54,7 +54,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
             <td>${effectTitle(d)} ${effectDetails(d)}</td>
             <td>${d.per_user_limit}</td>
             <td><span class="badge ${d.status==='ACTIVE'?'ok':'muted'}">${d.status}</span></td>
-            <td>${d.status==='ACTIVE'?html`<button data-action="promo-disable" data-code="${d.code}">Отключить</button>`:html``}</td>
+            <td>${d.status==='ACTIVE'?html`<button data-promo-act="disable" data-code="${d.code}">Отключить</button>`:html``}</td>
           </tr>`)}</tbody></table>`
           :html`<div class="empty-state">Промокодов ещё нет</div>`}
         <h4>Последние применения</h4>
@@ -69,11 +69,11 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
           </tr>`)}</tbody></table>`
           :html`<div class="empty-state">Применений ещё нет</div>`}
         <div id="promo-error"></div>`);
-      modal.el.querySelectorAll('[data-action="promo-create"]')
+      modal.el.querySelectorAll('[data-promo-act="create"]')
         .forEach(btn=>btn.addEventListener('click',()=>openCreateDefinitionDialog().then(reloadLists).catch(error=>toast(error.message||'Ошибка','err'))));
-      modal.el.querySelectorAll('[data-action="promo-refresh"]')
+      modal.el.querySelectorAll('[data-promo-act="refresh"]')
         .forEach(btn=>btn.addEventListener('click',()=>reloadLists().catch(error=>toast(error.message||'Ошибка','err'))));
-      modal.el.querySelectorAll('[data-action="promo-disable"]')
+      modal.el.querySelectorAll('[data-promo-act="disable"]')
         .forEach(btn=>btn.addEventListener('click',()=>disableDefinition(btn.dataset.code).then(reloadLists).catch(error=>toast(error.message||'Ошибка','err'))));
     }
 
