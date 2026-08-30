@@ -35,7 +35,9 @@ from .manual_payment_schema import SCHEMA_CHECKSUM as MANUAL_PAYMENT_SCHEMA_CHEC
 
 MIGRATION_ID = "ph5_13_promo_codes_v1"
 
-_SCHEMA_STATEMENTS = (
+# This is the exact representation deployed by commit 43d27f1.  It is
+# immutable: the migration marker has reached production with this checksum.
+_LEGACY_SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS mgboost_promo_definitions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +49,6 @@ _SCHEMA_STATEMENTS = (
             )),
         trial_class TEXT
             CHECK(trial_class IS NULL OR length(trial_class) BETWEEN 1 AND 64),
-        per_user_limit INTEGER NOT NULL DEFAULT 1 CHECK(per_user_limit >= 1),
         status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED')),
         created_by_actor TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -97,9 +98,8 @@ _SCHEMA_STATEMENTS = (
         owner_telegram_id INTEGER,
         account_id INTEGER,
         status TEXT NOT NULL
-            CHECK(status IN ('PENDING_APPLY','REDEEMED','RESERVED','COMMITTED','CANCELLED')),
+            CHECK(status IN ('PENDING_APPLY','REDEEMED','RESERVED','CANCELLED')),
         reserved_until INTEGER,
-        per_user_limit_snapshot INTEGER NOT NULL DEFAULT 1 CHECK(per_user_limit_snapshot >= 1),
         applied_mutation_id INTEGER,
         idempotency_key_hash TEXT NOT NULL UNIQUE,
         request_hash TEXT NOT NULL,
@@ -126,12 +126,6 @@ _SCHEMA_STATEMENTS = (
         WHERE status IN ('PENDING_APPLY','REDEEMED') AND trial_class IS NOT NULL
     """,
     """
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_promo_single_use_user
-        ON mgboost_promo_redemptions(promo_id, owner_telegram_id)
-        WHERE per_user_limit_snapshot = 1 AND status != 'CANCELLED'
-            AND owner_telegram_id IS NOT NULL
-    """,
-    """
     CREATE INDEX IF NOT EXISTS ix_mgboost_promo_redemptions_account
         ON mgboost_promo_redemptions(account_id, status)
     """,
@@ -150,88 +144,136 @@ _SCHEMA_STATEMENTS = (
     """
     ALTER TABLE mgboost_manual_payment_records ADD COLUMN discount_snapshot_json TEXT
     """,
-    """
-    ALTER TABLE stars_invoices ADD COLUMN promo_redemption_id INTEGER
-    """,
-    """
-    ALTER TABLE stars_invoices ADD COLUMN original_stars_price INTEGER
-    """,
-    """
-    ALTER TABLE stars_invoices ADD COLUMN discount_minor INTEGER
-    """,
-    """
-    ALTER TABLE mgboost_promo_redemptions ADD COLUMN bound_kind TEXT
-    """,
-    """
-    ALTER TABLE mgboost_promo_redemptions ADD COLUMN bound_invoice_id INTEGER
-    """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_stars_invoices_promo_redemption
-        ON stars_invoices(promo_redemption_id) WHERE promo_redemption_id IS NOT NULL
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_stars_invoices_promo_snapshot_immutable
-        BEFORE UPDATE OF promo_redemption_id, original_stars_price, discount_minor
-        ON stars_invoices
-        WHEN OLD.promo_redemption_id IS NOT NULL AND (
-            NEW.promo_redemption_id IS NOT OLD.promo_redemption_id
-            OR NEW.original_stars_price IS NOT OLD.original_stars_price
-            OR NEW.discount_minor IS NOT OLD.discount_minor
-        )
-        BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END
-    """,
 )
 
-SCHEMA_CHECKSUM = hashlib.sha256(
-    "\n".join(statement.strip() for statement in _SCHEMA_STATEMENTS).encode("utf-8")
+LEGACY_SCHEMA_CHECKSUM = hashlib.sha256(
+    "\n".join(statement.strip() for statement in _LEGACY_SCHEMA_STATEMENTS).encode("utf-8")
 ).hexdigest()
+# The representation accidentally authored into v1 after deployment.  It was
+# never deployed as v1, but is an explicitly supported pre-v2 local shape.
+CURRENT_SCHEMA_CHECKSUM = "31f0ed5ff76eb6f8b47087bb0bf7c02cdf89efc177a1360d3c94dd9f29ec87bd"
+SCHEMA_CHECKSUM = LEGACY_SCHEMA_CHECKSUM
+KNOWN_SCHEMA_CHECKSUMS = frozenset((LEGACY_SCHEMA_CHECKSUM, CURRENT_SCHEMA_CHECKSUM))
 
-_REQUIRED_COLUMNS = {
+_LEGACY_REQUIRED_COLUMNS = {
     "mgboost_promo_definitions": {
-        "id", "code", "effect_kind", "trial_class", "per_user_limit", "status",
-        "created_by_actor",
+        "id", "code", "effect_kind", "trial_class", "status", "created_by_actor",
     },
     "mgboost_promo_versions": {
         "id", "promo_id", "version", "effect_params_json", "status",
     },
     "mgboost_promo_redemptions": {
         "id", "promo_id", "promo_version", "trial_class", "owner_telegram_id",
-        "account_id", "status", "reserved_until", "per_user_limit_snapshot",
-        "bound_kind", "bound_invoice_id",
-        "applied_mutation_id",
+        "account_id", "status", "reserved_until", "applied_mutation_id",
         "idempotency_key_hash", "request_hash", "row_version",
     },
     "mgboost_manual_payment_records": {
         "promo_id", "promo_version", "promo_redemption_id", "original_amount_minor",
         "discount_snapshot_json",
     },
-    "stars_invoices": {
-        "promo_redemption_id", "original_stars_price", "discount_minor",
-    },
 }
 
-_REQUIRED_OBJECTS = {
-    "ux_mgboost_promo_active_version",
-    "ux_promo_trial_class_identity",
-    "ux_promo_single_use_user",
-    "ux_stars_invoices_promo_redemption",
-    "ix_mgboost_promo_redemptions_account",
-    "trg_stars_invoices_promo_snapshot_immutable",
-}
+def _normalize_ddl(sql: str) -> str:
+    return " ".join(sql.replace(" IF NOT EXISTS", "").replace(";", "").split())
 
 
-def _verify(connection: sqlite3.Connection) -> None:
-    for table, required in _REQUIRED_COLUMNS.items():
+def _legacy_expected_objects() -> dict[str, str]:
+    names = (
+        "mgboost_promo_definitions",
+        "trg_mgboost_promo_definitions_identity_immutable",
+        "trg_mgboost_promo_definitions_no_delete",
+        "mgboost_promo_versions",
+        "ux_mgboost_promo_active_version",
+        "trg_mgboost_promo_versions_no_delete",
+        "mgboost_promo_redemptions",
+        "ux_mgboost_promo_versions_promo_version",
+        "ux_promo_trial_class_identity",
+        "ix_mgboost_promo_redemptions_account",
+    )
+    statements = _LEGACY_SCHEMA_STATEMENTS
+    by_name = {
+        names[0]: statements[0], names[1]: statements[1], names[2]: statements[2],
+        names[3]: statements[3], names[4]: statements[4], names[5]: statements[5],
+        names[6]: statements[6], names[7]: statements[7], names[8]: statements[8],
+        names[9]: statements[9],
+    }
+    return {name: _normalize_ddl(sql) for name, sql in by_name.items()}
+
+
+def verify_legacy_v1_schema(connection: sqlite3.Connection) -> None:
+    """Accept the old checksum only for its exact, known deployed shape."""
+    for table, required in _LEGACY_REQUIRED_COLUMNS.items():
         actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if required - actual:
-            raise RuntimeError(f"PH5-13 incompatible table {table}")
-    objects = {
+            raise RuntimeError(f"PH5-13 legacy v1 incompatible table {table}")
+    stars_columns = {row[1] for row in connection.execute("PRAGMA table_info(stars_invoices)")}
+    if {"promo_redemption_id", "original_stars_price", "discount_minor"} & stars_columns:
+        raise RuntimeError("PH5-13 legacy v1 has unexpected v2 invoice columns")
+    for name, expected_sql in _legacy_expected_objects().items():
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone()
+        if row is None or _normalize_ddl(row[0]) != expected_sql:
+            raise RuntimeError(f"PH5-13 legacy v1 object mismatch: {name}")
+    present = {
         row[0] for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('index','trigger')"
+            "SELECT name FROM sqlite_master WHERE name IN "
+            "('ux_promo_single_use_user','ux_stars_invoices_promo_redemption',"
+            "'trg_stars_invoices_promo_snapshot_immutable')"
         )
     }
-    if not _REQUIRED_OBJECTS.issubset(objects):
-        raise RuntimeError("PH5-13 promo codes schema objects incomplete")
+    if present:
+        raise RuntimeError("PH5-13 legacy v1 has unexpected v2 objects")
+
+
+def verify_current_v1_schema(connection: sqlite3.Connection) -> None:
+    """Validate the known, never-deployed pre-v2 local representation."""
+    required_columns = {
+        "mgboost_promo_definitions": {"per_user_limit"},
+        "mgboost_promo_redemptions": {
+            "per_user_limit_snapshot", "bound_kind", "bound_invoice_id",
+        },
+        "stars_invoices": {
+            "promo_redemption_id", "original_stars_price", "discount_minor",
+        },
+    }
+    for table, required in required_columns.items():
+        actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if required - actual:
+            raise RuntimeError(f"PH5-13 current v1 incompatible table {table}")
+    required_objects = {
+        "ux_mgboost_promo_active_version", "ux_promo_trial_class_identity",
+        "ux_promo_single_use_user", "ix_mgboost_promo_redemptions_account",
+        "ux_stars_invoices_promo_redemption",
+        "trg_stars_invoices_promo_snapshot_immutable",
+    }
+    objects = {row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('index','trigger')"
+    )}
+    if not required_objects.issubset(objects):
+        raise RuntimeError("PH5-13 current v1 schema objects incomplete")
+    definitions_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        ("mgboost_promo_definitions",),
+    ).fetchone()
+    redemptions_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        ("mgboost_promo_redemptions",),
+    ).fetchone()
+    if (
+        definitions_sql is None
+        or "per_user_limit INTEGER NOT NULL DEFAULT 1 CHECK(per_user_limit >= 1)" not in definitions_sql[0]
+        or redemptions_sql is None
+        or "'COMMITTED'" not in redemptions_sql[0]
+        or "per_user_limit_snapshot INTEGER NOT NULL DEFAULT 1" not in redemptions_sql[0]
+    ):
+        raise RuntimeError("PH5-13 current v1 schema definition mismatch")
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+        ("trg_stars_invoices_promo_snapshot_immutable",),
+    ).fetchone()
+    if row is None or "OLD.promo_redemption_id IS NOT NULL" not in row[0]:
+        raise RuntimeError("PH5-13 current v1 snapshot trigger mismatch")
 
 
 def apply_promo_schema(connection: sqlite3.Connection, *, now: int | None = None) -> bool:
@@ -254,14 +296,23 @@ def apply_promo_schema(connection: sqlite3.Connection, *, now: int | None = None
             (MIGRATION_ID,),
         ).fetchone()
         if existing is not None:
-            if existing[0] != SCHEMA_CHECKSUM:
+            if existing[0] not in KNOWN_SCHEMA_CHECKSUMS:
                 raise RuntimeError("PH5-13 schema checksum mismatch")
-            _verify(connection)
+            # v2 validates the final representation on every later startup.
+            v2 = connection.execute(
+                "SELECT 1 FROM mgboost_schema_migrations "
+                "WHERE migration_id='ph5_13_promo_codes_v2_snapshot_immutable'"
+            ).fetchone()
+            if v2 is None:
+                if existing[0] == LEGACY_SCHEMA_CHECKSUM:
+                    verify_legacy_v1_schema(connection)
+                else:
+                    verify_current_v1_schema(connection)
             connection.commit()
             return False
-        for statement in _SCHEMA_STATEMENTS:
+        for statement in _LEGACY_SCHEMA_STATEMENTS:
             connection.execute(statement)
-        _verify(connection)
+        verify_legacy_v1_schema(connection)
         connection.execute(
             "INSERT INTO mgboost_schema_migrations (migration_id,schema_checksum,applied_at) "
             "VALUES (?,?,?)",

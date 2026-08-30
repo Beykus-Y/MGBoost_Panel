@@ -49,6 +49,66 @@ def test_migration_is_idempotent_and_checksum_pinned(db):
     assert apply_promo_schema_v2(db._conn) is False
 
 
+def _prepare_legacy_v1(db):
+    """Turn an empty test DB into the exact deployed 43d27f1 v1 shape."""
+    from src.promo_schema import _LEGACY_SCHEMA_STATEMENTS
+    from src.promo_schema_v2 import MIGRATION_ID as v2_id
+
+    conn = db._conn
+    conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
+    conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
+    conn.execute("DROP INDEX ux_stars_invoices_promo_redemption")
+    for column in ("discount_minor", "original_stars_price", "promo_redemption_id"):
+        conn.execute(f"ALTER TABLE stars_invoices DROP COLUMN {column}")
+    conn.execute("DROP INDEX ux_promo_single_use_user")
+    conn.execute("DROP INDEX ux_promo_trial_class_identity")
+    conn.execute("DROP INDEX ix_mgboost_promo_redemptions_account")
+    conn.execute("DROP TABLE mgboost_promo_redemptions")
+    conn.execute("DROP TABLE mgboost_promo_versions")
+    conn.execute("DROP TABLE mgboost_promo_definitions")
+    for statement in _LEGACY_SCHEMA_STATEMENTS[:10]:
+        conn.execute(statement)
+    conn.commit()
+
+
+def _prepare_current_v1(db):
+    """Create the explicitly supported pre-repair local v1 representation."""
+    from src.promo_schema import CURRENT_SCHEMA_CHECKSUM, MIGRATION_ID as v1_id
+    from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
+
+    _prepare_legacy_v1(db)
+    assert apply_promo_schema_v2(db._conn, now=1234) is True
+    db._conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
+    db._conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
+    db._conn.execute(
+        "CREATE TRIGGER trg_stars_invoices_promo_snapshot_immutable "
+        "BEFORE UPDATE OF promo_redemption_id,original_stars_price,discount_minor ON stars_invoices "
+        "WHEN OLD.promo_redemption_id IS NOT NULL AND "
+        "(NEW.promo_redemption_id IS NOT OLD.promo_redemption_id OR "
+        "NEW.original_stars_price IS NOT OLD.original_stars_price OR "
+        "NEW.discount_minor IS NOT OLD.discount_minor) "
+        "BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END"
+    )
+    db._conn.execute(
+        "UPDATE mgboost_schema_migrations SET schema_checksum=? WHERE migration_id=?",
+        (CURRENT_SCHEMA_CHECKSUM, v1_id),
+    )
+    db._conn.commit()
+
+
+def test_fresh_db_applies_immutable_v1_then_v2_to_final_schema(db):
+    from src.promo_schema import LEGACY_SCHEMA_CHECKSUM, MIGRATION_ID as v1_id
+    from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
+
+    assert db._conn.execute(
+        "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?", (v1_id,)
+    ).fetchone()[0] == LEGACY_SCHEMA_CHECKSUM
+    assert db._conn.execute(
+        "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
+    ).fetchone() is not None
+    assert apply_promo_schema_v2(db._conn) is False
+
+
 def test_discount_snapshot_cannot_be_attached_later_to_an_existing_invoice(db):
     """The immutable trigger protects NULL -> non-NULL, not only rewrites."""
     db._conn.execute(
@@ -65,28 +125,63 @@ def test_discount_snapshot_cannot_be_attached_later_to_an_existing_invoice(db):
     db._conn.rollback()
 
 
-def test_v2_repairs_an_existing_v1_trigger_without_rewriting_v1_marker(db):
-    from src.promo_schema import MIGRATION_ID as v1_id
+def test_legacy_production_v1_is_accepted_then_upgraded_without_marker_rewrite(db):
+    from src.promo_schema import LEGACY_SCHEMA_CHECKSUM, MIGRATION_ID as v1_id, apply_promo_schema
     from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
-    db._conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
-    db._conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
-    db._conn.execute(
-        "CREATE TRIGGER trg_stars_invoices_promo_snapshot_immutable "
-        "BEFORE UPDATE OF promo_redemption_id,original_stars_price,discount_minor ON stars_invoices "
-        "WHEN OLD.promo_redemption_id IS NOT NULL AND "
-        "(NEW.promo_redemption_id IS NOT OLD.promo_redemption_id OR "
-        "NEW.original_stars_price IS NOT OLD.original_stars_price OR "
-        "NEW.discount_minor IS NOT OLD.discount_minor) "
-        "BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END"
-    )
-    db._conn.commit()
+
+    _prepare_legacy_v1(db)
+    assert apply_promo_schema(db._conn) is False
     assert apply_promo_schema_v2(db._conn, now=1234) is True
     assert db._conn.execute(
-        "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v1_id,)
-    ).fetchone() is not None
+        "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?", (v1_id,)
+    ).fetchone()[0] == LEGACY_SCHEMA_CHECKSUM
     assert db._conn.execute(
         "SELECT 1 FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,)
     ).fetchone() is not None
+
+
+def test_current_local_v1_is_accepted_then_upgraded_without_marker_rewrite(db):
+    from src.promo_schema import CURRENT_SCHEMA_CHECKSUM, MIGRATION_ID as v1_id, apply_promo_schema
+    from src.promo_schema_v2 import apply_promo_schema_v2
+
+    _prepare_current_v1(db)
+    assert apply_promo_schema(db._conn) is False
+    assert apply_promo_schema_v2(db._conn, now=1234) is True
+    assert db._conn.execute(
+        "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?", (v1_id,)
+    ).fetchone()[0] == CURRENT_SCHEMA_CHECKSUM
+
+
+def test_unknown_v1_checksum_fails_closed(db):
+    from src.promo_schema import MIGRATION_ID as v1_id, apply_promo_schema
+
+    _prepare_legacy_v1(db)
+    db._conn.execute(
+        "UPDATE mgboost_schema_migrations SET schema_checksum='unknown' WHERE migration_id=?", (v1_id,)
+    )
+    db._conn.commit()
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        apply_promo_schema(db._conn)
+
+
+def test_legacy_checksum_with_nonhistorical_schema_fails_closed(db):
+    from src.promo_schema import apply_promo_schema
+
+    _prepare_legacy_v1(db)
+    db._conn.execute("DROP INDEX ux_promo_trial_class_identity")
+    db._conn.commit()
+    with pytest.raises(RuntimeError, match="legacy v1 object mismatch"):
+        apply_promo_schema(db._conn)
+
+
+def test_repeated_startup_is_idempotent_after_legacy_upgrade(db):
+    from src.promo_schema import apply_promo_schema
+    from src.promo_schema_v2 import apply_promo_schema_v2
+
+    _prepare_legacy_v1(db)
+    assert apply_promo_schema_v2(db._conn, now=1234) is True
+    assert apply_promo_schema(db._conn) is False
+    assert apply_promo_schema_v2(db._conn, now=5678) is False
 
 
 def test_backup_then_v2_migration_then_restore_keeps_recoverable_v1_snapshot(db):
@@ -98,18 +193,7 @@ def test_backup_then_v2_migration_then_restore_keeps_recoverable_v1_snapshot(db)
     """
     from src.promo_schema_v2 import MIGRATION_ID as v2_id, apply_promo_schema_v2
 
-    db._conn.execute("DELETE FROM mgboost_schema_migrations WHERE migration_id=?", (v2_id,))
-    db._conn.execute("DROP TRIGGER trg_stars_invoices_promo_snapshot_immutable")
-    db._conn.execute(
-        "CREATE TRIGGER trg_stars_invoices_promo_snapshot_immutable "
-        "BEFORE UPDATE OF promo_redemption_id,original_stars_price,discount_minor ON stars_invoices "
-        "WHEN OLD.promo_redemption_id IS NOT NULL AND "
-        "(NEW.promo_redemption_id IS NOT OLD.promo_redemption_id OR "
-        "NEW.original_stars_price IS NOT OLD.original_stars_price OR "
-        "NEW.discount_minor IS NOT OLD.discount_minor) "
-        "BEGIN SELECT RAISE(ABORT, 'stars invoice promo discount snapshot is immutable'); END"
-    )
-    db._conn.commit()
+    _prepare_legacy_v1(db)
 
     backup_path = os.path.join(os.path.dirname(db._conn.execute("PRAGMA database_list").fetchone()[2]), "promo-pre-v2.sqlite3")
     backup_conn = sqlite3.connect(backup_path)
