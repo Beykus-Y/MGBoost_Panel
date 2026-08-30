@@ -1,4 +1,7 @@
 import os
+import ipaddress
+import re
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 # The isolated Marzban broker receives its complete environment from a
@@ -17,6 +20,42 @@ MARZBAN_URL = os.getenv("MARZBAN_URL", "http://127.0.0.1:8000")
 # with a clear error rather than silently building a broken/wrong-domain
 # link.
 PUBLIC_HOST = os.getenv("PUBLIC_HOST", "")
+
+
+def subscription_base_url() -> str | None:
+    """Base URL for opaque subscription links handed to users outside an
+    HTTP request context (Telegram delivery, LK issuance response). Returns
+    None when PUBLIC_HOST is not configured -- callers must fail closed with
+    a clear error instead of silently building a wrong-domain link."""
+    host = (PUBLIC_HOST or "").strip().rstrip("/")
+    if not host or any(char.isspace() for char in host):
+        return None
+    # PUBLIC_HOST is deliberately a host[:port], not an arbitrary URL: this
+    # helper owns the HTTPS scheme and every caller appends an opaque path.
+    # Rejecting a supplied scheme/path/query prevents links such as
+    # ``https://https://example.test/token`` and accidental host injection.
+    if any(char in host for char in "/?#@"):
+        return None
+    try:
+        parsed = urlsplit(f"//{host}")
+        if not parsed.hostname or parsed.username or parsed.password:
+            return None
+        _ = parsed.port  # validates a supplied port (and raises on bad input)
+    except ValueError:
+        return None
+    hostname = parsed.hostname
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        if hostname != "localhost" and (
+            len(hostname) > 253
+            or any(
+                re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
+                for label in hostname.split(".")
+            )
+        ):
+            return None
+    return f"https://{host}"
 LISTEN_HOST = os.getenv("LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8001"))
 DATA_DIR = os.getenv("DATA_DIR", "./data")

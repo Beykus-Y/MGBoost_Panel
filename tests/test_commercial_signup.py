@@ -51,6 +51,9 @@ def db(monkeypatch):
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", PRIMARY)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_LOGIN", PRIMARY_LOGIN)
     monkeypatch.setenv("DEVICE_SLOT_HMAC_KEY", HWID_KEY.split("hmac-sha256:")[-1] + "padpad")
+    # The delivered subscription-link URL is built from PUBLIC_HOST (never
+    # hardcoded); this is the production domain the assertions expect.
+    monkeypatch.setenv("PUBLIC_HOST", "sub.beykus.fun")
     import src.config as config
     import src.database as database
     importlib.reload(config)
@@ -700,7 +703,6 @@ def buy_handlers(db):
         "buy_plan": _handler(dp.callback_query, "cb_buy_plan"),
         "buy_duration": _handler(dp.callback_query, "cb_buy_duration"),
         "buy_pay": _handler(dp.callback_query, "cb_buy_pay"),
-        "stars_menu": _handler(dp.message, "msg_stars_menu"),
         "pre_checkout": _handler(dp.pre_checkout_query, "on_pre_checkout"),
         "successful_payment": _handler(dp.message, "on_successful_payment"),
         "trigger": trigger,
@@ -884,7 +886,11 @@ def test_bot_signup_pre_checkout_rejects_tampered_amount(db, buy_handlers):
     assert db.get_invoice(invoice["id"])["status"] == "created"
 
 
-def test_bot_renewal_menu_shows_only_sellable_same_plan(db, buy_handlers):
+def test_bot_buy_entry_offers_only_current_plan_for_existing_account(db, buy_handlers):
+    """After the funnel unification the buy entry IS the renewal entry: an
+    existing canonical account is only offered its CURRENT plan's
+    durations plus the support-routed plan-change button — never a
+    buyable tariff the backend cannot fulfil (PH5-06)."""
     _enable_stars(db)
     broker = BrokerBacked()
     _invoice, _account, _applied = _run_signup(db, broker, 555000111)
@@ -892,16 +898,19 @@ def test_bot_renewal_menu_shows_only_sellable_same_plan(db, buy_handlers):
     class Msg:
         def __init__(self, uid):
             self.from_user = FakeUser(uid)
-            self.text = "⭐️ Продлить подписку"
+            self.text = "🛒 Купить / Продлить"
             self.sent = []
 
         async def answer(self, text, reply_markup=None, **kw):
             self.sent.append((text, reply_markup))
 
     msg = Msg(555000111)
-    asyncio.run(buy_handlers["stars_menu"](msg, FakeState()))
+    asyncio.run(buy_handlers["buy"](msg, FakeState()))
     data = [d for row in _kb_data(msg.sent[0][1]) for d in row if d]
-    assert data and all(d.startswith("stars_buy:BASIC:") for d in data)
+    durations = sorted(d for d in data if d.startswith("buy_dur:"))
+    assert durations == ["buy_dur:BASIC:30", "buy_dur:BASIC:60"]
+    assert "change_plan" in data
+    assert not any(d.startswith("buy_plan:") for d in data)
 
 
 def test_unrelated_existing_accounts_are_untouched_by_signup(db, broker):

@@ -24,6 +24,9 @@ def db(monkeypatch):
     monkeypatch.setenv("DATA_DIR", tmp)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", PRIMARY)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_LOGIN", PRIMARY_LOGIN)
+    # canonical_url of an issued credential is built from PUBLIC_HOST (never
+    # hardcoded); without it the issue endpoint fails closed with 503.
+    monkeypatch.setenv("PUBLIC_HOST", "sub.beykus.fun")
     import src.config as config
     import src.database as database
     importlib.reload(config)

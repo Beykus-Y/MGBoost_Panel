@@ -4,7 +4,7 @@ import re
 import time
 from collections import defaultdict
 
-from ..config import OPAQUE_SUBSCRIPTION_ENABLED
+from ..config import OPAQUE_SUBSCRIPTION_ENABLED, subscription_base_url
 from ..http_utils import read_body as _read_body
 from ..service_marzban import ServiceMarzbanClient
 from ..subscription_credential_issuance import issue_or_reissue_credential
@@ -520,6 +520,13 @@ def handle_lk_opaque_subscription_issue(handler):
 
     db = handler.server.db
 
+    # PUBLIC_HOST gates the link URL itself: never issue (and thereby
+    # rotate) a credential whose canonical_url we cannot build correctly.
+    _sub_base = subscription_base_url()
+    if _sub_base is None:
+        _error(handler, 503, "Subscription domain is not configured")
+        return
+
     # PH4-04 corrective fix: issuing while a credential is already ACTIVE is
     # a destructive rotation (the old URL stops working immediately) and
     # must never happen from a single accidental click -- the same rule the
@@ -563,7 +570,7 @@ def handle_lk_opaque_subscription_issue(handler):
     _json_ok(handler, {
         "credential": {"generation": credential["generation"], "status": credential["status"]},
         "raw_token": delivered["raw_token"],
-        "canonical_url": f"https://sub.beykus.fun/{delivered['raw_token']}",
+        "canonical_url": f"{_sub_base}/{delivered['raw_token']}",
     })
 
 

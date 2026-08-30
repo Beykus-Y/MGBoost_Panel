@@ -160,8 +160,8 @@ def test_brand_new_user_gets_onboarding(db):
         db, [_text_update(2001, "/start")], 2001,
     ))
     texts = _texts(methods)
-    assert any("прислать существующую ссылку" in t for t in texts)
-    assert _reply_keyboard_texts(methods) == ["🛒 Купить VPN"]
+    assert any("уже есть подписка" in t for t in texts)
+    assert _reply_keyboard_texts(methods) == ["🛒 Купить / Продлить"]
     assert state == "SupportStates:waiting_link"
 
 
@@ -172,9 +172,9 @@ def test_legacy_linked_user_keeps_existing_ux(db):
     ))
     texts = _texts(methods)
     assert any("С возвращением" in t for t in texts)
-    assert "прислать существующую ссылку" not in "".join(texts)
+    assert "уже есть подписка" not in "".join(texts)
     buttons = _reply_keyboard_texts(methods)
-    assert "📋 Моя подписка" in buttons
+    assert "📱 Моя подписка" in buttons
     assert state == "SupportStates:in_dialog"
 
 
@@ -187,10 +187,10 @@ def test_canonical_direct_owner_gets_existing_ux(db):
     ))
     texts = _texts(methods)
     assert any("С возвращением" in t for t in texts)
-    assert "прислать существующую ссылку" not in "".join(texts)
+    assert "уже есть подписка" not in "".join(texts)
     buttons = _reply_keyboard_texts(methods)
-    assert "📋 Моя подписка" in buttons
-    assert "⭐️ Продлить подписку" in buttons
+    assert "📱 Моя подписка" in buttons
+    assert "🛒 Купить / Продлить" in buttons
     assert state == "SupportStates:in_dialog"
 
 
@@ -234,7 +234,7 @@ def test_canonical_signup_account_survives_fresh_db_and_dispatcher(db):
         ))
         texts = _texts(methods)
         assert any("С возвращением" in t for t in texts)
-        assert "прислать существующую ссылку" not in "".join(texts)
+        assert "уже есть подписка" not in "".join(texts)
         assert state == "SupportStates:in_dialog"
     finally:
         fresh_db._conn.close()
@@ -252,7 +252,7 @@ def test_revoked_owner_identity_gets_onboarding(db):
         db, [_text_update(2005, "/start")], 2005,
     ))
     texts = _texts(methods)
-    assert any("прислать существующую ссылку" in t for t in texts)
+    assert any("уже есть подписка" in t for t in texts)
     assert state == "SupportStates:waiting_link"
 
 
@@ -265,7 +265,7 @@ def test_closed_account_gets_onboarding(db):
     methods, state = asyncio.run(_feed_text(
         db, [_text_update(2006, "/start")], 2006,
     ))
-    assert any("прислать существующую ссылку" in t for t in _texts(methods))
+    assert any("уже есть подписка" in t for t in _texts(methods))
     assert state == "SupportStates:waiting_link"
 
 
@@ -275,7 +275,7 @@ def test_unrelated_user_cannot_resolve_foreign_direct_account(db):
         db, [_text_update(2999, "/start")], 2999,
     ))
     texts = "".join(_texts(methods))
-    assert "прислать существующую ссылку" in texts
+    assert "уже есть подписка" in texts
     assert "С возвращением" not in texts
     assert state == "SupportStates:waiting_link"
 
@@ -290,7 +290,7 @@ def test_repeat_start_is_idempotent(db):
     ))
     texts = _texts(methods)
     assert len([t for t in texts if "С возвращением" in t]) == 2
-    assert "прислать существующую ссылку" not in "".join(texts)
+    assert "уже есть подписка" not in "".join(texts)
     assert state == "SupportStates:in_dialog"
     assert db.get_tg_user(2008) is None  # /start never fabricated a legacy link
 
@@ -304,8 +304,8 @@ def test_no_state_stray_message_canonical_owner_gets_main_menu(db):
     ))
     texts = "".join(_texts(methods))
     assert "Чем могу помочь?" in texts
-    assert "прислать существующую ссылку" not in texts
-    assert "🛒 Купить VPN" in _reply_keyboard_texts(methods)
+    assert "уже есть подписка" not in texts
+    assert "🛒 Купить / Продлить" in _reply_keyboard_texts(methods)
     assert state == "SupportStates:in_dialog"
 
 
@@ -352,7 +352,7 @@ def test_my_subscription_canonical_renders_entitlements(db):
         setup_support_handlers(dp, db, marzban=None)
         context = dp.fsm.get_context(bot=bot, chat_id=2011, user_id=2011)
         await context.set_state("SupportStates:in_dialog")
-        await dp.feed_update(bot, _text_update(2011, "📋 Моя подписка"))
+        await dp.feed_update(bot, _text_update(2011, "📱 Моя подписка"))
         state = await context.get_state()
         await dp.storage.close()
         await bot.session.close()
@@ -362,7 +362,7 @@ def test_my_subscription_canonical_renders_entitlements(db):
     text = "".join(_texts(methods))
     assert "Тариф" in text
     assert "Базовый" in text
-    assert "ACTIVE" in text
+    assert "активна" in text
     assert "привязать" not in text
 
 

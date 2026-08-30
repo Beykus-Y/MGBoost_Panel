@@ -101,6 +101,15 @@ class StarsPurchaseStore:
                     promo_redemption_id, telegram_id, timestamp) if promo_redemption_id is not None else None
                 account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
                 if account is None:
+                    # A Telegram id already bound to a legacy subscription is
+                    # a known customer, not a new commercial signup. Keep this
+                    # invariant at the invoice primitive as well as the bot
+                    # UI so a stale/forged callback cannot create parallel
+                    # paid subscriptions.
+                    if self._database is not None and self._database.get_tg_user(int(telegram_id)) is not None:
+                        raise StarsPurchaseError(
+                            "a legacy-linked Telegram user cannot create a canonical signup invoice"
+                        )
                     # A brand-new commercial customer. The invoice row (with
                     # a NULL account_id) is the durable pre-payment intent;
                     # no account/entitlement exists until capture confirms

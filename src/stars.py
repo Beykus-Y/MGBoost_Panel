@@ -83,13 +83,25 @@ async def notify_admin_stuck_payment(bot, db, row: dict):
 
 
 async def notify_user_extended(bot, row: dict):
+    """Renewal confirmation + the next step (post-payment UX redesign):
+    the card button leads straight to the bot's subscription card, so the
+    user never has to guess what to do after paying."""
     payer = row.get("payer_telegram_id")
     if bot is None or not payer:
         return
     try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        card_markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📱 Моя подписка", callback_data="sub_open"),
+        ]])
+    except ImportError:  # pragma: no cover
+        card_markup = None
+    try:
         await bot.send_message(
             int(payer),
-            f"✅ Подписка продлена на {row.get('duration_days')} дн. Спасибо за оплату!",
+            f"✅ Подписка продлена на {row.get('duration_days')} дн. Спасибо за оплату!\n\n"
+            "Тариф, срок и статус — по кнопке ниже.",
+            reply_markup=card_markup,
         )
     except Exception as e:
         logger.warning(f"Не удалось уведомить пользователя о продлении: {e}")
@@ -156,6 +168,25 @@ async def _deliver_signup_credential(bot, db, row: dict):
             logger.warning(f"signup credential hint delivery failed: {type(e).__name__}")
         return
 
+    # Link domain comes from PUBLIC_HOST (config.subscription_base_url) --
+    # never a hardcoded domain. Fail closed BEFORE prepare(): a missing
+    # PUBLIC_HOST must not strand a PENDING_DELIVERY credential the user
+    # never receives.
+    from .config import subscription_base_url
+    link_base = subscription_base_url()
+    if link_base is None:
+        logger.error(
+            "Configuration error: PUBLIC_HOST is not set — cannot deliver "
+            "the signup subscription link for account %s", account_id,
+        )
+        await _notify_admin_signup_issue(
+            bot, db,
+            f"signup invoice #{row['id']} applied, but PUBLIC_HOST is not "
+            f"configured -- subscription link for account #{account_id} "
+            f"was NOT delivered",
+        )
+        return
+
     actor_ref = f"telegram:{int(payer)}"
     timestamp = int(time.time())
     op_key = f"{row['id']}:{timestamp}:{secrets.token_urlsafe(16)}"
@@ -181,7 +212,7 @@ async def _deliver_signup_credential(bot, db, row: dict):
         await bot.send_message(
             int(payer),
             "🔗 Ваша ссылка подписки:\n"
-            f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
+            f"{link_base}/{prepared['raw_token']}\n\n"
             "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
             "Откройте её в приложении VPN, чтобы подключить устройство.",
         )
@@ -226,10 +257,18 @@ async def _notify_signup_applied(bot, db, row: dict):
     if operation == "CREATE":
         payer = row.get("payer_telegram_id")
         try:
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            card_markup = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📱 Моя подписка", callback_data="sub_open"),
+            ]])
+        except ImportError:  # pragma: no cover
+            card_markup = None
+        try:
             await bot.send_message(
                 int(payer),
                 f"🎉 Подписка «{row.get('tariff_name')}» активирована "
                 f"на {row.get('duration_days')} дн. Спасибо за покупку!",
+                reply_markup=card_markup,
             )
         except Exception as e:
             logger.warning(f"signup welcome notification failed: {type(e).__name__}")

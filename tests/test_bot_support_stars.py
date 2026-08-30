@@ -14,9 +14,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @pytest.fixture
-def db():
+def db(monkeypatch):
     tmp = tempfile.mkdtemp()
     os.environ["DATA_DIR"] = tmp
+    monkeypatch.setenv("PUBLIC_HOST", "sub.example.test")
     from importlib import reload
     import src.config as cfg
     reload(cfg)
@@ -70,7 +71,7 @@ def handlers(db):
 
 # --- kb_main ---------------------------------------------------------------
 
-def test_kb_main_has_stars_button(db):
+def test_kb_main_has_buy_renew_button(db):
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
@@ -106,7 +107,7 @@ def test_kb_main_has_stars_button(db):
     assert msg.sent
     _, markup = msg.sent[0]
     texts = [btn.text for row in markup.keyboard for btn in row]
-    assert "⭐️ Продлить подписку" in texts
+    assert "🛒 Купить / Продлить" in texts
 
 
 # --- pre_checkout_query: double validation + TTL boundary (§3.4/§8.1) -----
@@ -660,7 +661,15 @@ def test_send_invoice_uses_unique_single_chat_start_parameter(db):
         async def answer(self):
             pass
 
-    handler = _get_handler(dp.callback_query, "cb_stars_buy")
+    class Call:
+        from_user = FakeFromUser(111)
+        data = "buy_pay:BASIC:30"
+        message = Msg()
+
+        async def answer(self):
+            pass
+
+    handler = _get_handler(dp.callback_query, "cb_buy_pay")
     asyncio.run(handler(Call(), object()))
     kwargs = invoice_bot.calls[0]
     invoice = db.list_stars_invoices()[0]
@@ -707,15 +716,17 @@ def test_forwarded_invoice_deep_link_never_rebinds_or_reuses_invoice(db):
 
 
 # --- no-tariffs / disabled-by-default UX (§8.3/§9) -------------------------
+# (pre-redesign these targeted the separate «⭐️ Продлить подписку» menu;
+#  the unified buy entry absorbed it)
 
-def test_stars_menu_shows_unavailable_when_disabled(db):
+def test_buy_entry_shows_unavailable_when_disabled(db):
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
     dp = Dispatcher()
     setup_support_handlers(dp, db, marzban=None)
-    db.save_tg_user(111, "alice")
-    # stars:enabled defaults absent -> off
+    # stars:enabled defaults absent -> off; brand-new user (no tg_user, no
+    # canonical account) reaches the catalog branch
 
     class FakeUser:
         id = 111
@@ -733,7 +744,7 @@ def test_stars_menu_shows_unavailable_when_disabled(db):
         async def set_state(self, s):
             pass
 
-    handler = _get_handler(dp.message, "msg_stars_menu")
+    handler = _get_handler(dp.message, "msg_buy_vpn")
     msg = FakeMessage()
     asyncio.run(handler(msg, FakeState()))
     assert "недоступн" in msg.sent[0]
@@ -750,7 +761,7 @@ class FakeMarzbanForMenu:
         return dict(self._user)
 
 
-def test_stars_menu_offers_tariffs_when_eligible(db):
+def test_buy_entry_offers_tariffs_when_eligible(db):
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
@@ -776,7 +787,7 @@ def test_stars_menu_offers_tariffs_when_eligible(db):
         async def set_state(self, s):
             pass
 
-    handler = _get_handler(dp.message, "msg_stars_menu")
+    handler = _get_handler(dp.message, "msg_buy_vpn")
     msg = FakeMessage()
     asyncio.run(handler(msg, FakeState()))
     text, markup = msg.sent[0]
@@ -784,7 +795,7 @@ def test_stars_menu_offers_tariffs_when_eligible(db):
     assert "99" in markup.inline_keyboard[0][0].text
 
 
-def test_stars_menu_blocks_unlimited_account(db):
+def test_buy_entry_blocks_unlimited_account(db):
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
@@ -817,7 +828,7 @@ def test_stars_menu_blocks_unlimited_account(db):
         async def set_state(self, s):
             pass
 
-    handler = _get_handler(dp.message, "msg_stars_menu")
+    handler = _get_handler(dp.message, "msg_buy_vpn")
     msg = FakeMessage()
     asyncio.run(handler(msg, FakeState()))
     assert "безлимит" in msg.sent[0]
@@ -861,7 +872,7 @@ def test_invoice_creation_callback_defense_in_depth_blocks_stale_unlimited(db):
 
     class FakeCall:
         from_user = FakeUser()
-        data = "stars_buy:BASIC:30"
+        data = "buy_pay:BASIC:30"
         message = FakeMsg()
 
         async def answer(self):
@@ -870,20 +881,19 @@ def test_invoice_creation_callback_defense_in_depth_blocks_stale_unlimited(db):
     class FakeState:
         pass
 
-    handler = _get_handler(dp.callback_query, "cb_stars_buy")
+    handler = _get_handler(dp.callback_query, "cb_buy_pay")
     call = FakeCall()
     asyncio.run(handler(call, FakeState()))
     assert db.list_stars_invoices() == []
     assert "нельзя оформить" in call.message.sent[-1]
 
 
-def test_stars_menu_shows_unavailable_when_no_tariffs_even_if_enabled(db):
+def test_buy_entry_shows_unavailable_when_no_tariffs_even_if_enabled(db):
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
     dp = Dispatcher()
     setup_support_handlers(dp, db, marzban=None)
-    db.save_tg_user(111, "alice")
     db.set_setting("stars:enabled", "1")
     # no tariffs created — table starts empty per §9
 
@@ -903,7 +913,7 @@ def test_stars_menu_shows_unavailable_when_no_tariffs_even_if_enabled(db):
         async def set_state(self, s):
             pass
 
-    handler = _get_handler(dp.message, "msg_stars_menu")
+    handler = _get_handler(dp.message, "msg_buy_vpn")
     msg = FakeMessage()
     asyncio.run(handler(msg, FakeState()))
     assert "недоступн" in msg.sent[0]
@@ -970,8 +980,8 @@ def test_successful_payment_routes_signup_invoice_through_capture_paid(db):
     assert handlers["trigger"].is_set()
 
 
-def test_promo_discount_reservation_is_forwarded_by_real_stars_button(db):
-    """The bot's actual ``stars_buy`` callback must not lose the FSM hold."""
+def test_promo_discount_reservation_is_forwarded_by_real_buy_pay_button(db):
+    """The bot's actual ``buy_pay`` callback must not lose the FSM hold."""
     from aiogram import Dispatcher
     from src.bot_support import setup_support_handlers
 
@@ -995,7 +1005,7 @@ def test_promo_discount_reservation_is_forwarded_by_real_stars_button(db):
     )
     dp = Dispatcher()
     setup_support_handlers(dp, db, marzban=None)
-    handler = _get_handler(dp.callback_query, "cb_stars_buy")
+    handler = _get_handler(dp.callback_query, "cb_buy_pay")
 
     class Bot:
         def __init__(self): self.calls = []
@@ -1005,7 +1015,7 @@ def test_promo_discount_reservation_is_forwarded_by_real_stars_button(db):
         async def answer(self, *_args, **_kwargs): pass
     class Call:
         from_user = FakeFromUser(333)
-        data = "stars_buy:BASIC:30"
+        data = "buy_pay:BASIC:30"
         message = Message()
         async def answer(self): pass
     class State:

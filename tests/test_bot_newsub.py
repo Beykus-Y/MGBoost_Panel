@@ -22,6 +22,8 @@ def db(monkeypatch):
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", PRIMARY)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_LOGIN", PRIMARY_LOGIN)
     monkeypatch.setenv("OPAQUE_SUBSCRIPTION_ENABLED", "1")
+    # The delivered link URL is built from PUBLIC_HOST (never hardcoded).
+    monkeypatch.setenv("PUBLIC_HOST", "sub.beykus.fun")
     import src.config as config
     import src.database as database
     importlib.reload(config)

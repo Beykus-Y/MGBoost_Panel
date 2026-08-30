@@ -2765,6 +2765,49 @@ session had no Marzban admin login credentials and did not attempt to
 obtain or guess any; that specific check is the owner's own next step (see
 `AGENT_HANDOFF.md`).
 
+**Bot UX redesign slice (2026-08-30, owner-approved audit follow-up,
+implemented locally, NO push/deploy):** full bot UI audit found the
+subscription card (the product's main object) absent from the bot, two
+parallel purchase funnels with different depths, an unfulfillable plan
+choice offered to existing customers (PH5-06 `PlanChangeRequired` surfacing
+only AFTER the confirm step), a hidden `/newsub` as the only link-recovery
+path, silently swallowed user messages after ticket close, «⬅️ Назад» that
+cancelled the purchase, and English status text in an otherwise Russian
+card. Owner decisions (recorded here per the Decision Log discipline):
+foreign plans are never shown as buyable to an existing account (current
+plan durations + «🔄 Сменить тариф» → support screen only); canonical
+device counts come from the dormant `DeviceSlotStore` (read-only
+`get_capacity_state`), while the web-LK management button is NOT promised
+to canonical users until LK is proven against the slot model — support
+CTA only; legacy-linked customers without a canonical account are BLOCKED
+from silently minting a second CANONICAL_SIGNUP subscription (guard in
+buy entry + `cb_buy_pay`, support CTA); WL stays a public brand
+(«WL-серверы»), the card shows «WL: X / Y GB · текущий период до DD.MM»
+(period end from `wl.current_period`, never «сброс»); main menu is 5
+buttons with «🔗 Ссылка» as an inline button inside the subscription card
+(not a menu section); the card renders fresh (no FSM-dependent edit/dedup —
+MemoryStorage holds no durable message_id; the inline «🔄 Обновить» edits
+its own message, which needs no stored state). Implementation: new
+read-only composition layer `src/entitlement_read_model.py` (entitlement
+engine + `DeviceSlotStore` capacity + credential status; legacy cohort via
+`tg_users` + live Marzban passed in by the bot loop), unified
+`_send_buy_entry` funnel absorbing `kb_tariffs`/`cb_stars_buy`/
+`msg_stars_menu`, real back navigation (`buy_back_plan`), support entry
+point with explicit operator escalation, `notify_ticket_closed` now resets
+FSM to `in_dialog` + kb_main (previously the dead `state_storage` parameter
+meant users stayed in `waiting_human` forever and messages were dropped),
+subscription-link URLs built from `PUBLIC_HOST` via
+`config.subscription_base_url()` with fail-closed delivery (LK issue → 503;
+bot delivery → admin alert, no activation) instead of the hardcoded
+`sub.beykus.fun`, and single-source WL quota formatting
+(`_wl_quota_text`). Post-payment messages carry a «📱 Моя подписка»
+button. Old reply-keyboard labels remain as handler aliases because
+Telegram caches reply keyboards client-side. Tests: new
+`tests/test_bot_ux_redesign.py`; updated pins in
+`test_bot_support_stars.py`, `test_bot_start_resolver.py`,
+`test_bot_newsub.py`, `test_commercial_signup.py`,
+`test_commercial_wl_wiring.py`, `test_lk_opaque_subscription_routes.py`.
+
 **Devices read-only client-evidence addendum (2026-08-26, small follow-up,
 does not close PH7-12):** owner asked, before final Wave A sign-off, to see
 the actual device/VPN client in Devices, not just slot/technical state.

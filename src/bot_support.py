@@ -10,21 +10,27 @@ SQLITE_MAX_INTEGER = (1 << 63) - 1
 _GB_DECIMAL = 1_000_000_000
 
 
-def wl_quota_line(item: dict) -> str:
+def _wl_quota_text(quota_bytes: int, duration_days: int) -> str:
     """Human-readable WL quota for one catalog SKU. A 60-day SKU is ALWAYS
     described per 30-day period (never as a doubled total) -- each 30-day
-    WL period carries its own full quota and remainder is never carried."""
+    WL period carries its own full quota and remainder is never carried.
+    Single formatting source for the tariff screens AND the invoice
+    description (the two copies drifted before the UX redesign)."""
+    gb = quota_bytes // _GB_DECIMAL
+    days = int(duration_days)
+    if days <= 30:
+        return f"{gb} GB на {days} дн."
+    return (
+        f"{gb} GB каждые 30 дней "
+        f"({days // 30} периода по {gb} GB)"
+    )
+
+
+def wl_quota_line(item: dict) -> str:
     quota_bytes = item.get("wl_quota_bytes") or 0
     if not quota_bytes:
         return ""
-    gb = quota_bytes // _GB_DECIMAL
-    days = int(item["duration_days"])
-    if days <= 30:
-        return f"Трафик: {gb} GB на {days} дн.\n"
-    return (
-        f"Трафик: {gb} GB каждые 30 дней "
-        f"({days // 30} периода по {gb} GB)\n"
-    )
+    return f"Трафик: {_wl_quota_text(quota_bytes, item['duration_days'])}\n"
 
 
 class PaymentDurabilityError(BaseException):
@@ -108,13 +114,94 @@ def _fmt_bytes(b: int) -> str:
     return f"{b:.1f} PB"
 
 
+def _fmt_date(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%d.%m.%Y")
+
+
+def _fmt_gb(num_bytes) -> int:
+    return (num_bytes or 0) // _GB_DECIMAL
+
+
+# --- subscription card rendering (UI redesign slice C1) ---------------------
+# English effective_status values are the engine's contract (OPD-16 requires
+# one display rule); the Russian presentation lives here, in the UI layer.
+
+_CANONICAL_STATUS_RU = {
+    "ACTIVE": ("🟢", "Подписка активна"),
+    "UNLIMITED": ("🟢", "Подписка активна (бессрочно)"),
+    "EXPIRED": ("🔴", "Подписка истекла"),
+    "NONE": ("⚪️", "Подписки пока нет"),
+}
+
+_LEGACY_STATUS_RU = {
+    "active": "🟢 Подписка активна",
+    "expired": "🔴 Подписка истекла",
+    "disabled": "⛔ Подписка отключена",
+    "limited": "⚠️ Лимит трафика исчерпан",
+    "on_hold": "⏸ Подписка на паузе",
+}
+
+
+def render_subscription_card(card: dict, *, now: int | None = None) -> str:
+    """Текст карточки подписки: тариф, срок, устройства, WL-остаток — то,
+    что пользователь должен понимать с одного взгляда. Никакой сырой
+    технической терминологии; нет данных — нет строки."""
+    now = int(time.time()) if now is None else int(now)
+    lines: list[str] = []
+    devices = card.get("devices") or {}
+
+    if card["cohort"] == "canonical":
+        status = card["status"]
+        if status == "EXPIRED" and card.get("expiry"):
+            lines.append(f"🔴 Подписка истекла {_fmt_date(card['expiry'])}")
+        else:
+            icon, label = _CANONICAL_STATUS_RU.get(status, ("⚪️", status))
+            lines.append(f"{icon} {label}")
+        if card.get("plan_name"):
+            plan_line = f"Тариф: {card['plan_name']}"
+            if devices.get("limit"):
+                plan_line += f" · до {devices['limit']} устройств"
+            lines.append(plan_line)
+        if not card.get("unlimited") and card.get("expiry"):
+            days_left = max(0, (int(card["expiry"]) - now) // 86400)
+            lines.append(f"Действует до: {_fmt_date(card['expiry'])} (осталось {days_left} дн.)")
+        wl = card.get("wl")
+        if wl:
+            if wl["mode"] == "UNLIMITED":
+                lines.append("WL: безлимит")
+            elif wl.get("quota_bytes"):
+                wl_line = f"WL: {_fmt_gb(wl.get('consumed_bytes'))} / {_fmt_gb(wl['quota_bytes'])} GB"
+                if wl.get("period_ends_at"):
+                    wl_line += f" · текущий период до {_fmt_date(wl['period_ends_at'])}"
+                lines.append(wl_line)
+        if status == "NONE":
+            lines.append("Купить подписку — кнопка «🛒 Купить / Продлить» ниже.")
+    else:
+        lines.append(_LEGACY_STATUS_RU.get(card["status"], f"⚪️ Статус: {card['status']}"))
+        if card.get("marzban_username"):
+            lines.append(f"Пользователь: {card['marzban_username']}")
+        if card.get("traffic_used") is not None:
+            limit = card.get("traffic_limit")
+            used_str = f"Использовано: {_fmt_bytes(card['traffic_used'])} / {_fmt_bytes(limit) if limit else '∞'}"
+            lines.append(used_str)
+        if card.get("expiry"):
+            lines.append(f"Дата окончания: {_fmt_date(card['expiry'])}")
+
+    if devices.get("mode") == "UNLIMITED":
+        if devices.get("active") is not None:
+            lines.append(f"Устройства: без лимита (активных: {devices['active']})")
+    elif devices.get("active") is not None and devices.get("limit"):
+        lines.append(f"Устройства: {devices['active']} из {devices['limit']} активных")
+    return "\n".join(lines)
+
+
 def _canonical_subscription_summary(db, telegram_id: int) -> str | None:
-    """Render the canonical (``mgboost_accounts``) subscription state for an
-    ACTIVE account with a non-revoked OWNER telegram identity, or None when
-    the id resolves to no such account. Same resolver as Stars signup and
-    renewal (``AccountStore.get_active_account_by_telegram_id``) -- a legacy
-    ``tg_users`` link is deliberately not consulted, and possession of a
-    subscription URL/HWID/username never counts as ownership here."""
+    """Compact canonical entitlement summary for the SUPPORT AI TOOL
+    (`get_subscription_info`), not a user-facing screen -- the user-facing
+    surface is `render_subscription_card`. Same resolver as Stars signup
+    and renewal (``AccountStore.get_active_account_by_telegram_id``) -- a
+    legacy ``tg_users`` link is deliberately not consulted, and possession
+    of a subscription URL/HWID/username never counts as ownership here."""
     account = db.accounts.get_active_account_by_telegram_id(telegram_id)
     if account is None:
         return None
@@ -124,8 +211,7 @@ def _canonical_subscription_summary(db, telegram_id: int) -> str | None:
     expire = sub.get("effective_expiry")
     expire_str = ""
     if expire:
-        dt = datetime.fromtimestamp(int(expire), tz=timezone.utc)
-        expire_str = f"\nДата окончания: {dt.strftime('%d.%m.%Y')}"
+        expire_str = f"\nДата окончания: {_fmt_date(expire)}"
     return (
         f"👤 Тариф: {plan.get('display_name') or plan.get('code') or '—'}\n"
         f"Статус: {sub.get('effective_status') or '—'}{expire_str}\n\n"
@@ -289,16 +375,19 @@ async def ask_openrouter_with_tools(
     max_tool_rounds: int = 3,
 ) -> str:
     if not api_key:
-        return "AI-ассистент недоступен. Нажмите «🆘 Позвать человека»."
+        return "AI-ассистент недоступен. Нажмите «🆘 Поддержка»."
 
     import json as _json
     import aiohttp
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://sub.beykus.fun",
         "X-Title": "MGBoost Support",
     }
+    from .config import subscription_base_url
+    public_base = subscription_base_url()
+    if public_base is not None:
+        headers["HTTP-Referer"] = public_base
 
     current_messages = list(messages)
 
@@ -366,6 +455,73 @@ def build_system_prompt(db) -> str:
     return SYSTEM_PROMPT + "\n\n" + DEFAULT_FAQ
 
 
+# --- FSM + shared keyboards -------------------------------------------------
+# Hoisted to module level so notify_ticket_closed (invoked from the admin
+# route, outside the dispatcher) can rebuild the main keyboard and reset the
+# user's state after a ticket is closed.
+
+try:
+    from aiogram.fsm.state import State, StatesGroup
+
+    class SupportStates(StatesGroup):
+        waiting_link = State()
+        in_dialog = State()
+        waiting_human = State()
+        waiting_promo_code = State()
+except ImportError:  # pragma: no cover - aiogram optional at import time
+    SupportStates = None
+
+_FSM_STORAGE = None  # set by setup_support_handlers; consumed by notify_ticket_closed
+
+
+def _reply_markup(markup_cls, buttons):
+    return markup_cls(keyboard=buttons, resize_keyboard=True)
+
+
+def kb_main():
+    """Главное меню: 5 кнопок, единые для всех когорт. «🔗 Ссылка» — не
+    отдельный раздел, а inline-кнопка внутри карточки подписки."""
+    try:
+        from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+    except ImportError:  # pragma: no cover
+        return None
+    return _reply_markup(ReplyKeyboardMarkup, [
+        [KeyboardButton(text="📱 Моя подписка"), KeyboardButton(text="🛒 Купить / Продлить")],
+        [KeyboardButton(text="💻 Устройства"), KeyboardButton(text="🎟 Промокод")],
+        [KeyboardButton(text="🆘 Поддержка")],
+    ])
+
+
+def kb_new_user():
+    try:
+        from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+    except ImportError:  # pragma: no cover
+        return None
+    return _reply_markup(ReplyKeyboardMarkup, [
+        [KeyboardButton(text="🛒 Купить / Продлить")],
+    ])
+
+
+def kb_waiting():
+    try:
+        from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+    except ImportError:  # pragma: no cover
+        return None
+    return _reply_markup(ReplyKeyboardMarkup, [
+        [KeyboardButton(text="⬅️ Назад к боту")],
+    ])
+
+
+def kb_promo_cancel():
+    try:
+        from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+    except ImportError:  # pragma: no cover
+        return None
+    return _reply_markup(ReplyKeyboardMarkup, [
+        [KeyboardButton(text="❌ Отмена")],
+    ])
+
+
 def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, node_names: dict | None = None,
                             stars_trigger=None):
     try:
@@ -373,71 +529,57 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         from aiogram.enums import ChatType
         from aiogram.filters import Command, CommandStart, StateFilter
         from aiogram.fsm.context import FSMContext
-        from aiogram.fsm.state import State, StatesGroup
         from aiogram.types import (
             CallbackQuery,
             InlineKeyboardButton,
             InlineKeyboardMarkup,
-            KeyboardButton,
             LabeledPrice,
             Message,
             PreCheckoutQuery,
-            ReplyKeyboardMarkup,
-            ReplyKeyboardRemove,
         )
     except ImportError:
         logger.error("aiogram не установлен — поддержка не запустится")
         return
 
+    global _FSM_STORAGE
+    _FSM_STORAGE = getattr(dp, "storage", None)
+
     from .stars import _check_stars_eligibility
     from .commercial_signup import SIGNUP_INVOICE_KIND
+    from .entitlement_read_model import build_subscription_card
 
     _CANONICAL_INVOICE_KINDS = ("CANONICAL_PLAN", SIGNUP_INVOICE_KIND)
 
-    class SupportStates(StatesGroup):
-        waiting_link = State()
-        in_dialog = State()
-        waiting_human = State()
-        waiting_promo_code = State()
+    # Owner rule (bot UX redesign): a legacy-linked customer without a
+    # canonical account must never silently receive a SECOND paid
+    # subscription through a CANONICAL_SIGNUP invoice — two parallel paid
+    # subscriptions for one person means billing/device/support chaos.
+    LEGACY_SECOND_SUBSCRIPTION_GUARD = (
+        "У вас уже есть подписка, оформленная по ссылке. Вторая отдельная "
+        "подписка на тот же аккаунт не нужна — напишите нам, и мы поможем "
+        "оформить перенос или продление."
+    )
 
-    def kb_main():
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="📋 Моя подписка"), KeyboardButton(text="🆘 Позвать человека")],
-                [KeyboardButton(text="🔧 Управление устройствами"), KeyboardButton(text="🎟 Ввести промокод")],
-                [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="⭐️ Продлить подписку")],
-            ],
-            resize_keyboard=True,
+    def _support_button_markup():
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🆘 Написать в поддержку", callback_data="call_human"),
+        ]])
+
+    def kb_no_link():
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="У меня нет ссылки", callback_data="no_link")]]
         )
 
-    def kb_new_user():
-        return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="🛒 Купить VPN")]],
-            resize_keyboard=True,
-        )
-
-    def kb_tariffs(tariffs: list):
-        rows = [
-            [InlineKeyboardButton(
-                text=f"{t['display_name']} — {t['duration_days']} дн. — {t['amount']} ⭐️",
-                callback_data=f"stars_buy:{t['plan_code']}:{t['duration_days']}",
-            )]
-            for t in tariffs
-        ]
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def kb_waiting():
-        return ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="⬅️ Назад к боту")]],
-            resize_keyboard=True,
-        )
+    def _buy_cancel_markup():
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel"),
+        ]])
 
     async def _send_stars_invoice(bot, chat_id: int, invoice: dict):
         """Single canonical invoice sender: every field comes from the
         server-side invoice row (catalog snapshot), never from callback
         data. Single-chat invoice mode -- a forwarded copy gets a deep-link
         button, never another Pay button."""
-        from .plan_catalog import GB_DECIMAL
         quota_row = db._conn.execute(
             "SELECT wl_quota_bytes FROM mgboost_plan_versions WHERE id=?",
             (invoice["plan_version_id"],),
@@ -445,12 +587,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         quota_bytes = quota_row["wl_quota_bytes"] if quota_row else 0
         quota_text = ""
         if quota_bytes:
-            gb = quota_bytes // GB_DECIMAL
-            days = int(invoice["duration_days"])
-            if days <= 30:
-                quota_text = f" — {gb} GB на {days} дн."
-            else:
-                quota_text = f" — {gb} GB каждые 30 дней ({days // 30} периода по {gb} GB)"
+            quota_text = f" — {_wl_quota_text(quota_bytes, invoice['duration_days'])}"
         try:
             await bot.send_invoice(
                 chat_id=chat_id,
@@ -468,11 +605,6 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 await bot.send_message(chat_id, "Не удалось создать счёт. Попробуйте позже.")
             except Exception:
                 pass
-
-    def kb_no_link():
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="У меня нет ссылки", callback_data="no_link")]]
-        )
 
     # Payment service updates must be registered before every FSM/state
     # catch-all. MemoryStorage is intentionally ephemeral, so after a bot
@@ -502,6 +634,18 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await query.answer(ok=False, error_message="Счёт истёк, создайте новый.")
             return
         if row.get("invoice_kind") in _CANONICAL_INVOICE_KINDS:
+            if row.get("invoice_kind") == SIGNUP_INVOICE_KIND:
+                # Telegram captures Stars only after this acknowledgement.
+                # Do not accept a signup payment if its post-payment opaque
+                # subscription URL cannot be delivered safely.
+                from .config import subscription_base_url
+                if subscription_base_url() is None:
+                    logger.error("Stars signup pre-checkout rejected: PUBLIC_HOST is invalid or missing")
+                    await query.answer(
+                        ok=False,
+                        error_message="Покупка временно недоступна. Попробуйте позже.",
+                    )
+                    return
             try:
                 db.stars_purchases.validate_invoice_for_checkout(
                     invoice_id, query.from_user.id, now=int(time.time())
@@ -673,11 +817,18 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             raise PaymentDurabilityError("Stars payment capture could not be verified") from exc
         if not fresh or fresh.get("telegram_payment_charge_id") != sp.telegram_payment_charge_id:
             await capture_orphan_payment(message, "invoice_changed_during_payment_capture")
-    # --- PH5-11 first-rollout purchase UX («Купить VPN») ---------------------
+
+    # --- Единая воронка «🛒 Купить / Продлить» -------------------------------
     # Callback data carries ONLY plan_code + duration_days. Every price,
     # name, device limit and the invoice itself are re-resolved server-side
     # from the active immutable catalog inside create_invoice -- a tampered
     # callback can never select another plan, version or price.
+    #
+    # One funnel for purchase AND renewal (the pre-redesign «⭐️ Продлить
+    # подписку» had its own stars_buy callback graph with no confirmation
+    # step). An existing canonical account is only ever offered its CURRENT
+    # plan (create_invoice locks the plan; plan change awaits PH5-06), so
+    # the funnel never shows a buyable tariff the backend cannot fulfil.
 
     def _sellable_tariffs():
         if db.get_setting("stars:enabled") != "1":
@@ -695,30 +846,112 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             "device_limit": first["device_limit"], "items": items,
         }
 
-    @dp.message(F.text == "🛒 Купить VPN")
-    async def msg_buy_vpn(message: Message, state: FSMContext):
-        await state.clear()
-        tariffs = _sellable_tariffs()
-        if not tariffs:
-            await message.answer("Покупка через Telegram Stars временно недоступна, обратитесь к оператору.")
-            return
+    def _buy_catalog_view(tariffs):
         seen, plans = set(), []
         for t in tariffs:
             if t["plan_code"] not in seen:
                 seen.add(t["plan_code"])
                 plans.append(_plan_summary(tariffs, t["plan_code"]))
         rows = [[InlineKeyboardButton(
-            text=f"{p['display_name']} — до {p['device_limit']} устройств",
+            text=(f"{p['display_name']} — до {p['device_limit']} устройств "
+                  f"— от {min(i['amount'] for i in p['items'])}⭐"),
             callback_data=f"buy_plan:{p['plan_code']}",
         )] for p in plans]
         rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel")])
-        await message.answer(
+        text = (
             "Выберите тариф:\n\n"
             "Все тарифы включают стандартный набор серверов. "
             "WL, Расширенный и Семейный дополнительно включают WL-серверы "
-            "с лимитом трафика на 30-дневный период.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            "с лимитом трафика на 30-дневный период."
         )
+        return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def _current_subscription_row(account_id: int):
+        return db._conn.execute(
+            "SELECT pv.plan_code,pv.display_name,pv.device_limit,pv.wl_quota_bytes,s.status "
+            "FROM mgboost_subscriptions s JOIN mgboost_plan_versions pv "
+            "ON pv.id=s.current_plan_version_id WHERE s.account_id=? "
+            "ORDER BY s.id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+
+    def _plan_renew_view(tariffs, account):
+        """(text, markup) for an existing canonical account: only the
+        current plan's durations are buyable; everything else routes to
+        support instead of failing after the user has decided to pay."""
+        current = _current_subscription_row(account["id"])
+        if current is not None and current["status"] == "UNLIMITED":
+            return "У вас безлимитный тариф — покупка через Stars недоступна.", None
+        if current is None:
+            # An account without a subscription row buys from the catalog
+            # (its first purchase IS the signup/CREATE grant).
+            return _buy_catalog_view(tariffs)
+        items = [t for t in tariffs if t["plan_code"] == current["plan_code"]]
+        if not items:
+            return ("Смена тарифа оформляется через поддержку. "
+                    "Продление через Stars сейчас недоступно."), None
+        quota_note = wl_quota_line(items[0])
+        rows = [[InlineKeyboardButton(
+            text=f"{item['duration_days']} дн. — {item['amount']} ⭐️",
+            callback_data=f"buy_dur:{current['plan_code']}:{item['duration_days']}",
+        )] for item in items]
+        rows.append([InlineKeyboardButton(text="🔄 Сменить тариф", callback_data="change_plan")])
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel")])
+        text = (
+            f"Ваш тариф: {current['display_name']} — до {current['device_limit']} устройств.\n"
+            + (quota_note + "\n" if quota_note else "")
+            + "Выберите срок продления:"
+        )
+        return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def _change_plan_view():
+        text = ("Смена тарифа пока оформляется через поддержку: поможем "
+                "подобрать вариант и перейти без потери оплаченных дней.")
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🆘 Написать в поддержку", callback_data="call_human")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_back_plan")],
+        ])
+        return text, markup
+
+    async def _send_buy_entry(target, telegram_id: int, *, edit: bool = False):
+        """Entry point shared by the reply button, the card's «➕ Продлить»
+        and the promo success screen: catalog for brand-new users, current
+        plan for canonical accounts, the second-subscription guard for
+        legacy-linked customers."""
+        tg_user = db.get_tg_user(telegram_id)
+        account = db.accounts.get_active_account_by_telegram_id(telegram_id)
+        if account is not None:
+            tariffs = _sellable_tariffs()
+            if not tariffs:
+                text, markup = "Продление через Stars временно недоступно, обратитесь к оператору.", None
+            else:
+                text, markup = _plan_renew_view(tariffs, account)
+        elif tg_user is not None:
+            text, markup = LEGACY_SECOND_SUBSCRIPTION_GUARD, _support_button_markup()
+        else:
+            tariffs = _sellable_tariffs()
+            if not tariffs:
+                text, markup = "Покупка через Telegram Stars временно недоступна, обратитесь к оператору.", None
+            else:
+                text, markup = _buy_catalog_view(tariffs)
+        if edit:
+            try:
+                await target.edit_text(text, reply_markup=markup)
+                return
+            except Exception:
+                pass
+        await target.answer(text, reply_markup=markup)
+
+    # NOTE: no state.clear() here — a PURCHASE_DISCOUNT promo reservation
+    # lives in FSM data and must survive into cb_buy_pay's invoice creation.
+    @dp.message(F.text.in_({"🛒 Купить / Продлить", "🛒 Купить VPN", "⭐️ Продлить подписку"}))
+    async def msg_buy_vpn(message: Message, state: FSMContext):
+        # Registered above every FSM catch-all so the purchase journey stays
+        # reachable from ANY state — including after a restart wiped
+        # MemoryStorage. Old button labels are kept as aliases: Telegram
+        # caches reply keyboards client-side, so stale keyboards must never
+        # dead-end.
+        await _send_buy_entry(message, message.from_user.id)
 
     @dp.callback_query(F.data == "buy_cancel")
     async def cb_buy_cancel(call: CallbackQuery):
@@ -727,6 +960,25 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await call.message.edit_text("Покупка отменена.")
         except Exception:
             pass
+
+    @dp.callback_query(F.data == "buy_back_plan")
+    async def cb_buy_back_plan(call: CallbackQuery):
+        """Настоящий Back: возвращает на предыдущий экран воронки. До
+        редизайна кнопка «⬅️ Назад» на шаге срока вызывала buy_cancel и
+        отменяла всю покупку."""
+        await call.answer()
+        await _send_buy_entry(call.message, call.from_user.id, edit=True)
+
+    @dp.callback_query(F.data == "change_plan")
+    async def cb_change_plan(call: CallbackQuery):
+        await call.answer()
+        text, markup = _change_plan_view()
+        await call.message.edit_text(text, reply_markup=markup)
+
+    @dp.callback_query(F.data == "buy_open")
+    async def cb_buy_open(call: CallbackQuery):
+        await call.answer()
+        await _send_buy_entry(call.message, call.from_user.id)
 
     @dp.callback_query(F.data.startswith("buy_plan:"))
     async def cb_buy_plan(call: CallbackQuery):
@@ -744,7 +996,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             text=f"{item['duration_days']} дн. — {item['amount']} ⭐️",
             callback_data=f"buy_dur:{plan_code}:{item['duration_days']}",
         )] for item in summary["items"]]
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_cancel")])
+        rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="buy_back_plan")])
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel")])
         quota_note = wl_quota_line(summary["items"][0])
         await call.message.edit_text(
             f"Тариф «{summary['display_name']}» — до {summary['device_limit']} устройств.\n"
@@ -753,15 +1006,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
-    @dp.callback_query(F.data.startswith("buy_dur:"))
-    async def cb_buy_duration(call: CallbackQuery):
-        await call.answer()
-        try:
-            _, plan_code, raw_duration = call.data.split(":", 2)
-            duration_days = int(raw_duration)
-        except (IndexError, ValueError):
-            await call.message.answer("Неверный тариф.")
-            return
+    async def _show_buy_confirmation(call: CallbackQuery, plan_code: str, duration_days: int,
+                                     state: FSMContext = None):
         tariffs = _sellable_tariffs()
         if not tariffs:
             await call.message.answer("Покупка временно недоступна, обратитесь к оператору.")
@@ -774,6 +1020,15 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         if item is None:
             await call.message.answer("Этот тариф сейчас недоступен для покупки.")
             return
+        promo_line = ""
+        state_data = {}
+        try:
+            if state is not None and hasattr(state, "get_data"):
+                state_data = await state.get_data()
+        except AttributeError:
+            pass  # non-FSM transport (tests): no reservation context
+        if state_data.get("promo_reservation_id"):
+            promo_line = "\n🎟 Промокод: скидка будет учтена в счёте."
         await call.message.edit_text(
             f"Вы оформляете:\n\n"
             f"Тариф: {item['display_name']}\n"
@@ -781,7 +1036,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             f"Устройств: до {item['device_limit']}\n"
             + wl_quota_line(item)
             + f"Стоимость: {item['amount']} ⭐️\n\n"
-            "Оплата через Telegram Stars.",
+            "Оплата через Telegram Stars."
+            + promo_line,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text=f"Оплатить {item['amount']} ⭐️",
@@ -790,6 +1046,35 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 InlineKeyboardButton(text="❌ Отмена", callback_data="buy_cancel"),
             ]]),
         )
+
+    @dp.callback_query(F.data.startswith("buy_dur:"))
+    async def cb_buy_duration(call: CallbackQuery, state: FSMContext = None):
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+        await _show_buy_confirmation(call, plan_code, duration_days, state)
+
+    @dp.callback_query(F.data.startswith("stars_buy:"))
+    async def cb_legacy_stars_buy(call: CallbackQuery, state: FSMContext = None):
+        """Compatibility for inline keyboards sent before the unified
+        funnel. A stale tap is acknowledged and lands on the modern explicit
+        confirmation step; it never recreates the removed direct-pay graph."""
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Этот старый экран больше не актуален. Откройте покупку заново.")
+            return
+        if (db.get_tg_user(call.from_user.id) is not None
+                and db.accounts.get_active_account_by_telegram_id(call.from_user.id) is None):
+            await call.message.answer(LEGACY_SECOND_SUBSCRIPTION_GUARD, reply_markup=_support_button_markup())
+            return
+        await _show_buy_confirmation(call, plan_code, duration_days, state)
 
     @dp.callback_query(F.data.startswith("buy_pay:"))
     async def cb_buy_pay(call: CallbackQuery, state: FSMContext):
@@ -803,10 +1088,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         if db.get_setting("stars:enabled") != "1":
             await call.message.answer("Покупка временно недоступна.")
             return
+        if (db.get_tg_user(call.from_user.id) is not None
+                and db.accounts.get_active_account_by_telegram_id(call.from_user.id) is None):
+            # Defense in depth: stale inline keyboards from before the guard
+            # existed must not mint a signup invoice for a legacy customer.
+            await call.message.answer(LEGACY_SECOND_SUBSCRIPTION_GUARD, reply_markup=_support_button_markup())
+            return
         promo_reservation_id = None
         try:
-            if await state.get_state() is not None:
-                promo_reservation_id = (await state.get_data()).get("promo_reservation_id")
+            state_data = await state.get_data() if hasattr(state, "get_data") else {}
+            promo_reservation_id = state_data.get("promo_reservation_id")
         except AttributeError:
             pass  # non-FSM transport (tests): no reservation context
         try:
@@ -826,7 +1117,6 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             pass
         await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
 
-
     @dp.message(CommandStart())
     async def cmd_start(message: Message, state: FSMContext):
         await state.clear()
@@ -841,21 +1131,48 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
         if tg_user or account:
             await state.set_state(SupportStates.in_dialog)
-            await message.answer(
-                ("Этот счёт нельзя оплатить из пересланного сообщения. "
-                 "Создайте новый через «⭐️ Продлить подписку»."
-                 if forwarded_invoice_link else "С возвращением! Чем могу помочь?"),
-                reply_markup=kb_main(),
-            )
+            if forwarded_invoice_link:
+                await message.answer(
+                    "Этот счёт нельзя оплатить из пересланного сообщения. "
+                    "Создайте новый через «🛒 Купить / Продлить».",
+                    reply_markup=kb_main(),
+                )
+                return
+            greeting = "С возвращением! Чем могу помочь?"
+            card = await _resolve_card_quiet(message.from_user.id)
+            if card is not None:
+                # Карточка как приветствие: статус/тариф/срок видны сразу,
+                # без отдельного нажатия. Reply-клавиатура не переотправляется
+                # — Telegram сохраняет её на клиенте.
+                greeting = "С возвращением!\n\n" + render_subscription_card(card)
+            await message.answer(greeting, reply_markup=kb_main())
         else:
             await state.set_state(SupportStates.waiting_link)
+            prefix = ("Пересланный счёт оплатить нельзя — после покупки создайте новый через меню.\n\n"
+                      if forwarded_invoice_link else "")
             await message.answer(
-                (("Пересланный счёт оплатить нельзя — после покупки создайте новый через меню.\n\n")
-                 if forwarded_invoice_link else "")
-                + "👋 Привет! Я помогу с вашей VPN-подпиской.\n\n"
-                "Здесь можно купить подписку или прислать существующую ссылку для привязки аккаунта.",
+                prefix + "👋 Привет! Это бот MGBoost — VPN-подписка.\n\n"
+                "• «🛒 Выбрать тариф» — купить подписку.\n"
+                "• Уже пользуетесь нашей ссылкой — нажмите «У меня уже есть "
+                "подписка» и пришлите её сюда, чтобы привязать аккаунт.",
                 reply_markup=kb_new_user(),
             )
+            await message.answer(
+                "С чего начнём?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🛒 Выбрать тариф", callback_data="buy_open"),
+                    InlineKeyboardButton(text="У меня уже есть подписка", callback_data="start_link"),
+                ]]),
+            )
+
+    @dp.callback_query(F.data == "start_link")
+    async def cb_start_link(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        await state.set_state(SupportStates.waiting_link)
+        await call.message.answer(
+            "Пришлите ссылку подписки одним сообщением — привяжу аккаунт.",
+            reply_markup=kb_no_link(),
+        )
 
     @dp.message(StateFilter(None), ~F.successful_payment)
     async def msg_no_state(message: Message, state: FSMContext):
@@ -869,8 +1186,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         else:
             await state.set_state(SupportStates.waiting_link)
             await message.answer(
-                "👋 Привет! Пришлите ссылку подписки для привязки аккаунта "
-                "или купите подписку через «🛒 Купить VPN».",
+                "👋 Привет! Пришлите ссылку подписки одним сообщением "
+                "или купите подписку через «🛒 Купить / Продлить».",
                 reply_markup=kb_new_user(),
             )
 
@@ -885,7 +1202,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             "мы поможем.\n\nКак только получите ссылку — пришлите её сюда.",
         )
 
-    @dp.message(SupportStates.waiting_link)
+    @dp.message(StateFilter(SupportStates.waiting_link))
     async def msg_waiting_link(message: Message, state: FSMContext):
         token = parse_sub_link(message.text or "")
         if not token:
@@ -931,32 +1248,179 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             reply_markup=kb_main(),
         )
 
-    @dp.message(SupportStates.in_dialog, F.text == "📋 Моя подписка")
+    # --- Карточка подписки ----------------------------------------------------
+    # Один рендер для обеих когорт. Повторное «📱 Моя подписка» шлёт свежую
+    # карточку новым сообщением: edit по сохранённому message_id требует
+    # durable-хранилища, которого у MemoryStorage нет (dedup — отдельная
+    # косметическая задача). Явная inline-кнопка «🔄 Обновить» правит своё
+    # же сообщение — ей message_id известен без FSM.
+
+    async def _resolve_card_quiet(telegram_id: int):
+        """Card resolver for callbacks/start: any failure degrades to None
+        (the caller falls back to a plain greeting), never raises."""
+        tg_user = db.get_tg_user(telegram_id)
+        account = db.accounts.get_active_account_by_telegram_id(telegram_id)
+        legacy_info = None
+        if account is None and tg_user is not None and marzban is not None:
+            try:
+                admin_token = await _run_sync(marzban.get_admin_token_from_env)
+                legacy_info = await _run_sync(
+                    marzban.get_user, tg_user["marzban_username"], admin_token
+                )
+            except Exception as e:
+                logger.warning(f"card: legacy marzban lookup failed: {type(e).__name__}")
+                return None
+        try:
+            return build_subscription_card(
+                db, telegram_id=telegram_id,
+                legacy_user=tg_user, legacy_marzban_user=legacy_info,
+            )
+        except Exception as e:
+            logger.error(f"card: build failed: {type(e).__name__}")
+            return None
+
+    def _card_keyboard(card: dict):
+        first_row = []
+        if card["cohort"] == "canonical":
+            # «🔗 Ссылка» — только canonical: opaque-ссылку нельзя показать
+            # повторно, а legacy-ссылку бот не хранит (только username).
+            first_row.append(InlineKeyboardButton(text="🔗 Ссылка", callback_data="sub_link"))
+        first_row.append(InlineKeyboardButton(text="➕ Продлить", callback_data="sub_renew"))
+        return InlineKeyboardMarkup(inline_keyboard=[
+            first_row,
+            [
+                InlineKeyboardButton(text="💻 Устройства", callback_data="sub_devices"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="sub_refresh"),
+            ],
+        ])
+
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"📱 Моя подписка", "📋 Моя подписка"}))
     async def msg_my_subscription(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
-        if not tg_user:
-            # PH5-11 + canary hotfix: a commercial signup customer owns a canonical
-            # account but no legacy link -- show the canonical subscription
-            # state instead of the legacy binding prompt.
-            try:
-                summary = _canonical_subscription_summary(db, message.from_user.id)
-            except Exception as e:
-                logger.error(f"Ошибка получения канонической подписки: {type(e).__name__}")
-                await message.answer("Не удалось получить информацию о подписке.")
-                return
-            if summary is not None:
-                await safe_answer(message, summary)
-                return
+        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
+        if tg_user is None and account is None:
             await state.set_state(SupportStates.waiting_link)
             await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
             return
+        legacy_info = None
+        if account is None:
+            try:
+                admin_token = await _run_sync(marzban.get_admin_token_from_env)
+                legacy_info = await _run_sync(
+                    marzban.get_user, tg_user["marzban_username"], admin_token
+                )
+            except Exception as e:
+                logger.error(f"Ошибка получения подписки: {e}")
+                await message.answer("Не удалось получить информацию о подписке.")
+                return
         try:
-            admin_token = await _run_sync(marzban.get_admin_token_from_env)
-            user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
-            await safe_answer(message, format_subscription(user_info))
+            card = build_subscription_card(
+                db, telegram_id=message.from_user.id,
+                legacy_user=tg_user, legacy_marzban_user=legacy_info,
+            )
         except Exception as e:
-            logger.error(f"Ошибка получения подписки: {e}")
+            logger.error(f"Ошибка построения карточки: {type(e).__name__}")
             await message.answer("Не удалось получить информацию о подписке.")
+            return
+        if card is None:
+            await state.set_state(SupportStates.waiting_link)
+            await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
+            return
+        await message.answer(render_subscription_card(card), reply_markup=_card_keyboard(card))
+
+    @dp.callback_query(F.data == "sub_refresh")
+    async def cb_sub_refresh(call: CallbackQuery):
+        await call.answer()
+        card = await _resolve_card_quiet(call.from_user.id)
+        if card is None:
+            await call.message.answer("Не удалось обновить карточку. Попробуйте позже.")
+            return
+        try:
+            await call.message.edit_text(
+                render_subscription_card(card), reply_markup=_card_keyboard(card),
+            )
+        except Exception:
+            await call.message.answer(
+                render_subscription_card(card), reply_markup=_card_keyboard(card),
+            )
+
+    @dp.callback_query(F.data == "sub_renew")
+    async def cb_sub_renew(call: CallbackQuery):
+        await call.answer()
+        await _send_buy_entry(call.message, call.from_user.id)
+
+    @dp.callback_query(F.data == "sub_open")
+    async def cb_sub_open(call: CallbackQuery):
+        """Inline target for post-payment delivery messages from stars.py."""
+        await call.answer()
+        card = await _resolve_card_quiet(call.from_user.id)
+        if card is None:
+            await call.message.answer("Чем могу помочь?", reply_markup=kb_main())
+            return
+        await call.message.answer(render_subscription_card(card), reply_markup=_card_keyboard(card))
+
+    @dp.callback_query(F.data == "sub_devices")
+    async def cb_sub_devices(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        await _devices_entry(call.message, call.from_user.id, state)
+
+    # --- 🔗 Ссылка (Э2) --------------------------------------------------------
+    # Экран поверх карточки И тело скрытой команды /newsub: одна и та же
+    # логика. Первая ссылка выпускается сразу; перевыпуск активной — только
+    # через явное подтверждение (rotation уничтожает старую ссылку).
+
+    async def _link_entry(target, telegram_id: int):
+        from .config import OPAQUE_SUBSCRIPTION_ENABLED, subscription_base_url
+        if not OPAQUE_SUBSCRIPTION_ENABLED:
+            await target.answer("Эта функция пока недоступна.")
+            return
+        if subscription_base_url() is None:
+            logger.error(
+                "Configuration error: PUBLIC_HOST is not set — cannot build "
+                "an opaque subscription link. Set PUBLIC_HOST to fix this."
+            )
+            await target.answer("Не удалось выпустить ссылку. Попробуйте позже.")
+            return
+        account = await _run_sync(db.accounts.get_account_for_telegram, telegram_id)
+        if account is None:
+            await target.answer(
+                "Новая ссылка подписки доступна только для проверенных аккаунтов. "
+                "Если вы уже наш клиент — обратитесь к администратору."
+            )
+            return
+        account_id = account["id"]
+
+        existing = await _run_sync(_active_credential, account_id)
+        if existing is not None:
+            await target.answer(
+                "🔗 У вас уже есть активная ссылка подписки.\n\n"
+                "В целях безопасности сервер не хранит её открытый текст и не может "
+                "показать её повторно.\n\n"
+                "Если вы потеряли ссылку, её можно перевыпустить. После перевыпуска "
+                "старая ссылка перестанет работать, но ваши устройства и VPN "
+                "credentials останутся прежними.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="🔄 Перевыпустить ссылку",
+                        callback_data=f"newsub_confirm:{account_id}",
+                    ),
+                ]]),
+            )
+            return
+
+        actor_ref = f"telegram:{telegram_id}"
+        try:
+            prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram initial issuance")
+        except Exception as e:
+            logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
+            await target.answer("Не удалось выпустить ссылку. Попробуйте позже.")
+            return
+        await _deliver_and_activate(target, account_id, actor_ref, prep)
+
+    @dp.callback_query(F.data == "sub_link")
+    async def cb_sub_link(call: CallbackQuery):
+        await call.answer()
+        await _link_entry(call.message, call.from_user.id)
 
     # PH4-04 corrective fix: a bare repeat of /newsub must NEVER silently
     # rotate an already-ACTIVE credential -- that is a destructive action
@@ -993,10 +1457,18 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         raise -- same crash-safe sequencing as `issue_or_reissue_credential`,
         just split across async Telegram calls."""
         prepared = prep["prepared"]
+        from .config import subscription_base_url
+        base = subscription_base_url()
+        if base is None:
+            logger.error(
+                "Configuration error: PUBLIC_HOST is not set — cannot deliver "
+                "an opaque subscription link."
+            )
+            return False
         try:
             await message_or_call.answer(
                 "🔗 Ваша новая ссылка подписки:\n"
-                f"https://sub.beykus.fun/{prepared['raw_token']}\n\n"
+                f"{base}/{prepared['raw_token']}\n\n"
                 "Сохраните её сейчас — повторно показать эту же ссылку сервер не сможет. "
                 "Если понадобится новая — используйте перевыпуск."
             )
@@ -1018,52 +1490,15 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
 
     @dp.message(Command("newsub"), F.chat.type == ChatType.PRIVATE)
     async def msg_new_opaque_subscription(message: Message, state: FSMContext):
-        """PH4-04: reviewed-account-only opaque URL issuance. Deliberately a
-        hidden command, not a keyboard button shown to every legacy user --
-        only accounts already linked as the canonical Telegram OWNER
+        """PH4-04: reviewed-account-only opaque URL issuance — the body is
+        shared with the card's «🔗 Ссылка» button (`_link_entry`). Hidden
+        command, not a keyboard button shown to every legacy user -- only
+        accounts already linked as the canonical Telegram OWNER
         (`mgboost_telegram_identities`, PROVEN ownership, never mere
-        possession of a legacy link) can use it. Private chat only -- never
-        a group/channel. A bare repeat while a credential is already ACTIVE
-        never rotates it -- see `cb_newsub_confirm`/`cb_newsub_do` below."""
-        from .config import OPAQUE_SUBSCRIPTION_ENABLED
-        if not OPAQUE_SUBSCRIPTION_ENABLED:
-            await message.answer("Эта функция пока недоступна.")
-            return
-        account = await _run_sync(db.accounts.get_account_for_telegram, message.from_user.id)
-        if account is None:
-            await message.answer(
-                "Новая ссылка подписки доступна только для проверенных аккаунтов. "
-                "Если вы уже наш клиент — обратитесь к администратору."
-            )
-            return
-        account_id = account["id"]
-
-        existing = await _run_sync(_active_credential, account_id)
-        if existing is not None:
-            await message.answer(
-                "🔗 У вас уже есть активная ссылка подписки.\n\n"
-                "В целях безопасности сервер не хранит её открытый текст и не может "
-                "показать её повторно.\n\n"
-                "Если вы потеряли ссылку, её можно перевыпустить. После перевыпуска "
-                "старая ссылка перестанет работать, но ваши устройства и VPN "
-                "credentials останутся прежними.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(
-                        text="🔄 Перевыпустить ссылку",
-                        callback_data=f"newsub_confirm:{account_id}",
-                    ),
-                ]]),
-            )
-            return
-
-        actor_ref = f"telegram:{message.from_user.id}"
-        try:
-            prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram /newsub initial issuance")
-        except Exception as e:
-            logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
-            await message.answer("Не удалось выпустить ссылку. Попробуйте позже.")
-            return
-        await _deliver_and_activate(message, account_id, actor_ref, prep)
+        possession of a legacy link) can use it. Private chat only. A bare
+        repeat while a credential is already ACTIVE never rotates it --
+        see `cb_newsub_confirm`/`cb_newsub_do` below."""
+        await _link_entry(message, message.from_user.id)
 
     @dp.callback_query(F.data.startswith("newsub_confirm:"))
     async def cb_newsub_confirm(call: CallbackQuery):
@@ -1130,7 +1565,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 pass
             actor_ref = f"telegram:{call.from_user.id}"
             try:
-                prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram /newsub confirmed reissue")
+                prep = await _run_sync(_issue_new_credential, account_id, actor_ref, "Telegram confirmed reissue")
             except Exception as e:
                 logger.error(f"Ошибка подготовки opaque credential: {type(e).__name__}")
                 await call.message.answer("Не удалось перевыпустить ссылку. Попробуйте позже.")
@@ -1139,109 +1574,77 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         finally:
             _reissue_in_progress.discard(account_id)
 
-    @dp.message(SupportStates.in_dialog, F.text == "🔧 Управление устройствами")
-    async def msg_manage_devices(message: Message, state: FSMContext):
-        tg_user = db.get_tg_user(message.from_user.id)
-        if not tg_user and db.accounts.get_active_account_by_telegram_id(message.from_user.id):
-            # canary hotfix: a canonical DIRECT owner is linked, but the LK
-            # management deep link is keyed by a legacy marzban username
-            # they do not have -- never push them into the waiting_link
-            # binding loop (their opaque URL does not match the parser).
-            await message.answer(
-                "⚙️ Управление устройствами для вашего аккаунта пока доступно "
-                "через поддержку. Опишите ваш запрос здесь — поможем.",
-            )
-            return
-        if not tg_user:
-            await state.set_state(SupportStates.waiting_link)
-            await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
-            return
+    # --- 💻 Устройства (Э5) -----------------------------------------------------
+    # Canonical: счётчик через DeviceSlotStore (реальная новая модель).
+    # Web-LK кнопку canonical НЕ обещаем: LK работает на legacy-модели
+    # устройств, управление canonical-слотами им не доказано — поэтому
+    # только поддержка. Legacy: счётчик legacy-модели + одноразовая ссылка.
 
-        link = await _build_management_link(db, marzban, message.from_user.id, tg_user["marzban_username"])
+    async def _devices_entry(target, telegram_id: int, state=None):
+        tg_user = db.get_tg_user(telegram_id)
+        account = db.accounts.get_active_account_by_telegram_id(telegram_id)
+        if account is not None:
+            try:
+                capacity = db.device_slots.get_capacity_state(int(account["id"]))
+            except Exception as e:
+                logger.warning(f"devices: capacity unavailable: {type(e).__name__}")
+                await target.answer(
+                    "Не удалось получить устройства. Попробуйте позже или обратитесь в поддержку.",
+                    reply_markup=_support_button_markup(),
+                )
+                return
+            mode = capacity.get("limit_mode")
+            active = capacity.get("active_count") or 0
+            if mode == "UNLIMITED":
+                text = f"Количество устройств не ограничено. Активных устройств: {active}."
+            elif mode == "NONE":
+                text = "Подписка ещё не активна — устройства появятся после покупки подписки."
+            else:
+                text = f"Активные устройства: {active} из {capacity.get('effective_limit')}."
+            text += ("\n\nПереименовать или отключить устройство пока можно "
+                     "через поддержку: напишите нам — сделаем быстро.")
+            await target.answer(text, reply_markup=_support_button_markup())
+            return
+        if tg_user is None:
+            if state is not None:
+                await state.set_state(SupportStates.waiting_link)
+            await target.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
+            return
+        link = await _build_management_link(db, marzban, telegram_id, tg_user["marzban_username"])
         if link is None:
-            await message.answer(
+            await target.answer(
                 "⚠️ Управление устройствами временно недоступно из-за ошибки конфигурации сервера. "
                 "Мы уже знаем о проблеме — попробуйте позже или обратитесь к оператору.",
             )
             return
-        await message.answer(
-            "🔧 Ссылка для управления устройствами (действует 15 минут, одноразовая):\n\n"
+        try:
+            counts = db.get_active_device_counts([tg_user["marzban_username"]])
+            active = int(counts.get(tg_user["marzban_username"], 0))
+        except Exception as e:
+            logger.warning(f"devices: legacy count unavailable: {type(e).__name__}")
+            active = None
+        try:
+            limit = int(db.get_device_limit(tg_user["marzban_username"]))
+        except Exception as e:
+            logger.warning(f"devices: legacy limit unavailable: {type(e).__name__}")
+            limit = None
+        counter = ""
+        if active is not None and limit is not None:
+            counter = f"Активные устройства: {active} из {limit}.\n\n"
+        await target.answer(
+            f"💻 {counter}Ссылка для управления устройствами (действует 15 минут, одноразовая):\n\n"
             f"{link}\n\n"
             "Откройте её в браузере, чтобы переименовывать или отключать устройства. "
             "Если ссылка истечёт — запросите новую здесь же.",
         )
 
-    @dp.message(SupportStates.in_dialog, F.text == "⭐️ Продлить подписку")
-    async def msg_stars_menu(message: Message, state: FSMContext):
-        tg_user = db.get_tg_user(message.from_user.id)
-        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
-        if not tg_user and not account:
-            await state.set_state(SupportStates.waiting_link)
-            await message.answer("Нужно сначала привязать подписку.", reply_markup=kb_no_link())
-            return
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"💻 Устройства", "🔧 Управление устройствами"}))
+    async def msg_manage_devices(message: Message, state: FSMContext):
+        await _devices_entry(message, message.from_user.id, state)
 
-        if db.get_setting("stars:enabled") != "1":
-            await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
-            return
+    # --- 🎟 Промокод (Э4) -------------------------------------------------------
 
-        tariffs = db.stars_purchases.sellable_catalog()
-        if not tariffs:
-            await message.answer("Продление через Stars временно недоступно, обратитесь к оператору.")
-            return
-        if not account:
-            await message.answer("Для покупки через Stars нужна подтверждённая учётная запись. Обратитесь к оператору.")
-            return
-        current = db._conn.execute(
-            "SELECT pv.plan_code,s.status FROM mgboost_subscriptions s JOIN mgboost_plan_versions pv "
-            "ON pv.id=s.current_plan_version_id WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
-            (account["id"],),
-        ).fetchone()
-        if current:
-            if current["status"] == "UNLIMITED":
-                await message.answer("У вас безлимитный тариф — покупка через Stars недоступна.")
-                return
-            tariffs = [item for item in tariffs if item["plan_code"] == current["plan_code"]]
-        if not tariffs:
-            await message.answer("Смена тарифа оформляется через поддержку. Продление через Stars сейчас недоступно.")
-            return
-        await message.answer("Выберите срок продления:", reply_markup=kb_tariffs(tariffs))
-
-    @dp.callback_query(F.data.startswith("stars_buy:"))
-    async def cb_stars_buy(call: CallbackQuery, state: FSMContext):
-        await call.answer()
-        tg_user = db.get_tg_user(call.from_user.id)
-        if not tg_user and not db.accounts.get_active_account_by_telegram_id(call.from_user.id):
-            await call.message.answer("Нужно сначала привязать подписку.")
-            return
-
-        if db.get_setting("stars:enabled") != "1":
-            await call.message.answer("Продление через Stars временно недоступно.")
-            return
-
-        try:
-            _, plan_code, raw_duration = call.data.split(":", 2)
-            duration_days = int(raw_duration)
-        except (IndexError, ValueError):
-            await call.message.answer("Неверный тариф.")
-            return
-        try:
-            state_data = await state.get_data() if hasattr(state, "get_data") else {}
-            promo_reservation_id = state_data.get("promo_reservation_id")
-            invoice = db.stars_purchases.create_invoice(
-                telegram_id=call.from_user.id, plan_code=plan_code, duration_days=duration_days,
-                ttl_seconds=3600,
-                promo_redemption_id=promo_reservation_id,
-            )
-        except Exception as exc:
-            logger.info("Canonical Stars invoice rejected: %s", type(exc).__name__)
-            await call.message.answer("Этот тариф сейчас нельзя оформить автоматически. Обратитесь к оператору.")
-            return
-
-        if promo_reservation_id is not None and hasattr(state, "update_data"):
-            await state.update_data(promo_reservation_id=None)
-        await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
-
-    @dp.message(SupportStates.in_dialog, F.text == "🎟 Ввести промокод")
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"🎟 Промокод", "🎟 Ввести промокод"}))
     async def msg_promo_menu(message: Message, state: FSMContext):
         """PH5-13 self-service promo redemption entry. Any later duplicate
         delivery of the SAME code message replays idempotently in
@@ -1257,7 +1660,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         await state.set_state(SupportStates.waiting_promo_code)
         await message.answer(
             "Введите промокод одним сообщением:",
-            reply_markup=kb_waiting(),
+            reply_markup=kb_promo_cancel(),
         )
 
     async def _promo_reserve_for_purchase(message: Message, state: FSMContext, code: str):
@@ -1285,17 +1688,21 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return
         await state.update_data(promo_reservation_id=result["redemption_id"])
         await state.set_state(SupportStates.in_dialog)
+        # Кнопка ведёт прямо в воронку своего тарифа — не просим искать
+        # кнопку в меню. Задержавшаяся reply-клавиатура промо-режима
+        # подхватывается глобальным msg_stale_cancel.
         await message.answer(
-            "✅ Скидка зафиксирована. Выберите «⭐️ Продлить подписку» — она "
-            "применится к следующему счёту.",
-            reply_markup=kb_main(),
+            "✅ Скидка зафиксирована. Она применится к следующему счёту.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🛒 Открыть покупку", callback_data="buy_open"),
+            ]]),
         )
 
-    @dp.message(SupportStates.waiting_promo_code)
+    @dp.message(StateFilter(SupportStates.waiting_promo_code))
     async def _promo_redeem_message(message: Message, state: FSMContext):
-        if message.text == "⬅️ Назад к боту":
+        if message.text in ("⬅️ Назад к боту", "❌ Отмена"):
             await state.set_state(SupportStates.in_dialog)
-            await message.answer("Вернулись в диалог с ботом.", reply_markup=kb_main())
+            await message.answer("Чем могу помочь?", reply_markup=kb_main())
             return
         code = (message.text or "").strip()
         if not code:
@@ -1351,34 +1758,64 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         await state.set_state(SupportStates.in_dialog)
         await message.answer(text, reply_markup=kb_main())
 
-    @dp.message(SupportStates.in_dialog, F.text == "🆘 Позвать человека")
-    async def msg_call_human(message: Message, state: FSMContext):
-        tg_user = db.get_tg_user(message.from_user.id)
-        username = tg_user["marzban_username"] if tg_user else None
-        ticket = db.get_open_ticket(message.from_user.id)
+    # --- 🆘 Поддержка (Э6) ------------------------------------------------------
+
+    async def _escalate_to_human(target_message, telegram_id: int, username: str | None):
+        ticket = db.get_open_ticket(telegram_id)
         if ticket:
             db.update_ticket_status(ticket["id"], "waiting_human")
         else:
-            db.create_ticket(message.from_user.id, marzban_username=username, status="waiting_human")
-        await state.set_state(SupportStates.waiting_human)
-        await message.answer(
+            db.create_ticket(telegram_id, marzban_username=username, status="waiting_human")
+        await target_message.answer(
             "Оператор скоро подключится. Опишите ваш вопрос, и я передам его.",
             reply_markup=kb_waiting(),
         )
-        await _notify_admin(message.bot, db, message.from_user.id, username)
+        await _notify_admin(target_message.bot, db, telegram_id, username)
 
-    @dp.message(SupportStates.waiting_human)
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text == "🆘 Поддержка")
+    async def msg_support(message: Message, state: FSMContext):
+        """Единая точка входа поддержки: свободный текст = ассистент,
+        живой оператор — явная кнопка (и команда-алиас)."""
+        await message.answer(
+            "Напишите ваш вопрос прямо сюда следующим сообщением — я отвечу. "
+            "Если понадобится живой оператор — позову: кнопка ниже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🆘 Позвать оператора", callback_data="call_human"),
+            ]]),
+        )
+
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text == "🆘 Позвать человека")
+    async def msg_call_human(message: Message, state: FSMContext):
+        tg_user = db.get_tg_user(message.from_user.id)
+        await state.set_state(SupportStates.waiting_human)
+        await _escalate_to_human(message, message.from_user.id, tg_user["marzban_username"] if tg_user else None)
+
+    @dp.callback_query(F.data == "call_human")
+    async def cb_call_human(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        tg_user = db.get_tg_user(call.from_user.id)
+        await state.set_state(SupportStates.waiting_human)
+        await _escalate_to_human(call.message, call.from_user.id, tg_user["marzban_username"] if tg_user else None)
+
+    @dp.message(StateFilter(SupportStates.waiting_human))
     async def msg_waiting_human(message: Message, state: FSMContext):
         if message.text == "⬅️ Назад к боту":
             await state.set_state(SupportStates.in_dialog)
-            await message.answer("Вернулись в диалог с ботом.", reply_markup=kb_main())
+            await message.answer("Чем могу помочь?", reply_markup=kb_main())
             return
         ticket = db.get_open_ticket(message.from_user.id)
         if ticket:
             db.add_ticket_message(ticket["id"], "user", message.text or "")
         await message.answer("Ваш вопрос передан оператору, ожидайте ответа.")
 
-    @dp.message(SupportStates.in_dialog, F.photo | F.document | F.video)
+    @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"❌ Отмена", "⬅️ Назад к боту"}))
+    async def msg_stale_cancel(message: Message, state: FSMContext):
+        """Keyboard re-sync: stale mode-keyboard buttons («❌ Отмена» после
+        промо-экрана, «⬅️ Назад к боту») возвращают в главный диалог с
+        kb_main вместо того, чтобы утекать в AI-тикеты."""
+        await message.answer("Чем могу помочь?", reply_markup=kb_main())
+
+    @dp.message(StateFilter(SupportStates.in_dialog), F.photo | F.document | F.video)
     async def msg_in_dialog_media(message: Message, state: FSMContext):
         tg_user = db.get_tg_user(message.from_user.id)
         username = tg_user["marzban_username"] if tg_user else None
@@ -1400,7 +1837,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
         )
         await _notify_admin(message.bot, db, message.from_user.id, username)
 
-    @dp.message(SupportStates.waiting_human, F.photo | F.document | F.video)
+    @dp.message(StateFilter(SupportStates.waiting_human), F.photo | F.document | F.video)
     async def msg_waiting_human_media(message: Message, state: FSMContext):
         ticket = db.get_open_ticket(message.from_user.id)
         if ticket:
@@ -1409,7 +1846,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             db.add_ticket_message(ticket["id"], "user", f"[{media_type}]{': ' + caption if caption else ''}")
         await message.answer("Получил, оператор посмотрит.")
 
-    @dp.message(SupportStates.in_dialog)
+    @dp.message(StateFilter(SupportStates.in_dialog))
     async def msg_in_dialog(message: Message, state: FSMContext):
         if not message.text:
             return
@@ -1429,7 +1866,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
 
         if not api_key or support_enabled == "0":
             await message.answer(
-                "AI-ассистент недоступен. Нажмите «🆘 Позвать человека» для связи с оператором."
+                "AI-ассистент недоступен. Нажмите «🆘 Поддержка» для связи с оператором."
             )
             return
 
@@ -1498,15 +1935,26 @@ async def _notify_admin_orphan_payment(bot, db, sp, payer_telegram_id: int):
 
 
 async def notify_ticket_closed(bot, telegram_id: int, state_storage=None):
-    try:
-        from aiogram.fsm.storage.memory import MemoryStorage
-        from aiogram.fsm.context import FSMContext
-    except ImportError:
-        return
+    """Ticket closed by the operator. Beyond the notification this resets
+    the user's FSM to the main dialog: pre-redesign the user stayed in
+    waiting_human forever, every further message was silently swallowed by
+    the ticket handler under a misleading «вопрос передан оператору»
+    acknowledgement, and the reply keyboard never came back."""
+    storage = state_storage or _FSM_STORAGE
+    if storage is not None and SupportStates is not None:
+        try:
+            from aiogram.fsm.context import FSMContext
+            from aiogram.fsm.storage.base import StorageKey
+            key = StorageKey(bot_id=bot.id, chat_id=int(telegram_id), user_id=int(telegram_id))
+            state = FSMContext(storage=storage, key=key)
+            await state.set_state(SupportStates.in_dialog)
+        except Exception as e:
+            logger.warning(f"Не удалось вернуть FSM после закрытия тикета: {type(e).__name__}")
     try:
         await bot.send_message(
-            telegram_id,
-            "✅ Тикет закрыт. Если остались вопросы — пишите!",
+            int(telegram_id),
+            "✅ Вопрос закрыт. Если остались вопросы — просто напишите сюда!",
+            reply_markup=kb_main(),
         )
     except Exception as e:
         logger.warning(f"Не удалось уведомить пользователя о закрытии тикета: {e}")
@@ -1547,11 +1995,12 @@ async def _build_management_link(db, marzban, telegram_id: int, username: str) -
     not configured. Callers must handle that by telling the user the
     feature is temporarily unavailable, not by falling back to a
     hardcoded domain."""
-    from .config import PUBLIC_HOST
+    from .config import subscription_base_url
 
-    if not PUBLIC_HOST:
+    base = subscription_base_url()
+    if base is None:
         logger.error(
-            "Configuration error: PUBLIC_HOST is not set — cannot build a "
+            "Configuration error: PUBLIC_HOST is invalid or not set — cannot build a "
             "device-management deep link. Set the PUBLIC_HOST environment "
             "variable (see .env.example) to fix this."
         )
@@ -1566,4 +2015,4 @@ async def _build_management_link(db, marzban, telegram_id: int, username: str) -
     # The frontend (frontend/assets/lk.js) reads location.hash, POSTs the
     # code to /lk/api/mgmt/exchange in the request body, then immediately
     # clears the fragment via history.replaceState.
-    return f"https://{PUBLIC_HOST}/lk/#mgmt={code}"
+    return f"{base}/lk/#mgmt={code}"

@@ -58,6 +58,7 @@ GB = 1_000_000_000
 def db(monkeypatch):
     tmp = tempfile.mkdtemp()
     monkeypatch.setenv("DATA_DIR", tmp)
+    monkeypatch.setenv("PUBLIC_HOST", "sub.example.test")
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", PRIMARY)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_LOGIN", PRIMARY_LOGIN)
     monkeypatch.setenv("DEVICE_SLOT_HMAC_KEY", HWID_KEY.split("hmac-sha256:")[-1] + "padpad")
@@ -656,4 +657,9 @@ def test_bot_renewal_menu_for_wl_account_offers_only_wl_skus(db, buy_handlers, b
     msg = Msg(555000111)
     asyncio.run(buy_handlers["buy"](msg, FakeState()))  # sanity: buy flow stays available
     data = [d for row in _kb_data(msg.sent[0][1]) for d in row if d]
-    assert any(d == "buy_plan:WL" for d in data)
+    # unified funnel: a WL account is offered ONLY its own plan's durations
+    assert sorted(d for d in data if d.startswith("buy_dur:")) == [
+        "buy_dur:WL:30", "buy_dur:WL:60",
+    ]
+    assert "change_plan" in data
+    assert not any(d.startswith("buy_plan:") for d in data)
