@@ -161,7 +161,7 @@ def test_brand_new_user_gets_onboarding(db):
     ))
     texts = _texts(methods)
     assert any("уже есть подписка" in t for t in texts)
-    assert _reply_keyboard_texts(methods) == ["🛒 Купить / Продлить"]
+    assert _reply_keyboard_texts(methods) == ["🛒 Купить / Продлить", "🎟 Ввести промокод"]
     assert state == "SupportStates:waiting_link"
 
 

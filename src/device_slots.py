@@ -92,7 +92,7 @@ class DeviceSlotStore:
         row = self._conn.execute(
             "SELECT a.account_source,a.status AS account_status,"
             "s.id AS subscription_id,s.status AS subscription_status,s.current_expiry,"
-            "p.plan_kind,p.device_limit_mode,p.device_limit "
+            "p.plan_kind,p.plan_code,p.device_limit_mode,p.device_limit "
             "FROM mgboost_accounts AS a "
             "JOIN mgboost_subscriptions AS s ON s.account_id=a.id "
             "JOIN mgboost_plan_versions AS p ON p.id=s.current_plan_version_id "
@@ -130,7 +130,15 @@ class DeviceSlotStore:
                 if limit is not None:
                     raise EntitlementUnavailable("commercial unlimited plan must not carry a limit")
             elif mode != "LIMITED" or limit not in PAID_BASELINE_LIMITS:
-                raise EntitlementUnavailable("commercial device baseline is not approved")
+                # NEW USER TRIAL SIGNUP: the code-pinned WL_TRIAL contract
+                # (device_limit=1, billing_required=0, enforced by
+                # `promo.ensure_wl_trial_plan_version`) is the one
+                # non-paid DIRECT baseline. It never comes from the
+                # sellable catalog, so PAID_BASELINE_LIMITS itself is
+                # deliberately NOT extended -- a paid 1-device tariff
+                # would still need its own owner review.
+                if not (row["plan_code"] == "WL_TRIAL" and limit == 1):
+                    raise EntitlementUnavailable("commercial device baseline is not approved")
         elif mode == "LIMITED":
             if limit is None or not 1 <= int(limit) <= TECHNICAL_SLOT_CAP:
                 raise EntitlementUnavailable("internal device limit is invalid")

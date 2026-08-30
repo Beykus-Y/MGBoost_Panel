@@ -53,11 +53,12 @@ Design constraints, all deliberate:
 
 from __future__ import annotations
 
-import json
 import time
 
 from .admin_authority import PrimaryAdminAuthorizationError
-from .commercial_signup import derive_template_username
+from .direct_account_bootstrap import (
+    ensure_direct_account, ensure_direct_provisioning_wiring,
+)
 from .subscription_renewal import (
     PlanMismatch, RenewalError, UnknownPlan, UnlimitedSubscriptionConflict,
 )
@@ -110,73 +111,43 @@ class AdminGrantStore:
         self, *, account_id: int, public_id: str, decision_ref: str,
         actor: str, now: int,
     ) -> None:
-        """Idempotent: no-op if this account already has a PRIMARY alias
-        (mirrors `commercial_signup.ensure_signup_account`'s own
-        `if alias is None` guard byte-for-byte, same tables, same PRIMARY
-        `tpl-<public_id>` username -- only the ownership_provenance/
-        ownership_evidence values and the job-queue table differ)."""
-        existing = self._conn.execute(
-            "SELECT id FROM mgboost_legacy_account_aliases WHERE account_id=?",
-            (account_id,),
-        ).fetchone()
-        if existing is not None:
-            return
-        template_username = derive_template_username(public_id)
-        evidence = {"account_id": account_id, "origin": PAYMENT_CHANNEL, "decision_ref": decision_ref}
-        evidence_json = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
-        with self._lock:
-            try:
-                self._conn.execute("BEGIN IMMEDIATE")
-                self._conn.execute(
-                    "INSERT INTO mgboost_legacy_alias_groups "
-                    "(account_id,mapping_key,decision_ref,created_by_actor,created_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (account_id, f"admin-grant-v1:{public_id}", decision_ref, actor, now),
-                )
-                self._conn.execute(
-                    "INSERT INTO mgboost_legacy_account_aliases "
-                    "(account_id,legacy_username,alias_role,ownership_provenance,legacy_status,"
-                    "legacy_expiry,observed_device_count,observed_hwid_count,evidence_json,created_at) "
-                    "VALUES (?,?,'PRIMARY',?,'ACTIVE',NULL,0,0,?,?)",
-                    (account_id, template_username, _ALIAS_OWNERSHIP_PROVENANCE, evidence_json, now),
-                )
-                self._conn.execute(
-                    "INSERT INTO mgboost_direct_account_reviews "
-                    "(account_id,legacy_username,ownership_evidence,decision_ref,reviewed_by_actor,"
-                    "evidence_json,created_at) VALUES (?,?,?,?,?,?,?)",
-                    (account_id, template_username, _REVIEW_OWNERSHIP_EVIDENCE, decision_ref, actor,
-                     evidence_json, now),
-                )
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO mgboost_admin_grant_template_jobs "
-                    "(account_id,decision_ref,state,created_at,updated_at) "
-                    "VALUES (?,?,'PENDING',?,?)",
-                    (account_id, decision_ref, now, now),
-                )
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
+        """Idempotent: no-op if this account already has a PRIMARY alias.
+        Delegates to the shared `direct_account_bootstrap` domain primitive
+        with THIS module's exact constants -- same tables, same PRIMARY
+        `tpl-<public_id>` username, same evidence shape, same non-payment
+        job queue as before the extraction (byte-for-byte SQL lives in one
+        place now)."""
+        ensure_direct_provisioning_wiring(
+            self._conn, self._lock,
+            account_id=account_id, public_id=public_id,
+            decision_ref=decision_ref, actor=actor, now=now,
+            alias_mapping_prefix="admin-grant-v1",
+            alias_ownership_provenance=_ALIAS_OWNERSHIP_PROVENANCE,
+            review_ownership_evidence=_REVIEW_OWNERSHIP_EVIDENCE,
+            evidence={"origin": PAYMENT_CHANNEL, "decision_ref": decision_ref},
+        )
 
     def _resolve_or_create_account(
         self, *, actor: str, telegram_id: int, reason: str, now: int,
     ) -> tuple[dict, bool]:
         """Shared create-or-reuse step for `create_account_only` and
         `grant_new_account`: never a second account for the same
-        `telegram_id`. Returns `(account, reused)`."""
-        account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
-        if account is not None:
-            return account, True
-        account = self._accounts.create_account("DIRECT", now=now)
-        self._ensure_direct_provisioning_wiring(
-            account_id=account["id"], public_id=account["public_id"],
-            decision_ref=reason, actor=actor, now=now,
+        `telegram_id`. Delegates to the shared `direct_account_bootstrap`
+        primitive with this module's provenance constants; the primitive
+        additionally guarantees the wiring for a reused account that lost
+        it (crash between create and wiring), which is a strict repair
+        improvement -- for every already-wired account it is a no-op, and
+        the OWNER link is idempotent. Returns `(account, reused)`."""
+        return ensure_direct_account(
+            self._conn, self._lock, self._accounts,
+            telegram_id=int(telegram_id), actor=actor, decision_ref=reason,
+            now=now,
+            identity_provenance=_TELEGRAM_IDENTITY_PROVENANCE,
+            alias_ownership_provenance=_ALIAS_OWNERSHIP_PROVENANCE,
+            alias_mapping_prefix="admin-grant-v1",
+            review_ownership_evidence=_REVIEW_OWNERSHIP_EVIDENCE,
+            evidence={"origin": PAYMENT_CHANNEL, "decision_ref": reason},
         )
-        self._accounts.link_telegram_owner(
-            account["id"], int(telegram_id),
-            provenance=_TELEGRAM_IDENTITY_PROVENANCE, actor=actor, now=now,
-        )
-        return account, False
 
     def create_account_only(
         self, capability, *, telegram_id: int, reason: str,

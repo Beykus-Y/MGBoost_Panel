@@ -444,17 +444,35 @@ def test_user_redeem_replays_same_idempotency_key_and_never_applies_twice(db):
     ).fetchone()["c"] == 2  # base + exactly one promo period
 
 
-def test_user_redeem_trial_requires_existing_account_no_bootstrap(db):
-    """Self-service TRIAL_GRANT must not auto-create accounts -- that path
-    routes through the admin-capability-gated AdminGrantStore bootstrap."""
+def test_user_redeem_trial_bootstrap_policy_narrow_wl_trial_only(db):
+    """NEW USER TRIAL SIGNUP (owner-approved follow-up to PH5-13): the
+    self-service TRIAL_GRANT bootstrap is now legal, but ONLY for the
+    narrow, version-verified WL_TRIAL trial_class (full contract in
+    test_promo_trial_signup.py). Any other TRIAL_GRANT class still requires
+    an existing account and creates none."""
     _define(db, _capability(db), code="USERTRY", effect_kind="TRIAL_GRANT",
-           trial_class="WL_TRIAL", effect_params={"days": 1})
+           trial_class="OTHER_CLASS", effect_params={"days": 1})
     with pytest.raises(PromoNotFound):
         db.promo.redeem_for_telegram_user(
             code="USERTRY", telegram_id=930000001,
             idempotency_key="promo-redeem-v1:930000001:33333", now=1_000,
         )
     assert db._conn.execute("SELECT COUNT(*) c FROM mgboost_accounts").fetchone()["c"] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_telegram_identities WHERE telegram_id=930000001"
+    ).fetchone()["c"] == 0
+
+    # the narrow WL_TRIAL exception: a fresh self-service caller bootstraps
+    # exactly one canonical account (zero garbage accounts for the rejected
+    # class above, one account for the allowed one)
+    _define(db, _capability(db), code="USERTRYWL", effect_kind="TRIAL_GRANT",
+           trial_class="WL_TRIAL", effect_params={"days": 1})
+    result = db.promo.redeem_for_telegram_user(
+        code="USERTRYWL", telegram_id=930000001,
+        idempotency_key="promo-redeem-v1:930000001:44444", now=1_000,
+    )
+    assert result["status"] == "REDEEMED"
+    assert db._conn.execute("SELECT COUNT(*) c FROM mgboost_accounts").fetchone()["c"] == 1
 
 
 def test_user_redeem_trial_for_existing_inactive_subscription_identity(db):

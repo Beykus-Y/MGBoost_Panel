@@ -499,6 +499,24 @@ def kb_new_user():
         return None
     return _reply_markup(ReplyKeyboardMarkup, [
         [KeyboardButton(text="🛒 Купить / Продлить")],
+        [KeyboardButton(text="🎟 Ввести промокод")],
+    ])
+
+
+def kb_new_user_inline():
+    """Inline-меню initial onboarding («С чего начнём?»): покупка, промокод,
+    привязка существующей ссылки. Один строитель для /start и для возвратов
+    из promo flow, чтобы три входа онбординга не разъезжались."""
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    except ImportError:  # pragma: no cover
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🛒 Выбрать тариф", callback_data="buy_open"),
+            InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="start_promo"),
+        ],
+        [InlineKeyboardButton(text="У меня уже есть подписка", callback_data="start_link")],
     ])
 
 
@@ -1153,17 +1171,12 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await message.answer(
                 prefix + "👋 Привет! Это бот MGBoost — VPN-подписка.\n\n"
                 "• «🛒 Выбрать тариф» — купить подписку.\n"
+                "• «🎟 Ввести промокод» — применить промокод.\n"
                 "• Уже пользуетесь нашей ссылкой — нажмите «У меня уже есть "
                 "подписка» и пришлите её сюда, чтобы привязать аккаунт.",
                 reply_markup=kb_new_user(),
             )
-            await message.answer(
-                "С чего начнём?",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="🛒 Выбрать тариф", callback_data="buy_open"),
-                    InlineKeyboardButton(text="У меня уже есть подписка", callback_data="start_link"),
-                ]]),
-            )
+            await message.answer("С чего начнём?", reply_markup=kb_new_user_inline())
 
     @dp.callback_query(F.data == "start_link")
     async def cb_start_link(call: CallbackQuery, state: FSMContext):
@@ -1173,6 +1186,35 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             "Пришлите ссылку подписки одним сообщением — привяжу аккаунт.",
             reply_markup=kb_no_link(),
         )
+
+    # --- Initial-onboarding promo ingress --------------------------------------
+    # Кнопка «🎟 Ввести промокод» в онбординге ведёт в ТОТ ЖЕ promo flow,
+    # что и «🎟 Промокод» главного меню: то же состояние waiting_promo_code,
+    # тот же `_promo_redeem_message`. Ни второго FSM, ни второго redemption
+    # path здесь нет -- только ранний доступ к существующему.
+
+    async def _enter_promo_state(target_message, state: FSMContext):
+        """Единый вход в промо-ввод: одно FSM-состояние и один промпт для
+        главного меню и для onboarding-входа."""
+        await state.set_state(SupportStates.waiting_promo_code)
+        await target_message.answer(
+            "Введите промокод одним сообщением:",
+            reply_markup=kb_promo_cancel(),
+        )
+
+    @dp.callback_query(F.data == "start_promo")
+    async def cb_start_promo(call: CallbackQuery, state: FSMContext):
+        await call.answer()
+        await _enter_promo_state(call.message, state)
+
+    @dp.message(StateFilter(SupportStates.waiting_link),
+                F.text.in_({"🎟 Промокод", "🎟 Ввести промокод"}))
+    async def msg_new_user_promo(message: Message, state: FSMContext):
+        """Reply-близнец cb_start_promo. Зарегистрирован ДО msg_waiting_link,
+        чтобы метка промокода (в том числе «🎟 Промокод» со старой
+        закэшированной клавиатуры главного меню) не упиралась в
+        «не могу распознать ссылку»."""
+        await _enter_promo_state(message, state)
 
     @dp.message(StateFilter(None), ~F.successful_payment)
     async def msg_no_state(message: Message, state: FSMContext):
@@ -1644,24 +1686,52 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
 
     # --- 🎟 Промокод (Э4) -------------------------------------------------------
 
+    def _is_onboarding_user(telegram_id: int) -> bool:
+        """True, пока у пользователя нет ни legacy-ссылки, ни canonical
+        account — то есть он всё ещё в initial onboarding."""
+        return (db.get_tg_user(telegram_id) is None
+                and db.accounts.get_active_account_by_telegram_id(telegram_id) is None)
+
+    async def _promo_cancel_landing(message: Message, state: FSMContext):
+        """Back/cancel из промо-ввода. Существующий пользователь возвращается
+        в главный диалог; новый — в свой initial onboarding: НЕ в меню
+        активного пользователя (kb_main обещает экраны, которых у него нет),
+        НЕ в purchase flow и НЕ в AI-диалог."""
+        if not _is_onboarding_user(message.from_user.id):
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer("Чем могу помочь?", reply_markup=kb_main())
+            return
+        await state.set_state(SupportStates.waiting_link)
+        await message.answer(
+            "Действие отменено. Выберите, с чего начать:",
+            reply_markup=kb_new_user(),
+        )
+        await message.answer("С чего начнём?", reply_markup=kb_new_user_inline())
+
+    async def _promo_exit_landing(message: Message, state: FSMContext, text: str):
+        """Финальный экран промо-потока (успех или отказ) — та же когортная
+        развилка, что и у cancel: onboarding-пользователь не выпадает в
+        in_dialog/kb_main."""
+        if not _is_onboarding_user(message.from_user.id):
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer(text, reply_markup=kb_main())
+            return
+        await state.set_state(SupportStates.waiting_link)
+        await message.answer(text, reply_markup=kb_new_user())
+
     @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"🎟 Промокод", "🎟 Ввести промокод"}))
     async def msg_promo_menu(message: Message, state: FSMContext):
         """PH5-13 self-service promo redemption entry. Any later duplicate
         delivery of the SAME code message replays idempotently in
         `_promo_redeem_message` via the (chat_id, message_id) key -- the
         state machine here is UX only, never the race-safety mechanism."""
-        account = db.accounts.get_active_account_by_telegram_id(message.from_user.id)
-        if account is None:
+        if db.accounts.get_active_account_by_telegram_id(message.from_user.id) is None:
             await message.answer(
                 "Промокоды применяются к подтверждённому аккаунту. "
                 "Если вы уже наш клиент — обратитесь к администратору."
             )
             return
-        await state.set_state(SupportStates.waiting_promo_code)
-        await message.answer(
-            "Введите промокод одним сообщением:",
-            reply_markup=kb_promo_cancel(),
-        )
+        await _enter_promo_state(message, state)
 
     async def _promo_reserve_for_purchase(message: Message, state: FSMContext, code: str):
         """PURCHASE_DISCOUNT: reserve now, discount lands on the NEXT Stars
@@ -1675,16 +1745,16 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 ttl_seconds=3600, idempotency_key=reservation_id,
             ))
         except PromoNotFound:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Промокод не найден или не применим. Попробуйте другой.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Промокод не найден или не применим. Попробуйте другой.")
             return
         except PromoConflict:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("⚠️ Этот промокод уже был использован вами ранее.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "⚠️ Этот промокод уже был использован вами ранее.")
             return
         except (PromoIneligible, PromoError):
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Не удалось применить промокод. Обратитесь к поддержке.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Не удалось применить промокод. Обратитесь к поддержке.")
             return
         await state.update_data(promo_reservation_id=result["redemption_id"])
         await state.set_state(SupportStates.in_dialog)
@@ -1701,8 +1771,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     @dp.message(StateFilter(SupportStates.waiting_promo_code))
     async def _promo_redeem_message(message: Message, state: FSMContext):
         if message.text in ("⬅️ Назад к боту", "❌ Отмена"):
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("Чем могу помочь?", reply_markup=kb_main())
+            await _promo_cancel_landing(message, state)
             return
         code = (message.text or "").strip()
         if not code:
@@ -1724,39 +1793,64 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 idempotency_key=idempotency_key,
             ))
         except PromoNotFound:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Промокод не найден или больше не активен. Попробуйте другой.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Промокод не найден или больше не активен. Попробуйте другой.")
             return
         except PromoConflict:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("⚠️ Этот промокод уже был применён ранее.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "⚠️ Этот промокод уже был применён ранее.")
             return
         except PromoIneligible:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Промокод неприменим к вашему аккаунту. Уточните условия у поддержки.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Промокод неприменим к вашему аккаунту. Уточните условия у поддержки.")
             return
         except PromoError:
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Не удалось применить промокод. Попробуйте позже или обратитесь к поддержке.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Не удалось применить промокод. Попробуйте позже или обратитесь к поддержке.")
             return
         except Exception:
             logger.exception("promo redeem failed")
-            await state.set_state(SupportStates.in_dialog)
-            await message.answer("❌ Не удалось применить промокод. Попробуйте позже.", reply_markup=kb_main())
+            await _promo_exit_landing(
+                message, state, "❌ Не удалось применить промокод. Попробуйте позже.")
             return
         effect = result.get("effect_result") or {}
         days = effect.get("days")
         if result.get("already_applied"):
-            text = "ℹ️ Этот промокод уже был применён к вашему аккаунту."
-        elif days:
+            await _promo_exit_landing(
+                message, state, "ℹ️ Этот промокод уже был применён к вашему аккаунту.")
+            return
+        if definition["effect_kind"] == "TRIAL_GRANT":
+            # NEW USER TRIAL SIGNUP success: это был canonical WL_TRIAL --
+            # у пользователя теперь есть аккаунт и подписка, поэтому он
+            # выходит из промо-потока полноценным пользователем (kb_main),
+            # а его первая opaque-ссылка выпускается СРАЗУ существующим
+            # безопасным flow (`_link_entry`): не надо искать скрытый
+            # /newsub; уже активный credential без явного согласия не
+            # вращается, а деградация выдачи не теряет сам trial.
+            trial_text = (
+                f"✅ Trial активирован: {days} дн., 1 устройство, "
+                f"WL-трафик {_fmt_gb(effect.get('quota_bytes'))} GB."
+            )
+            new_expiry = effect.get("new_expiry")
+            if new_expiry:
+                trial_text += (
+                    "\nПодписка действует до "
+                    + time.strftime('%d.%m.%Y %H:%M UTC', time.gmtime(int(new_expiry)))
+                    + "."
+                )
+            await state.set_state(SupportStates.in_dialog)
+            await message.answer(trial_text)
+            await _link_entry(message, message.from_user.id)
+            await message.answer("Чем могу помочь?", reply_markup=kb_main())
+            return
+        if days:
             text = f"✅ Промокод применён: +{days} дн."
             new_expiry = effect.get("new_expiry")
             if new_expiry:
                 text += f"\nПодписка действует до {time.strftime('%d.%m.%Y %H:%M UTC', time.gmtime(int(new_expiry)))}."
         else:
             text = "✅ Промокод применён."
-        await state.set_state(SupportStates.in_dialog)
-        await message.answer(text, reply_markup=kb_main())
+        await _promo_exit_landing(message, state, text)
 
     # --- 🆘 Поддержка (Э6) ------------------------------------------------------
 

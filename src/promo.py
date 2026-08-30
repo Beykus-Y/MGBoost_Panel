@@ -40,6 +40,7 @@ import sqlite3
 import time
 
 from .admin_authority import PrimaryAdminAuthorizationError
+from .direct_account_bootstrap import ensure_direct_account
 from .subscription_renewal import RenewalError
 
 __all__ = [
@@ -48,6 +49,22 @@ __all__ = [
 ]
 
 WL_TRIAL_PLAN_CODE = "WL_TRIAL"
+
+# NEW USER TRIAL SIGNUP: the ONLY self-service bootstrap-eligible trial
+# contract. Deliberately NOT a per-promo flag and not "any TRIAL_GRANT may
+# create an account": bootstrap is limited to the single owner-reviewed,
+# version-verified WL_TRIAL contract (`ensure_wl_trial_plan_version`
+# enforces the exact 1-day / 1-device / WL 10 GB shape at application
+# startup, and `_require_trial_plan_version_id` must already resolve before
+# any account exists). Every other trial_class -- and every
+# PURCHASE_DISCOUNT / EXTEND_SUBSCRIPTION code -- stays fail-closed
+# (PromoNotFound) for an account-less Telegram user.
+SELF_SERVICE_TRIAL_BOOTSTRAP_TRIAL_CLASS = WL_TRIAL_PLAN_CODE
+_TRIAL_IDENTITY_PROVENANCE = "DIRECT_BIND"
+_TRIAL_ALIAS_OWNERSHIP_PROVENANCE = "EVIDENCE_PROVEN"
+_TRIAL_REVIEW_OWNERSHIP_EVIDENCE = "PROVEN"
+_TRIAL_ALIAS_MAPPING_PREFIX = "promo-trial-v1"
+_TRIAL_ORIGIN = "PROMO_TRIAL_SELF_SERVICE"
 
 _QUOTA_ROUND_BYTES = 10_000_000_000  # DL-060: round up to the nearest 10 GB decimal.
 _NAMESPACE = "ph5-13-promo-v1\0"
@@ -428,8 +445,13 @@ class PromoStore(_RedemptionTxMixin):
         Telegram-authenticated transport -- eligibility is enforced by the
         promo rules (ACTIVE code, trial-class uniqueness, account state),
         not by an admin session. Deliberately narrower than the admin path:
-        the account must already exist (no bootstrap creation) and only
-        effects routed through `append_promo_wl_period` are reachable
+        the account must already exist (no bootstrap creation) except for
+        the narrow NEW USER TRIAL SIGNUP policy -- a `TRIAL_GRANT` whose
+        `trial_class` is exactly `WL_TRIAL` may bootstrap the caller's one
+        canonical account through the shared, capability-free
+        `direct_account_bootstrap` primitive (`_bootstrap_trial_account`
+        runs every eligibility check read-only BEFORE any account exists).
+        Only effects routed through `append_promo_wl_period` are reachable
         (TRIAL_GRANT; EXTEND_SUBSCRIPTION on a WL/LIMITED plan). A
         STANDARD/NONE-plan EXTEND needs the support flow
         (`redeem_extend_or_trial`)."""
@@ -720,30 +742,103 @@ class PromoStore(_RedemptionTxMixin):
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def _bootstrap_trial_account(
+        self, *, definition, telegram_id: int, idem_hash: str, timestamp: int,
+    ) -> dict:
+        """NEW USER TRIAL SIGNUP: the caller's one canonical DIRECT account
+        for an eligible self-service WL_TRIAL redemption.
+
+        Every eligibility check here is read-only and runs BEFORE any
+        account exists -- a garbage, disabled, exhausted, already-used or
+        non-WL_TRIAL code must never leave a bootstrapped account behind.
+        The admin boundary is not weakened: this path takes NO capability
+        and never touches `AdminGrantStore`; it reuses the exact shared
+        `direct_account_bootstrap` primitive the admin path uses, gated by
+        the narrow module-level policy instead. The Telegram principal is
+        the same proven one every self-service redemption already trusts."""
+        if definition["trial_class"] != SELF_SERVICE_TRIAL_BOOTSTRAP_TRIAL_CLASS:
+            raise PromoNotFound(
+                f"no active account for telegram_id={telegram_id}; a self-service "
+                f"{definition['effect_kind']} requires an existing account -- contact support"
+            )
+        # The versioned WL_TRIAL contract must already be registered before
+        # ANY bootstrap is attempted (checked, not assumed).
+        self._require_trial_plan_version_id()
+        # Same predicates as the post-INSERT checks, evaluated early and
+        # keyed on the telegram principal a fresh bootstrap will own --
+        # identical values on this path (the fresh account's OWNER identity
+        # IS this telegram_id).
+        conflict = self._conn.execute(
+            "SELECT id FROM mgboost_promo_redemptions "
+            "WHERE trial_class=? AND owner_telegram_id=? "
+            "AND status IN ('PENDING_APPLY','REDEEMED')",
+            (definition["trial_class"], int(telegram_id)),
+        ).fetchone()
+        if conflict is not None:
+            raise PromoIneligible(
+                f"trial_class {definition['trial_class']!r} already redeemed by this "
+                "Telegram identity"
+            )
+        prior = self._conn.execute(
+            "SELECT COUNT(*) c FROM mgboost_promo_redemptions "
+            "WHERE promo_id=? AND owner_telegram_id=? AND status!='CANCELLED'",
+            (definition["id"], int(telegram_id)),
+        ).fetchone()["c"]
+        if prior >= int(definition["per_user_limit"]):
+            raise PromoConflict(
+                "promo code has already been redeemed the maximum number "
+                "of times by this Telegram identity"
+            )
+        ensure_direct_account(
+            self._conn, self._lock, self._accounts,
+            telegram_id=int(telegram_id),
+            actor=f"telegram:{telegram_id}",
+            decision_ref=f"promo-trial-v1:{idem_hash[:32]}",
+            now=timestamp,
+            identity_provenance=_TRIAL_IDENTITY_PROVENANCE,
+            alias_ownership_provenance=_TRIAL_ALIAS_OWNERSHIP_PROVENANCE,
+            alias_mapping_prefix=_TRIAL_ALIAS_MAPPING_PREFIX,
+            review_ownership_evidence=_TRIAL_REVIEW_OWNERSHIP_EVIDENCE,
+            evidence={
+                "origin": _TRIAL_ORIGIN,
+                "telegram_id": int(telegram_id),
+                "trial_class": definition["trial_class"],
+            },
+        )
+        account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
+        if account is None:
+            raise PromoError("trial account bootstrap did not produce an active owner account")
+        return account
+
     def _resolve_redemption_target(
         self, *, capability, definition, telegram_id, self_service, reason,
         idem_hash, timestamp,
     ) -> tuple[int, str | None, int]:
         """Resolves account_id + (trial_class, owner_telegram_id) snapshot
         for a NEW redemption (never called on replay). TRIAL_GRANT may
-        create the account (reuses the public, already-reviewed
-        `AdminGrantStore.create_account_only` -- no duplicated bootstrap
-        wiring) EXCEPT on the self-service path, where the account must
-        already exist (no admin capability to authorize the bootstrap);
-        EXTEND_SUBSCRIPTION requires an existing account."""
+        create the account -- through the public, already-reviewed shared
+        `direct_account_bootstrap` primitive -- in exactly two cases: the
+        admin path (`redeem_extend_or_trial`, capability-gated bootstrap)
+        and the self-service path restricted to the narrow WL_TRIAL policy
+        (`_bootstrap_trial_account`: read-only eligibility first, no admin
+        capability, any other trial_class stays fail-closed).
+        EXTEND_SUBSCRIPTION and PURCHASE_DISCOUNT always require an
+        existing account."""
         account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
         if definition["effect_kind"] == "TRIAL_GRANT":
             if account is None:
                 if self_service:
-                    raise PromoNotFound(
-                        f"no active account for telegram_id={telegram_id}; a self-service "
-                        "TRIAL_GRANT requires an existing account -- contact support"
+                    account = self._bootstrap_trial_account(
+                        definition=definition, telegram_id=telegram_id,
+                        idem_hash=idem_hash, timestamp=timestamp,
                     )
-                created = self._admin_grants.create_account_only(
-                    capability, telegram_id=telegram_id, reason=reason,
-                    idempotency_key=f"promo-trial-account-v1:{idem_hash[:40]}", now=timestamp,
-                )
-                account_id = created["account_id"]
+                    account_id = account["id"]
+                else:
+                    created = self._admin_grants.create_account_only(
+                        capability, telegram_id=telegram_id, reason=reason,
+                        idempotency_key=f"promo-trial-account-v1:{idem_hash[:40]}", now=timestamp,
+                    )
+                    account_id = created["account_id"]
             else:
                 account_id = account["id"]
             entitlement = self._entitlements.calculate(account_id=account_id, now=timestamp)
