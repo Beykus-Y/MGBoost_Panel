@@ -24,6 +24,20 @@ def test_throne_subscription_headers_feed_the_hwid_pipeline():
     assert metadata["metadata"]["sources"]["platform"] == "derived:header:x-device-os"
 
 
+def test_throne_linux_documented_headers_feed_the_hwid_pipeline():
+    """Synthetic documented-header fixture; production raw headers are not retained."""
+    metadata = extract_device_metadata({
+        "User-Agent": "Throne/1.2.0",
+        "x-hwid": "throne-linux-test-device-001",
+        "x-device-os": "Linux",
+    })
+    assert metadata["client_name"] == "Throne"
+    assert metadata["client_version"] == "1.2.0"
+    assert metadata["platform"] == "Linux"
+    assert metadata["hwid_candidate_present"] is True
+    assert metadata["hwid_candidate_supported"] is True
+
+
 def test_unknown_os_never_invents_a_platform():
     metadata = extract_device_metadata({
         "User-Agent": "Throne/1.2.1",

@@ -62,7 +62,7 @@ class CompatibilityRecord:
 # REGISTRY_VERSION must be bumped whenever an entry is added, removed,
 # reclassified, or whenever the classify() lookup semantics themselves
 # change (as in the 2026-08-29 min-supported-version change below).
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 
 # --- SUPPORTED: exact (client, version, platform) tuples with positive,
 # reviewed evidence that the real client actually sends a well-formed HWID
@@ -96,6 +96,14 @@ _REGISTRY: tuple[CompatibilityRecord, ...] = (
         "v2raytun", "3.8.11", "windows", SUPPORTED, "HISTORICAL", "2026-08-30",
         "Seven production requests carried a well-formed HWID and fingerprint; "
         "the evidence is historical, so this is the reviewed Windows baseline.",
+    ),
+    CompatibilityRecord(
+        "throne", "1.2.1", "windows", SUPPORTED, "CONTROLLED", "2026-08-30",
+        "One owner-controlled production request reached the privacy-safe HWID pipeline.",
+    ),
+    CompatibilityRecord(
+        "throne", "1.2.0", "linux", SUPPORTED, "CONTROLLED", "2026-08-30",
+        "One owner-controlled production request reached the privacy-safe HWID pipeline.",
     ),
     CompatibilityRecord(
         "v2raytun", "5.25.81", "android", SUPPORTED, "ORGANIC_LIVE", "2026-08-25",

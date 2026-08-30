@@ -30,6 +30,16 @@ def test_windows_desktop_baselines_cover_newer_happ_and_v2raytun_versions():
     assert cr.classify("v2raytun", "3.8.10", "windows") == cr.UNKNOWN
 
 
+def test_throne_controlled_baselines_are_platform_scoped_and_monotonic():
+    assert cr.classify("throne", "1.2.1", "windows") == cr.SUPPORTED
+    assert cr.classify("throne", "1.2.2", "windows") == cr.SUPPORTED
+    assert cr.classify("throne", "1.2.0", "windows") == cr.UNKNOWN
+    assert cr.classify("throne", "1.2.0", "linux") == cr.SUPPORTED
+    assert cr.classify("throne", "1.2.1", "linux") == cr.SUPPORTED
+    assert cr.classify("throne", "1.1.9", "linux") == cr.UNKNOWN
+    assert cr.classify("throne", "1.2.1", "darwin") == cr.UNKNOWN
+
+
 def test_older_version_below_baseline_is_unknown():
     assert cr.classify("happ", "3.20.0", "android") == cr.UNKNOWN
 
@@ -49,6 +59,8 @@ def test_min_supported_version_is_the_lowest_vetted_entry():
     assert cr._MIN_SUPPORTED_VERSION[("incy", "android")] == (3, 3, 0)
     assert cr._MIN_SUPPORTED_VERSION[("happ", "android")] == (3, 24, 1)
     assert cr._MIN_SUPPORTED_VERSION[("v2raytun", "windows")] == (3, 8, 11)
+    assert cr._MIN_SUPPORTED_VERSION[("throne", "windows")] == (1, 2, 1)
+    assert cr._MIN_SUPPORTED_VERSION[("throne", "linux")] == (1, 2, 0)
 
 
 def test_supported_client_wrong_platform_is_unknown():
