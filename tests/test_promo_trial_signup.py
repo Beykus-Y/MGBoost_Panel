@@ -171,6 +171,26 @@ def test_wl_trial_entitlement_contract_shape(db):
     assert term["wl_quota_bytes_snapshot"] == 10_000_000_000
 
 
+def test_trial_cannot_switch_to_a_later_wl_trial_plan_version(db):
+    """A later row with the same plan_code must not become the free-trial
+    entitlement merely because it sorts later than the reviewed v1 row."""
+    db.accounts.create_plan_version({
+        "plan_code": "WL_TRIAL", "version": 2, "display_name": "WL Trial v2",
+        "plan_kind": "COMMERCIAL", "billing_required": False,
+        "device_limit_mode": "LIMITED", "device_limit": 1,
+        "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000,
+        "wl_period_days": 1,
+        "terms": {"catalog": "unreviewed-wl-trial-v2", "device_limit": 1, "wl_quota_gb": 10},
+    }, now=2)
+    _trial_def(db, "TRIALA2V")
+    result = _redeem(db, "TRIALA2V", 6100021, "trial-signup-a2v-000000001")
+    version = db._conn.execute(
+        "SELECT pv.version FROM mgboost_subscriptions s JOIN mgboost_plan_versions pv "
+        "ON pv.id=s.current_plan_version_id WHERE s.account_id=?", (result["account_id"],),
+    ).fetchone()["version"]
+    assert version == 1
+
+
 # --- 8: ноль финансовых строк --------------------------------------------------
 
 def test_trial_is_free_zero_financial_rows(db):
@@ -219,6 +239,17 @@ def test_non_wl_trial_class_stays_fail_closed_no_account(db):
         _redeem(db, "TRIALOTHR", 610006, "trial-signup-oth-0000000001")
     assert _account_count(db) == 0
     assert _identity_count(db, 610006) == 0
+    assert _redemption_count(db) == 0
+
+
+def test_malformed_wl_trial_definition_cannot_bootstrap(db):
+    """`WL_TRIAL` is not a label permitting author-selected free terms."""
+    _define(db, _capability(db), code="TRIALBAD", effect_kind="TRIAL_GRANT",
+            trial_class="WL_TRIAL", effect_params={"days": 2})
+    with pytest.raises(PromoNotFound, match="exact WL_TRIAL"):
+        _redeem(db, "TRIALBAD", 6100061, "trial-signup-malformed-00001")
+    assert _account_count(db) == 0
+    assert _identity_count(db, 6100061) == 0
     assert _redemption_count(db) == 0
 
 
@@ -288,6 +319,43 @@ def test_concurrent_redemptions_produce_one_account_and_one_redemption(db):
     assert _redemption_count(db) == 1
     assert db._conn.execute(
         "SELECT COUNT(*) c FROM mgboost_wl_periods").fetchone()["c"] == 1
+
+
+def test_separate_db_connections_cannot_orphan_second_account(db):
+    """The SQLite write transaction, rather than the process-local RLock,
+    serializes two independently constructed Database instances."""
+    _trial_def(db, "TRIALA5B")
+    import src.database as database
+    second = database.Database()
+    barrier = threading.Barrier(2)
+
+    def redeem(store, suffix):
+        barrier.wait()
+        try:
+            return store.promo.redeem_for_telegram_user(
+                code="TRIALA5B", telegram_id=6100101,
+                idempotency_key=f"trial-signup-separate-{suffix}-00001", now=5_000,
+            )
+        except PromoError:
+            return None
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda pair: redeem(*pair), ((db, "a"), (second, "b")),
+            ))
+    finally:
+        second._conn.close()
+
+    assert len([result for result in results if result is not None]) == 1
+    assert _account_count(db) == 1
+    assert _identity_count(db, 6100101) == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_legacy_account_aliases"
+    ).fetchone()["c"] == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) c FROM mgboost_wl_periods"
+    ).fetchone()["c"] == 1
 
 
 # --- 15: анти-абьюз по trial_class, не по строке кода ---------------------------
@@ -375,15 +443,10 @@ def test_crash_between_bootstrap_and_redemption_retry_reuses_account(db):
     _trial_def(db, "TRIALA9")
     # симуляция упавшей попытки: bootstrap дошёл до конца, redemption нет
     ensure_direct_account(
-        db._conn, db._lock, db.accounts,
+        db._conn, db._lock,
         telegram_id=610014, actor="telegram:610014",
         decision_ref="promo-trial-v1:crashsim0000000000000000000001", now=4_000,
-        identity_provenance="DIRECT_BIND",
-        alias_ownership_provenance="EVIDENCE_PROVEN",
-        alias_mapping_prefix="promo-trial-v1",
-        review_ownership_evidence="PROVEN",
-        evidence={"origin": "PROMO_TRIAL_SELF_SERVICE", "telegram_id": 610014,
-                  "trial_class": "WL_TRIAL"},
+        bootstrap_policy="PROMO_TRIAL",
     )
     assert _account_count(db) == 1
 
@@ -466,6 +529,10 @@ def test_first_hwid_claims_canonical_slot_and_is_idempotent(db):
         "SELECT COUNT(*) c FROM mgboost_device_slots WHERE account_id=?",
         (account_id,),
     ).fetchone()["c"] == 1
+
+    from src.device_slots import CapacityReached
+    with pytest.raises(CapacityReached):
+        db.device_slots.claim(account_id, "hwid-other-device-610017", HWID_KEY, now=6_200)
 
 
 def test_no_raw_token_or_hwid_anywhere_in_db(db):

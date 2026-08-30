@@ -145,6 +145,16 @@ def test_direct_plan_cannot_smuggle_an_unapproved_numeric_limit(db):
         db.device_slots.claim(account["id"], "commercial-99", HWID_KEY, now=100)
 
 
+def test_wl_trial_name_alone_cannot_authorize_commercial_d1(db):
+    """The D1 exception is the complete pinned free-trial contract, not
+    merely a `plan_code='WL_TRIAL'` string supplied by another plan row."""
+    from src.device_slots import EntitlementUnavailable
+
+    account, _ = _account_with_plan(db, limit=1, code="WL_TRIAL")
+    with pytest.raises(EntitlementUnavailable, match="baseline"):
+        db.device_slots.claim(account["id"], "fake-commercial-wl-trial-d1", HWID_KEY, now=100)
+
+
 def test_direct_plan_unlimited_is_allowed_only_via_a_reviewed_plan_and_uses_technical_cap(db):
     """PH4-03 mass-migration device-policy decision (2026-08-26): a DIRECT
     plan MAY carry `device_limit_mode='UNLIMITED'` -- but only ever via an

@@ -71,9 +71,6 @@ __all__ = [
 PAYMENT_CHANNEL = "ADMIN_GRANT"
 MUTATION_SOURCE = "ADMIN"
 ACTOR_TYPE = "PRIMARY_ADMIN"
-_TELEGRAM_IDENTITY_PROVENANCE = "ADMIN_REBIND"
-_ALIAS_OWNERSHIP_PROVENANCE = "OWNER_APPROVED"
-_REVIEW_OWNERSHIP_EVIDENCE = "PROVEN"
 
 
 class AdminGrantError(ValueError):
@@ -121,10 +118,7 @@ class AdminGrantStore:
             self._conn, self._lock,
             account_id=account_id, public_id=public_id,
             decision_ref=decision_ref, actor=actor, now=now,
-            alias_mapping_prefix="admin-grant-v1",
-            alias_ownership_provenance=_ALIAS_OWNERSHIP_PROVENANCE,
-            review_ownership_evidence=_REVIEW_OWNERSHIP_EVIDENCE,
-            evidence={"origin": PAYMENT_CHANNEL, "decision_ref": decision_ref},
+            bootstrap_policy="ADMIN_GRANT",
         )
 
     def _resolve_or_create_account(
@@ -139,14 +133,9 @@ class AdminGrantStore:
         improvement -- for every already-wired account it is a no-op, and
         the OWNER link is idempotent. Returns `(account, reused)`."""
         return ensure_direct_account(
-            self._conn, self._lock, self._accounts,
+            self._conn, self._lock,
             telegram_id=int(telegram_id), actor=actor, decision_ref=reason,
-            now=now,
-            identity_provenance=_TELEGRAM_IDENTITY_PROVENANCE,
-            alias_ownership_provenance=_ALIAS_OWNERSHIP_PROVENANCE,
-            alias_mapping_prefix="admin-grant-v1",
-            review_ownership_evidence=_REVIEW_OWNERSHIP_EVIDENCE,
-            evidence={"origin": PAYMENT_CHANNEL, "decision_ref": reason},
+            now=now, bootstrap_policy="ADMIN_GRANT",
         )
 
     def create_account_only(

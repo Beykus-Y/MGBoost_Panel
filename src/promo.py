@@ -60,11 +60,18 @@ WL_TRIAL_PLAN_CODE = "WL_TRIAL"
 # PURCHASE_DISCOUNT / EXTEND_SUBSCRIPTION code -- stays fail-closed
 # (PromoNotFound) for an account-less Telegram user.
 SELF_SERVICE_TRIAL_BOOTSTRAP_TRIAL_CLASS = WL_TRIAL_PLAN_CODE
-_TRIAL_IDENTITY_PROVENANCE = "DIRECT_BIND"
-_TRIAL_ALIAS_OWNERSHIP_PROVENANCE = "EVIDENCE_PROVEN"
-_TRIAL_REVIEW_OWNERSHIP_EVIDENCE = "PROVEN"
-_TRIAL_ALIAS_MAPPING_PREFIX = "promo-trial-v1"
-_TRIAL_ORIGIN = "PROMO_TRIAL_SELF_SERVICE"
+
+# The self-service exception is a complete immutable product contract, not a
+# friendly plan-code label.  A definition may not select its own duration or
+# quota, and a later WL_TRIAL version may not silently become the bootstrap
+# product.  Only this v1 row is acceptable.
+_WL_TRIAL_VERSION = 1
+_WL_TRIAL_EFFECT_PARAMS = {"days": 1}
+_WL_TRIAL_PLAN_TERMS = {
+    "catalog": "ph5-13-promo-wl-trial-v1",
+    "device_limit": 1,
+    "wl_quota_gb": 10,
+}
 
 _QUOTA_ROUND_BYTES = 10_000_000_000  # DL-060: round up to the nearest 10 GB decimal.
 _NAMESPACE = "ph5-13-promo-v1\0"
@@ -427,12 +434,13 @@ class PromoStore(_RedemptionTxMixin):
         account for TRIAL_GRANT and may EXTEND a non-WL (STANDARD/NONE)
         plan via `subscription_admin_ops.apply_adjustment`."""
         actor = self._require_primary(capability)
-        return self._redeem(
-            capability=capability,
-            code=code, telegram_id=telegram_id, reason=reason,
-            idempotency_key=idempotency_key, now=now,
-            actor_type=ACTOR_TYPE, actor_ref=actor, self_service=False,
-        )
+        with self._lock:
+            return self._redeem(
+                capability=capability,
+                code=code, telegram_id=telegram_id, reason=reason,
+                idempotency_key=idempotency_key, now=now,
+                actor_type=ACTOR_TYPE, actor_ref=actor, self_service=False,
+            )
 
     def redeem_for_telegram_user(
         self, *, code: str, telegram_id: int, idempotency_key: str,
@@ -457,14 +465,15 @@ class PromoStore(_RedemptionTxMixin):
         (`redeem_extend_or_trial`)."""
         if isinstance(telegram_id, bool) or not isinstance(telegram_id, int) or telegram_id <= 0:
             raise PromoError("telegram_id must be a positive integer")
-        return self._redeem(
-            capability=None,
-            code=code, telegram_id=telegram_id,
-            reason="telegram user self-service promo redemption",
-            idempotency_key=idempotency_key, now=now,
-            actor_type="TELEGRAM_USER", actor_ref=f"telegram:{telegram_id}",
-            self_service=True,
-        )
+        with self._lock:
+            return self._redeem(
+                capability=None,
+                code=code, telegram_id=telegram_id,
+                reason="telegram user self-service promo redemption",
+                idempotency_key=idempotency_key, now=now,
+                actor_type="TELEGRAM_USER", actor_ref=f"telegram:{telegram_id}",
+                self_service=True,
+            )
 
     def _redeem(
         self, *, capability, code: str, telegram_id: int, reason: str,
@@ -508,6 +517,9 @@ class PromoStore(_RedemptionTxMixin):
                 "WHERE promo_id=? AND version=?", (existing["promo_id"], existing["promo_version"]),
             ).fetchone()
             effect_params = json.loads(version_row["effect_params_json"])
+
+            if self_service and definition["effect_kind"] == "TRIAL_GRANT":
+                self._require_self_service_trial_contract(definition, effect_params)
         else:
             definition = self._conn.execute(
                 "SELECT * FROM mgboost_promo_definitions WHERE code=?", (clean_code,),
@@ -526,6 +538,8 @@ class PromoStore(_RedemptionTxMixin):
             if version_row is None:
                 raise PromoNotFound(f"promo code {clean_code!r} has no active version")
             effect_params = json.loads(version_row["effect_params_json"])
+            if self_service and definition["effect_kind"] == "TRIAL_GRANT":
+                self._require_self_service_trial_contract(definition, effect_params)
 
             # Resolve/create the account BEFORE opening our own write
             # transaction (see note above) -- its own primitives are
@@ -535,7 +549,7 @@ class PromoStore(_RedemptionTxMixin):
             # already-created account, never a duplicate.
             account_id, trial_class, owner_telegram_id = self._resolve_redemption_target(
                 capability=capability, definition=definition, telegram_id=telegram_id,
-                self_service=self_service,
+                self_service=self_service, effect_params=effect_params,
                 reason=clean_reason, idem_hash=idem_hash, timestamp=timestamp,
             )
             if definition["effect_kind"] == "TRIAL_GRANT":
@@ -743,7 +757,7 @@ class PromoStore(_RedemptionTxMixin):
         return [dict(row) for row in rows]
 
     def _bootstrap_trial_account(
-        self, *, definition, telegram_id: int, idem_hash: str, timestamp: int,
+        self, *, definition, effect_params: dict, telegram_id: int, idem_hash: str, timestamp: int,
     ) -> dict:
         """NEW USER TRIAL SIGNUP: the caller's one canonical DIRECT account
         for an eligible self-service WL_TRIAL redemption.
@@ -756,14 +770,7 @@ class PromoStore(_RedemptionTxMixin):
         `direct_account_bootstrap` primitive the admin path uses, gated by
         the narrow module-level policy instead. The Telegram principal is
         the same proven one every self-service redemption already trusts."""
-        if definition["trial_class"] != SELF_SERVICE_TRIAL_BOOTSTRAP_TRIAL_CLASS:
-            raise PromoNotFound(
-                f"no active account for telegram_id={telegram_id}; a self-service "
-                f"{definition['effect_kind']} requires an existing account -- contact support"
-            )
-        # The versioned WL_TRIAL contract must already be registered before
-        # ANY bootstrap is attempted (checked, not assumed).
-        self._require_trial_plan_version_id()
+        self._require_self_service_trial_contract(definition, effect_params)
         # Same predicates as the post-INSERT checks, evaluated early and
         # keyed on the telegram principal a fresh bootstrap will own --
         # identical values on this path (the fresh account's OWNER identity
@@ -790,20 +797,11 @@ class PromoStore(_RedemptionTxMixin):
                 "of times by this Telegram identity"
             )
         ensure_direct_account(
-            self._conn, self._lock, self._accounts,
+            self._conn, self._lock,
             telegram_id=int(telegram_id),
             actor=f"telegram:{telegram_id}",
             decision_ref=f"promo-trial-v1:{idem_hash[:32]}",
-            now=timestamp,
-            identity_provenance=_TRIAL_IDENTITY_PROVENANCE,
-            alias_ownership_provenance=_TRIAL_ALIAS_OWNERSHIP_PROVENANCE,
-            alias_mapping_prefix=_TRIAL_ALIAS_MAPPING_PREFIX,
-            review_ownership_evidence=_TRIAL_REVIEW_OWNERSHIP_EVIDENCE,
-            evidence={
-                "origin": _TRIAL_ORIGIN,
-                "telegram_id": int(telegram_id),
-                "trial_class": definition["trial_class"],
-            },
+            now=timestamp, bootstrap_policy="PROMO_TRIAL",
         )
         account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
         if account is None:
@@ -811,7 +809,7 @@ class PromoStore(_RedemptionTxMixin):
         return account
 
     def _resolve_redemption_target(
-        self, *, capability, definition, telegram_id, self_service, reason,
+        self, *, capability, definition, effect_params, telegram_id, self_service, reason,
         idem_hash, timestamp,
     ) -> tuple[int, str | None, int]:
         """Resolves account_id + (trial_class, owner_telegram_id) snapshot
@@ -829,7 +827,7 @@ class PromoStore(_RedemptionTxMixin):
             if account is None:
                 if self_service:
                     account = self._bootstrap_trial_account(
-                        definition=definition, telegram_id=telegram_id,
+                        definition=definition, effect_params=effect_params, telegram_id=telegram_id,
                         idem_hash=idem_hash, timestamp=timestamp,
                     )
                     account_id = account["id"]
@@ -864,6 +862,8 @@ class PromoStore(_RedemptionTxMixin):
     ) -> dict:
         days = int(effect_params["days"])
         if definition["effect_kind"] == "TRIAL_GRANT":
+            if self_service:
+                self._require_self_service_trial_contract(definition, effect_params)
             plan_version_id = self._require_trial_plan_version_id()
             base_quota_bytes = int(effect_params.get("base_quota_bytes", 100_000_000_000))
             quota_bytes = compute_promo_quota_bytes(base_quota_bytes, days)
@@ -909,16 +909,41 @@ class PromoStore(_RedemptionTxMixin):
         return result
 
     def _require_trial_plan_version_id(self) -> int:
-        row = self._conn.execute(
-            "SELECT id FROM mgboost_plan_versions WHERE plan_code='WL_TRIAL' "
-            "ORDER BY version DESC LIMIT 1",
-        ).fetchone()
-        if row is None:
+        # Promo redemption starts with read-only validation before its own
+        # write transaction.  The shared sqlite connection is not safe for
+        # an unlocked cursor while another local thread has BEGIN IMMEDIATE.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM mgboost_plan_versions WHERE plan_code=? AND version=?",
+                (WL_TRIAL_PLAN_CODE, _WL_TRIAL_VERSION),
+            ).fetchone()
+        if row is None or any((
+            row["plan_kind"] != "COMMERCIAL",
+            int(row["billing_required"]) != 0,
+            row["device_limit_mode"] != "LIMITED",
+            int(row["device_limit"] or 0) != 1,
+            row["wl_mode"] != "LIMITED",
+            int(row["wl_quota_bytes"] or 0) != 10_000_000_000,
+            int(row["wl_period_days"] or 0) != 1,
+            json.loads(row["terms_json"]) != _WL_TRIAL_PLAN_TERMS,
+        )):
             raise PromoError(
-                "WL_TRIAL plan_version is not registered -- complete normal "
-                "application startup before granting trials"
+                "WL_TRIAL plan_version does not match the pinned self-service contract"
             )
         return int(row["id"])
+
+    def _require_self_service_trial_contract(self, definition, effect_params: dict) -> None:
+        """Fail closed before bootstrap unless every user-selectable input
+        resolves to the one reviewed free-trial product."""
+        if (
+            definition["effect_kind"] != "TRIAL_GRANT"
+            or definition["trial_class"] != SELF_SERVICE_TRIAL_BOOTSTRAP_TRIAL_CLASS
+            or effect_params != _WL_TRIAL_EFFECT_PARAMS
+        ):
+            raise PromoNotFound(
+                "self-service trial bootstrap requires the exact WL_TRIAL v1 contract"
+            )
+        self._require_trial_plan_version_id()
 
 
 def _validate_effect_params(effect_kind: str, effect_params: dict) -> None:
@@ -955,17 +980,17 @@ def ensure_wl_trial_plan_version(accounts, *, now: int | None = None) -> dict:
         (WL_TRIAL_PLAN_CODE,),
     ).fetchone()
     expected = {
-            "plan_code": WL_TRIAL_PLAN_CODE, "version": 1, "display_name": "WL Trial",
+            "plan_code": WL_TRIAL_PLAN_CODE, "version": _WL_TRIAL_VERSION, "display_name": "WL Trial",
             "plan_kind": "COMMERCIAL", "billing_required": False,
             "device_limit_mode": "LIMITED", "device_limit": 1,
             "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
-            "terms": {"catalog": "ph5-13-promo-wl-trial-v1", "device_limit": 1, "wl_quota_gb": 10},
+            "terms": _WL_TRIAL_PLAN_TERMS,
     }
     if existing is None:
         return accounts.create_plan_version(expected, now=now)
     result = dict(existing)
     required = {
-        "version": 1, "plan_kind": "COMMERCIAL", "billing_required": 0,
+        "version": _WL_TRIAL_VERSION, "plan_kind": "COMMERCIAL", "billing_required": 0,
         "device_limit_mode": "LIMITED", "device_limit": 1, "wl_mode": "LIMITED",
         "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
     }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import sqlite3
 import time
 
@@ -69,6 +70,29 @@ def privacy_safe_hwid(raw_hwid: str, hmac_key: bytes | str) -> tuple[str, str]:
     return "hmac-sha256:" + digest, "hwid_" + digest[:12]
 
 
+def _is_pinned_wl_trial_device_contract(row) -> bool:
+    """D1 is a single free-trial exception, never a reusable plan-code
+    escape hatch for an arbitrary commercial 1-device product."""
+    try:
+        return (
+            row["plan_code"] == "WL_TRIAL"
+            and int(row["version"]) == 1
+            and int(row["billing_required"]) == 0
+            and row["device_limit_mode"] == "LIMITED"
+            and int(row["device_limit"] or 0) == 1
+            and row["wl_mode"] == "LIMITED"
+            and int(row["wl_quota_bytes"] or 0) == 10_000_000_000
+            and int(row["wl_period_days"] or 0) == 1
+            and json.loads(row["terms_json"]) == {
+                "catalog": "ph5-13-promo-wl-trial-v1",
+                "device_limit": 1,
+                "wl_quota_gb": 10,
+            }
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
 class DeviceSlotStore:
     def __init__(self, connection: sqlite3.Connection, lock):
         self._conn = connection
@@ -92,7 +116,8 @@ class DeviceSlotStore:
         row = self._conn.execute(
             "SELECT a.account_source,a.status AS account_status,"
             "s.id AS subscription_id,s.status AS subscription_status,s.current_expiry,"
-            "p.plan_kind,p.plan_code,p.device_limit_mode,p.device_limit "
+            "p.plan_kind,p.plan_code,p.version,p.billing_required,p.device_limit_mode,p.device_limit,"
+            "p.wl_mode,p.wl_quota_bytes,p.wl_period_days,p.terms_json "
             "FROM mgboost_accounts AS a "
             "JOIN mgboost_subscriptions AS s ON s.account_id=a.id "
             "JOIN mgboost_plan_versions AS p ON p.id=s.current_plan_version_id "
@@ -137,7 +162,7 @@ class DeviceSlotStore:
                 # sellable catalog, so PAID_BASELINE_LIMITS itself is
                 # deliberately NOT extended -- a paid 1-device tariff
                 # would still need its own owner review.
-                if not (row["plan_code"] == "WL_TRIAL" and limit == 1):
+                if not _is_pinned_wl_trial_device_contract(row):
                     raise EntitlementUnavailable("commercial device baseline is not approved")
         elif mode == "LIMITED":
             if limit is None or not 1 <= int(limit) <= TECHNICAL_SLOT_CAP:
@@ -187,7 +212,6 @@ class DeviceSlotStore:
             "conflict": active_count > effective_limit,
             "overage": max(0, active_count - effective_limit),
         }
-
     def get_capacity_state(self, account_id: int, *, now: int | None = None) -> dict:
         timestamp = int(time.time()) if now is None else int(now)
         with self._lock:
