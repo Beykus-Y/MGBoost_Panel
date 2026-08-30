@@ -174,7 +174,7 @@ def test_extend_subscription_on_wl_creates_prorated_period_after_current_chronol
     )
     assert result["status"] == "REDEEMED"
     period = result["effect_result"]["wl_periods"][0]
-    assert period["starts_at"] == base["wl_periods"][0]["ends_at"]  # no gap
+    assert period["starts_at"] == base["new_expiry"]  # exact canonical anchor
 
     quota = db._conn.execute(
         "SELECT base_quota_bytes FROM mgboost_wl_periods WHERE sequence_no=2 AND account_id=?",
@@ -413,7 +413,7 @@ def test_user_redeem_extends_wl_subscription_without_any_admin_capability(db):
     )
     assert result["status"] == "REDEEMED"
     period = result["effect_result"]["wl_periods"][0]
-    assert period["starts_at"] == base["wl_periods"][0]["ends_at"]
+    assert period["starts_at"] == base["new_expiry"]
     row = db._conn.execute(
         "SELECT actor_type,actor_ref FROM mgboost_promo_redemptions WHERE id=?",
         (result["redemption_id"],),

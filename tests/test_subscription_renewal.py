@@ -346,8 +346,11 @@ def test_append_promo_wl_period_extends_existing_wl_subscription_without_touchin
     result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
                            key="promo-extend-key-0001", now=2_000)
 
-    assert result["wl_periods"][0]["starts_at"] == base_period["ends_at"]  # no gap
-    assert result["wl_periods"][0]["ends_at"] == base_period["ends_at"] + 7 * 86400
+    # The canonical subscription expiry leads the historical hour-aligned
+    # period end by 1,000 seconds. Promo semantics must use that exact max,
+    # never move backwards merely to make an old hour bucket look contiguous.
+    assert result["wl_periods"][0]["starts_at"] == base["new_expiry"]
+    assert result["wl_periods"][0]["ends_at"] == base["new_expiry"] + 7 * 86400
 
     sub = db._conn.execute(
         "SELECT current_plan_version_id FROM mgboost_subscriptions WHERE account_id=?",
@@ -393,13 +396,32 @@ def test_append_promo_wl_period_anchors_on_current_expiry_when_it_leads_wl_perio
 
     result = _append_promo(db, account["id"], days=7, quota_bytes=30_000_000_000,
                            key="promo-anchor-fwd-key-001", now=3_000)
-    # WL periods floor to the UTC hour (DL-020); the subscription expiry line
-    # stays exact-second. Both extend from the same moved_expiry origin.
-    from src.subscription_renewal import align_to_utc_hour
-    expected_start = align_to_utc_hour(moved_expiry)
+    # Promo semantics use the exact canonical anchor: no hour-floor, overlap
+    # or gap, while the duration remains exact.
+    expected_start = moved_expiry
     assert result["wl_periods"][0]["starts_at"] == expected_start
     assert result["wl_periods"][0]["ends_at"] == expected_start + 7 * 86400
     assert result["new_expiry"] == moved_expiry + 7 * 86400
+
+
+def test_append_promo_wl_period_anchors_on_now_exactly_when_it_leads(db):
+    account = db.accounts.create_account("DIRECT", now=1)
+    trial_plan = db.accounts.create_plan_version({
+        "plan_code": "PROMO_NOW_WL", "version": 1, "display_name": "Promo now",
+        "plan_kind": "COMMERCIAL", "billing_required": False,
+        "device_limit_mode": "LIMITED", "device_limit": 1,
+        "wl_mode": "LIMITED", "wl_quota_bytes": 10_000_000_000, "wl_period_days": 1,
+        "terms": {},
+    }, now=1)
+    result = _append_promo(
+        db, account["id"], days=1, quota_bytes=10_000_000_000,
+        key="promo-now-exact-key-01", now=5_001, plan_version_id=trial_plan["id"],
+        operation="PROMO_TRIAL_GRANT",
+    )
+    assert result["wl_periods"] == [{
+        "sequence_no": 1, "starts_at": 5_001, "ends_at": 5_001 + 86400,
+    }]
+    assert result["new_expiry"] == 5_001 + 86400
 
 
 def test_append_promo_wl_period_anchors_on_max_period_ends_at_when_it_leads(db):

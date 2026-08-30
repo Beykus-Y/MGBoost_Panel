@@ -58,13 +58,14 @@ Marzban user, the same liveness check `child_provisioning.py` itself uses
 before creating an outbox operation). The exact live Marzban username is
 already stored on that row (`child_username`, PH3-03) -- it is used only
 transiently, in-memory, to make the read-only usage call; it is never
-itself persisted into this ledger's own tables or logged. Every WL-period
-boundary is exactly UTC-hour aligned (DL-020,
-`subscription_renewal.align_to_utc_hour`), so a single UTC-hour sample
-bucket can never straddle two periods -- `wl_period_id` attribution is
-therefore unambiguous whenever a period exists to attribute to (today, in
-production, none do yet -- PH6-03 stays fully dormant-safe, matching the
-PH6-01/02 precedent, until a real purchase flow starts creating periods).
+itself persisted into this ledger's own tables or logged. `sample_hour`
+remains an operational UTC-hour grouping, but PH6 ledger v2 keys a sample
+also by `wl_period_id` (with a NULL-safe no-period bucket). Two observations
+on opposite sides of an arbitrary-second period boundary therefore never
+merge. Attribution is the period active at the instant the cumulative usage
+observation is made; it is not a mathematical split of an interval that
+itself crossed a boundary, because the remote endpoint exposes no sub-hour
+traffic timestamps.
 """
 
 from __future__ import annotations
@@ -212,17 +213,12 @@ class WLUsageLedgerStore:
         period (including one closed early by ADMIN_RESET) is never touched
         again -- this never revives one.
 
-        Ordering matters to callers: `mgboost_wl_usage_samples.wl_period_id`
-        is fixed at the first write into a given (child, node, UTC-hour)
-        bucket and is then immutable (the identity trigger guards it too) --
-        if that first write ever happens before this sync has run for the
-        period covering that hour, every later delta added to that same
-        bucket stays permanently unattributed. Every real WL period boundary
-        is exactly UTC-hour aligned (DL-020), so as long as this always runs
-        immediately before `resolve_active_wl_period` on every collection
-        (as `run_collection_cycle` already does), a period is always ACTIVE
-        by the time its very first hour's very first sample is recorded --
-        this is never actually reachable in the real collector path."""
+        `mgboost_wl_usage_samples.wl_period_id` remains immutable, but PH6
+        ledger v2 makes it part of the logical bucket key. A later sample in
+        another period but the same UTC hour is therefore a second row rather
+        than an update that contaminates the earlier period's total. This
+        sync must still run immediately before every resolver call so an
+        observation is attributed to the period active at that instant."""
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -315,10 +311,14 @@ class WLUsageLedgerStore:
                     ).fetchone()
                     return dict(existing)
 
+                # ``IS`` intentionally makes NULL equal NULL for the
+                # no-current-WL bucket. It mirrors v2's NULL-safe unique
+                # expression index on COALESCE(wl_period_id, 0).
                 existing_sample = self._conn.execute(
                     "SELECT * FROM mgboost_wl_usage_samples "
-                    "WHERE child_intent_id=? AND node_id=? AND sample_hour=?",
-                    (int(child_intent_id), int(node_id), sample_hour),
+                    "WHERE child_intent_id=? AND node_id=? AND sample_hour=? "
+                    "AND wl_period_id IS ?",
+                    (int(child_intent_id), int(node_id), sample_hour, wl_period_id),
                 ).fetchone()
                 if existing_sample is None:
                     self._conn.execute(
@@ -336,10 +336,11 @@ class WLUsageLedgerStore:
                     self._conn.execute(
                         "UPDATE mgboost_wl_usage_samples SET bytes_delta=bytes_delta+?,"
                         "last_collected_at=?,updated_at=? "
-                        "WHERE child_intent_id=? AND node_id=? AND sample_hour=?",
+                        "WHERE child_intent_id=? AND node_id=? AND sample_hour=? "
+                        "AND wl_period_id IS ?",
                         (
                             int(delta_bytes), int(collected_at), int(collected_at),
-                            int(child_intent_id), int(node_id), sample_hour,
+                            int(child_intent_id), int(node_id), sample_hour, wl_period_id,
                         ),
                     )
 

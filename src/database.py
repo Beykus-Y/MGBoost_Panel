@@ -57,6 +57,7 @@ from .wl_topology_guard import WLTopologyGuardStore
 from .wl_period_admin_reset_schema import apply_wl_period_admin_reset_schema
 from .wl_period_admin_reset import WLPeriodAdminResetStore
 from .wl_usage_ledger_schema import apply_wl_usage_ledger_schema
+from .wl_usage_ledger_schema_v2 import apply_wl_usage_ledger_schema_v2
 from .wl_usage_ledger import WLUsageLedgerStore
 from .wl_enforcement_schema import apply_wl_enforcement_schema
 from .wl_enforcement import WLEnforcementStore
@@ -477,6 +478,7 @@ class Database:
         apply_provenance_schema(self._conn)
         apply_child_provisioning_schema(self._conn)
         apply_wl_usage_ledger_schema(self._conn)
+        apply_wl_usage_ledger_schema_v2(self._conn)
         apply_wl_enforcement_schema(self._conn)
         apply_wl_reconciliation_schema(self._conn)
         apply_wl_topology_versions_schema(self._conn)

@@ -35,11 +35,10 @@ resolve_active_wl_period` (the exact same resolver PH6-03's own collector
 uses to attribute `wl_period_id` at collection time), via `WLUsageLedgerStore
 .sync_wl_period_statuses` first advancing that account's own periods through
 the time-only `PLANNED -> ACTIVE -> CLOSED` machine `wl_period_lifecycle_
-schema.py` reserved but never built. Every period boundary in `mgboost_wl_
-periods` is exactly UTC-hour aligned (DL-020) and every `mgboost_wl_usage_
-samples.sample_hour` is UTC-hour bucketed, so a single sample can never
-straddle two periods -- period-boundary aggregation is unambiguous by the
-same construction PH6-03 already relies on.
+schema.py` reserved but never built. `sample_hour` remains UTC-hour bucketed
+for diagnostics, while the PH6 period-aware ledger key also includes
+`wl_period_id`; an arbitrary-second boundary therefore has distinct durable
+rows and this SUM remains unambiguous.
 
 Node scope is the exact PH0-05 topology allowlist (`WL_NODE_IDS`), applied
 defensively at aggregation time even though PH6-03's own collector already

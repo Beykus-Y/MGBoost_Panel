@@ -378,7 +378,9 @@ class SubscriptionRenewalStore:
         stranded inside an already-paid-for term instead of extending the
         subscription past it. `current_expiry` itself is extended by the
         same DL-044 `max(current_expiry, now) + days` formula, kept in step
-        via one CAS UPDATE (or INSERT for a fresh subscription). Idempotent by `idempotency_key`, same
+        via one CAS UPDATE (or INSERT for a fresh subscription). Promo
+        semantics require the exact canonical anchor: no hour-floor/hour-ceil
+        and an exact `days * 86400` duration. Idempotent by `idempotency_key`, same
         `mgboost_entitlement_mutations.idempotency_key_hash` boundary as
         every other PH5 writer."""
         timestamp = int(time.time()) if now is None else int(now)
@@ -443,7 +445,10 @@ class SubscriptionRenewalStore:
                 period_anchor = max(
                     existing_max_ends_at or 0, current_expiry or 0, timestamp
                 )
-                period_start = align_to_utc_hour(period_anchor)
+                # PH5-13 owner semantics: this promo period must begin at
+                # the exact canonical anchor; catalog-purchase alignment is
+                # not applicable here.
+                period_start = period_anchor
                 period_end = period_start + int(days) * 86400
 
                 if subscription_id is None:

@@ -44,7 +44,8 @@ def _clean_topology_ok(db, now=1):
     db.wl_topology_guard.run_assertion(tags, nodes, now=now)
 
 
-def _seed_wl_period(db, *, account_id, starts_at, ends_at, now, status="ACTIVE"):
+def _seed_wl_period(db, *, account_id, starts_at, ends_at, now, status="ACTIVE",
+                    quota_mode="UNLIMITED", base_quota_bytes=None):
     conn = db._conn
     subscription = conn.execute(
         "SELECT id FROM mgboost_subscriptions WHERE account_id=?", (account_id,)
@@ -73,15 +74,20 @@ def _seed_wl_period(db, *, account_id, starts_at, ends_at, now, status="ACTIVE")
     period_id = conn.execute(
         "INSERT INTO mgboost_wl_periods "
         "(account_id,subscription_id,subscription_term_id,sequence_no,starts_at,ends_at,"
-        "quota_mode,status,created_at) VALUES (?,?,?,?,?,?,'UNLIMITED',?,?)",
-        (account_id, subscription_id, term_id, period_seq, starts_at, ends_at, status, now),
+        "quota_mode,base_quota_bytes,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (account_id, subscription_id, term_id, period_seq, starts_at, ends_at,
+         quota_mode, base_quota_bytes, status, now),
     ).lastrowid
     conn.commit()
     return period_id
 
 
-def _seed_active_wl_period(db, *, account_id, starts_at, ends_at, now):
-    return _seed_wl_period(db, account_id=account_id, starts_at=starts_at, ends_at=ends_at, now=now, status="ACTIVE")
+def _seed_active_wl_period(db, *, account_id, starts_at, ends_at, now,
+                           quota_mode="UNLIMITED", base_quota_bytes=None):
+    return _seed_wl_period(
+        db, account_id=account_id, starts_at=starts_at, ends_at=ends_at, now=now,
+        status="ACTIVE", quota_mode=quota_mode, base_quota_bytes=base_quota_bytes,
+    )
 
 
 class FakeServiceMarzban:
@@ -145,6 +151,65 @@ def test_second_sample_records_only_the_new_delta(db):
         (child_intent_id,),
     ).fetchone()
     assert row["bytes_delta"] == 1500  # same UTC hour: accumulated, not overwritten
+
+
+def test_same_child_node_hour_different_wl_periods_stay_separate(db):
+    """PH6 compatibility regression: a promo boundary may be inside a UTC
+    hour.  A pre-boundary and post-boundary observation must produce two
+    immutable period-attributed buckets, never old_period=200."""
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    child_intent_id = fx["child_intent_id"]
+    old_period = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=0, ends_at=1500, now=1,
+        quota_mode="LIMITED", base_quota_bytes=100,
+    )
+    new_period = _seed_wl_period(
+        db, account_id=account_id, starts_at=1500, ends_at=5100, now=1, status="PLANNED",
+        quota_mode="LIMITED", base_quota_bytes=100,
+    )
+
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=100, collector_id="w1", collected_at=1400, wl_period_id=old_period,
+    )
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=200, collector_id="w1", collected_at=1600, wl_period_id=new_period,
+    )
+    rows = db._conn.execute(
+        "SELECT sample_hour,wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4 ORDER BY wl_period_id",
+        (child_intent_id,),
+    ).fetchall()
+    assert [(r["sample_hour"], r["wl_period_id"], r["bytes_delta"]) for r in rows] == [
+        (0, old_period, 100), (0, new_period, 100),
+    ]
+    from src.wl_parent_pool import compute_parent_wl_pool
+    old_pool = compute_parent_wl_pool(db._conn, account_id=account_id, wl_period_id=old_period)
+    new_pool = compute_parent_wl_pool(db._conn, account_id=account_id, wl_period_id=new_period)
+    assert (old_pool["consumed_bytes"], old_pool["exceeded"]) == (100, True)
+    assert (new_pool["consumed_bytes"], new_pool["exceeded"]) == (100, True)
+
+
+def test_same_child_node_hour_same_wl_period_still_aggregates(db):
+    account_id, child_intent_id = _ids(db)
+    period_id = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=0, ends_at=5100, now=1,
+    )
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=100, collector_id="w1", collected_at=1400, wl_period_id=period_id,
+    )
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=200, collector_id="w1", collected_at=1600, wl_period_id=period_id,
+    )
+    rows = db._conn.execute(
+        "SELECT wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4", (child_intent_id,),
+    ).fetchall()
+    assert [(r["wl_period_id"], r["bytes_delta"]) for r in rows] == [(period_id, 200)]
 
 
 def test_negative_observed_value_rejected(db):
@@ -513,6 +578,125 @@ def test_run_collection_cycle_attributes_active_wl_period(db):
         (fx["child_intent_id"],),
     ).fetchone()
     assert row["wl_period_id"] == period_id
+
+
+def test_collector_attributes_arbitrary_second_boundary_inside_one_sample_hour(db):
+    _clean_topology_ok(db, now=1)
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    old_period = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=0, ends_at=1500, now=1,
+    )
+    new_period = _seed_wl_period(
+        db, account_id=account_id, starts_at=1500, ends_at=5100, now=1, status="PLANNED",
+    )
+    fake = FakeServiceMarzban()
+    fake.set_usage(fx["child_username"], {4: 100, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=1499)
+    fake.set_usage(fx["child_username"], {4: 200, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=1500)
+
+    rows = db._conn.execute(
+        "SELECT wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4 ORDER BY wl_period_id",
+        (fx["child_intent_id"],),
+    ).fetchall()
+    assert [(r["wl_period_id"], r["bytes_delta"]) for r in rows] == [
+        (old_period, 100), (new_period, 100),
+    ]
+
+
+def test_cross_boundary_interval_is_right_edge_attributed_once_without_split(db):
+    """The upstream counter exposes only cumulative values.
+
+    The second observation crosses an arbitrary-second WL boundary, so its
+    150-byte delta is deliberately assigned in full to the period active at
+    that observation.  This is operational quota accounting, not a claim
+    that all 150 bytes physically travelled after the boundary.
+    """
+    _clean_topology_ok(db, now=1)
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    old_period = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=0, ends_at=1_500, now=1,
+        quota_mode="LIMITED", base_quota_bytes=200,
+    )
+    new_period = _seed_wl_period(
+        db, account_id=account_id, starts_at=1_500, ends_at=5_100, now=1,
+        status="PLANNED", quota_mode="LIMITED", base_quota_bytes=200,
+    )
+    fake = FakeServiceMarzban()
+    fake.set_usage(fx["child_username"], {4: 100, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=1_499)
+    fake.set_usage(fx["child_username"], {4: 250, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=1_501)
+
+    buckets = db._conn.execute(
+        "SELECT wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4 ORDER BY wl_period_id",
+        (fx["child_intent_id"],),
+    ).fetchall()
+    assert [(row["wl_period_id"], row["bytes_delta"]) for row in buckets] == [
+        (old_period, 100), (new_period, 150),
+    ]
+    events = db._conn.execute(
+        "SELECT cursor_before,cursor_after,delta_bytes FROM mgboost_wl_usage_sample_events "
+        "WHERE child_intent_id=? AND node_id=4 ORDER BY id",
+        (fx["child_intent_id"],),
+    ).fetchall()
+    assert [tuple(row) for row in events] == [(0, 100, 100), (100, 250, 150)]
+
+    from src.wl_parent_pool import compute_parent_wl_pool
+    assert compute_parent_wl_pool(
+        db._conn, account_id=account_id, wl_period_id=old_period,
+    )["consumed_bytes"] == 100
+    new_pool = compute_parent_wl_pool(
+        db._conn, account_id=account_id, wl_period_id=new_period)
+    assert (new_pool["consumed_bytes"], new_pool["exceeded"]) == (150, False)
+
+
+def test_no_current_period_uses_existing_null_bucket_without_cross_period_merge(db):
+    """No active period remains the existing NULL/COALESCE(…, 0) bucket."""
+    account_id, child_intent_id = _ids(db)
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=100, collector_id="w1", collected_at=100, wl_period_id=None,
+    )
+    db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=child_intent_id, node_id=4,
+        cursor_after=250, collector_id="w1", collected_at=200, wl_period_id=None,
+    )
+    row = db._conn.execute(
+        "SELECT wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4",
+        (child_intent_id,),
+    ).fetchone()
+    assert (row["wl_period_id"], row["bytes_delta"]) == (None, 250)
+
+
+def test_collector_attributes_exact_hour_boundary(db):
+    _clean_topology_ok(db, now=1)
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    old_period = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=0, ends_at=3600, now=1,
+    )
+    new_period = _seed_wl_period(
+        db, account_id=account_id, starts_at=3600, ends_at=7200, now=1, status="PLANNED",
+    )
+    fake = FakeServiceMarzban()
+    fake.set_usage(fx["child_username"], {4: 100, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=3599)
+    fake.set_usage(fx["child_username"], {4: 200, 7: 0})
+    run_collection_cycle(db=db, service_marzban=fake, worker_id="w1", now=3600)
+    rows = db._conn.execute(
+        "SELECT sample_hour,wl_period_id,bytes_delta FROM mgboost_wl_usage_samples "
+        "WHERE child_intent_id=? AND node_id=4 ORDER BY sample_hour",
+        (fx["child_intent_id"],),
+    ).fetchall()
+    assert [(r["sample_hour"], r["wl_period_id"], r["bytes_delta"]) for r in rows] == [
+        (0, old_period, 100), (3600, new_period, 100),
+    ]
 
 
 def test_run_collection_cycle_leaves_lease_free_after_completion(db):
