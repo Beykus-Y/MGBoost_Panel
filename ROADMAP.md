@@ -1533,8 +1533,7 @@ reviews of this diff could not resolve in agreement.**
   - Full regression after fixes: 1396 passed, 0 failed. `git diff --check`
     clean; touched JS/Python compile clean.
 
-## [~] PH5-13 — Promo codes v1 (backend + bot/LK/admin ingress DONE locally
-2026-08-30; final gates and authorized production rollout pending)
+## [x] PH5-13 — Promo codes v1 (production-verified 2026-08-30)
 
 **Implemented (commits 43d27f1, 7697b0c, + two 2026-08-30 commits; suite
 1597 passed):** `src/promo.py` (`PromoStore`: definitions with
@@ -1572,8 +1571,18 @@ is fixed locally by the evidence-backed `v2raytun >= 3.8.11 / windows`
 registry baseline; opaque telemetry is now privacy-safe and fail-open, and
 does not alter resolver decisions. Throne header parsing is ready, but its
 registry status remains SAFE-DEFER pending one controlled real request.
-Remaining gates are targeted/full regression, migration/backup-restore and
-controlled production canary.**
+**Closure 2026-08-30:** targeted regression `197 passed`; full regression
+`1629 passed, 4 skipped`; fresh, production-shaped and repeated PH6-10
+ledger migration checks and encrypted backup/restore passed. Production
+fast-forwarded to `04799d1`; `mgboost-panel` self-applied
+`ph6_10_wl_usage_ledger_period_bucket_v1`, SQLite `quick_check`/FK checks,
+all services and HTTP smoke passed. The prior EXTEND canary row was retained
+unchanged. A new account `20` EXTEND canary passed through canonical
+`PromoStore`: exact arbitrary-second period anchor, exact `+86400` duration,
+and zero financial rows. The following `PURCHASE_DISCOUNT` no-charge canary
+created only an unbound 60-second `RESERVED` redemption, with no invoice,
+pre-checkout or payment rows. **PH5-13 is closed. `TRIAL` remains
+`BLOCKED_NEEDS_CONTROLLED_IDENTITY`.**
 
 
 **Depends:** PH5-01/02/04/05/09 (single canonical account/subscription/

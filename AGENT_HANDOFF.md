@@ -1,7 +1,15 @@
-# AGENT_HANDOFF — PH5-13 Promo codes: backend + full ingress implemented locally, deploy pending
+# AGENT_HANDOFF — PH5-13 Promo codes: production-verified and closed
 
-Updated: 2026-08-30 (review remediation plus v2raytun/Windows incident fix
-ready locally; no push/deploy yet).
+Updated: 2026-08-30 (PH6-10 right-edge attribution and PH5-13 rollout).
+**Latest closure:** commit `04799d1` was backup/restore-verified, deployed
+with the additive `ph6_10_wl_usage_ledger_period_bucket_v1` migration, and
+health-checked on production. Targeted/full regression: `197 passed` and
+`1629 passed, 4 skipped`. The previous account `20` EXTEND canary was not
+deleted or rewritten; a new canonical EXTEND canary passed with the exact
+arbitrary-second anchor and `+86400` duration. A subsequent
+`PURCHASE_DISCOUNT` no-charge canary created only an unbound 60-second
+reservation, with zero invoice/payment rows. **PH5-13 is closed; `TRIAL`
+remains `BLOCKED_NEEDS_CONTROLLED_IDENTITY`.**
 **Correction to the prior handoff:** read-only production forensic found
 `ph5_13_promo_codes_v1` already applied at production `2641527`; do not
 rewrite its checksum. The immutable trigger fix is additive
