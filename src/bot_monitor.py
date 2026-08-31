@@ -75,7 +75,7 @@ async def _delete_after(bot, channel_id, *message_ids: int, delay: int = 600):
         try:
             await bot.delete_message(chat_id=channel_id, message_id=mid)
         except Exception as e:
-            logger.warning(f"Не удалось удалить сообщение {mid}: {e}")
+            logger.warning(f"Не удалось удалить сообщение {mid}: {type(e).__name__}")
 
 
 async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading.Event,
@@ -92,7 +92,7 @@ async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading
             admin_token = await loop.run_in_executor(None, marzban.get_admin_token_from_env)
             nodes = await loop.run_in_executor(None, marzban.get_nodes, admin_token)
         except Exception as e:
-            logger.warning(f"Не удалось получить ноды от Marzban: {e}")
+            logger.warning(f"Не удалось получить ноды от Marzban: {type(e).__name__}")
             return
 
         names = {n["id"]: get_display_name(n, db) for n in nodes}
@@ -128,7 +128,7 @@ async def _monitor_loop(bot, channel_id: str, db, marzban, stop_event: threading
                 await bot.edit_message_text(chat_id=channel_id, message_id=pinned_id,
                                             text=status_text, parse_mode="Markdown")
             except Exception as e:
-                logger.warning(f"Не удалось отредактировать закреп: {e}")
+                logger.warning(f"Не удалось отредактировать закреп: {type(e).__name__}")
         else:
             msg = await bot.send_message(channel_id, status_text, parse_mode="Markdown")
             pinned[0:] = [msg.message_id]

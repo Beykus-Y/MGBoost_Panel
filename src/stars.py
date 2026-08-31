@@ -79,7 +79,7 @@ async def notify_admin_stuck_payment(bot, db, row: dict):
             f"Статус: {status}\nПричина: {reason}",
         )
     except Exception as e:
-        logger.warning(f"Не удалось уведомить admin о проблемном платеже: {e}")
+        logger.warning(f"Не удалось уведомить admin о проблемном платеже: {type(e).__name__}")
 
 
 async def notify_user_extended(bot, row: dict):
@@ -104,7 +104,7 @@ async def notify_user_extended(bot, row: dict):
             reply_markup=card_markup,
         )
     except Exception as e:
-        logger.warning(f"Не удалось уведомить пользователя о продлении: {e}")
+        logger.warning(f"Не удалось уведомить пользователя о продлении: {type(e).__name__}")
 
 
 async def _notify_admin_signup_issue(bot, db, text: str):
@@ -119,7 +119,7 @@ async def _notify_admin_signup_issue(bot, db, text: str):
     try:
         await bot.send_message(int(admin_tg_id), f"🛒 Проблемный commercial signup:\n{text}")
     except Exception as e:
-        logger.warning(f"Не удалось уведомить admin о signup-проблеме: {e}")
+        logger.warning(f"Не удалось уведомить admin о signup-проблеме: {type(e).__name__}")
 
 
 # --- PH5-11 signup delivery (initial opaque credential) ----------------------
@@ -592,7 +592,7 @@ async def _tick(bot, db, marzban, admin_token):
     try:
         db.promo.release_expired_reservations()
     except Exception as e:
-        logger.error(f"promo reservation sweeper failed: {e}")
+        logger.error(f"promo reservation sweeper failed: {type(e).__name__}")
     await _sync_canonical_purchase_children(db, marzban)
     if not admin_token:
         return
@@ -608,7 +608,7 @@ async def _tick(bot, db, marzban, admin_token):
         try:
             await process_invoice_row(bot, db, marzban, admin_token, row)
         except Exception as e:
-            logger.error(f"stars apply-worker: unexpected error processing invoice {row.get('id')}: {e}")
+            logger.error(f"stars apply-worker: unexpected error processing invoice {row.get('id')}: {type(e).__name__}")
 
 
 async def apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_event: asyncio.Event | None = None):
@@ -621,13 +621,13 @@ async def apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_even
         try:
             admin_token = await _run_sync(marzban.get_admin_token_from_env)
         except Exception as e:
-            logger.warning(f"stars apply-worker: could not obtain Marzban admin token: {e}")
+            logger.warning(f"stars apply-worker: could not obtain Marzban admin token: {type(e).__name__}")
             admin_token = None
 
         try:
             await _tick(bot, db, marzban, admin_token)
         except Exception as e:
-            logger.error(f"stars apply-worker: tick failed: {e}")
+            logger.error(f"stars apply-worker: tick failed: {type(e).__name__}")
 
         trigger_event.clear()
         if stop_event.is_set():

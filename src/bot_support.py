@@ -315,7 +315,7 @@ async def execute_tool(
             try:
                 summary = _canonical_subscription_summary(db, telegram_id)
             except Exception as e:
-                logger.error(f"execute_tool get_subscription_info canonical: {e}")
+                logger.error(f"execute_tool get_subscription_info canonical: {type(e).__name__}")
                 return "Не удалось получить информацию о подписке."
             return summary or "Подписка не привязана."
         try:
@@ -323,7 +323,7 @@ async def execute_tool(
             user_info = await _run_sync(marzban.get_user, tg_user["marzban_username"], admin_token)
             return format_subscription(user_info)
         except Exception as e:
-            logger.error(f"execute_tool get_subscription_info: {e}")
+            logger.error(f"execute_tool get_subscription_info: {type(e).__name__}")
             return "Не удалось получить информацию о подписке."
 
     if name == "get_nodes_status":
@@ -407,7 +407,7 @@ async def ask_openrouter_with_tools(
                 )
                 data = await resp.json()
             except Exception as e:
-                logger.error(f"OpenRouter request error: {e}")
+                logger.error(f"OpenRouter request error: {type(e).__name__}")
                 return "AI-ассистент временно недоступен."
 
             choice = data.get("choices", [{}])[0]
@@ -618,7 +618,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 start_parameter=f"stars_invoice_{invoice['id']}",
             )
         except Exception as e:
-            logger.error(f"Не удалось отправить счёт: {e}")
+            logger.error(f"Не удалось отправить счёт: {type(e).__name__}")
             try:
                 await bot.send_message(chat_id, "Не удалось создать счёт. Попробуйте позже.")
             except Exception:
@@ -1259,7 +1259,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                 await message.answer("Ссылка не найдена в системе. Проверьте правильность.")
                 return
         except Exception as e:
-            logger.error(f"Ошибка поиска пользователя: {e}")
+            logger.error(f"Ошибка поиска пользователя: {type(e).__name__}")
             await message.answer("Ошибка проверки подписки. Попробуйте позже.")
             return
 
@@ -1352,7 +1352,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                     marzban.get_user, tg_user["marzban_username"], admin_token
                 )
             except Exception as e:
-                logger.error(f"Ошибка получения подписки: {e}")
+                logger.error(f"Ошибка получения подписки: {type(e).__name__}")
                 await message.answer("Не удалось получить информацию о подписке.")
                 return
         try:
@@ -1993,7 +1993,7 @@ async def safe_answer(message, text: str, **kwargs):
         try:
             await message.answer(text, **kwargs)
         except Exception as e:
-            logger.error(f"safe_answer failed: {e}")
+            logger.error(f"safe_answer failed: {type(e).__name__}")
 
 
 async def _notify_admin(bot, db, telegram_id: int, username: str | None):
@@ -2007,7 +2007,7 @@ async def _notify_admin(bot, db, telegram_id: int, username: str | None):
             f"🆘 Пользователь {name} (tg_id: {telegram_id}) запросил оператора.",
         )
     except Exception as e:
-        logger.warning(f"Не удалось уведомить admin: {e}")
+        logger.warning(f"Не удалось уведомить admin: {type(e).__name__}")
 
 
 async def _notify_admin_orphan_payment(bot, db, sp, payer_telegram_id: int):
@@ -2025,7 +2025,7 @@ async def _notify_admin_orphan_payment(bot, db, sp, payer_telegram_id: int):
             f"payer: {payer_telegram_id}, amount: {sp.total_amount}",
         )
     except Exception as e:
-        logger.warning(f"Не удалось уведомить admin об orphan-платеже: {e}")
+        logger.warning(f"Не удалось уведомить admin об orphan-платеже: {type(e).__name__}")
 
 
 async def notify_ticket_closed(bot, telegram_id: int, state_storage=None):
@@ -2051,7 +2051,7 @@ async def notify_ticket_closed(bot, telegram_id: int, state_storage=None):
             reply_markup=kb_main(),
         )
     except Exception as e:
-        logger.warning(f"Не удалось уведомить пользователя о закрытии тикета: {e}")
+        logger.warning(f"Не удалось уведомить пользователя о закрытии тикета: {type(e).__name__}")
 
 
 async def send_operator_reply(bot, telegram_id: int, text: str):
@@ -2062,7 +2062,7 @@ async def send_operator_reply(bot, telegram_id: int, text: str):
         try:
             await bot.send_message(telegram_id, msg)
         except Exception as e:
-            logger.warning(f"Не удалось доставить ответ оператора: {e}")
+            logger.warning(f"Не удалось доставить ответ оператора: {type(e).__name__}")
 
 
 async def _run_sync(func, *args):

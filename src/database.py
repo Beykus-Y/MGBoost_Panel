@@ -760,7 +760,7 @@ class Database:
                 self._conn.commit()
             print(f"[DB] Migrated {len(configs)} extra_configs from JSON")
         except Exception as e:
-            print(f"[DB] extra_configs migration failed: {e}")
+            print(f"[DB] extra_configs migration failed: {type(e).__name__}")
 
     def _migrate_node_filters(self):
         if not os.path.exists(NODE_FILTERS_JSON):
@@ -786,7 +786,7 @@ class Database:
                 self._conn.commit()
             print(f"[DB] Migrated {len(filters)} node_filters from JSON")
         except Exception as e:
-            print(f"[DB] node_filters migration failed: {e}")
+            print(f"[DB] node_filters migration failed: {type(e).__name__}")
 
     def _migrate_per_user_configs(self):
         if not os.path.exists(PER_USER_CONFIGS_JSON):
@@ -809,7 +809,7 @@ class Database:
                 self._conn.commit()
             print("[DB] Migrated per_user_configs from JSON")
         except Exception as e:
-            print(f"[DB] per_user_configs migration failed: {e}")
+            print(f"[DB] per_user_configs migration failed: {type(e).__name__}")
 
     def _migrate_hysteria_stats(self):
         if not os.path.exists(HYSTERIA_STATS_JSON):
@@ -830,7 +830,7 @@ class Database:
                 self._conn.commit()
             print(f"[DB] Migrated {len(stats)} hysteria_stats entries from JSON")
         except Exception as e:
-            print(f"[DB] hysteria_stats migration failed: {e}")
+            print(f"[DB] hysteria_stats migration failed: {type(e).__name__}")
 
     # --- extra_configs ---
 
@@ -1571,7 +1571,7 @@ class Database:
                 )
                 self._conn.commit()
         except Exception as e:
-            logger.error(f"audit_log write failed (event_type={event_type}): {e}")
+            logger.error(f"audit_log write failed (event_type={event_type}): {type(e).__name__}")
 
     def get_audit_log(
         self,
