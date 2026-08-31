@@ -29,6 +29,19 @@ behavior. `UNSUPPORTED_MISSING_HWID`/`UNSUPPORTED_MALFORMED_HWID` records are
 unaffected -- they stay exact-match, since they document specific negative
 observations rather than a supported baseline.
 
+2026-08-31 (support triage, account_id=3): added `incy`/`2.5.1`/`ios` as an
+explicit evidenced `SUPPORTED` tuple -- NOT a change to `_MIN_SUPPORTED_VERSION`
+semantics, `incy`/`2.5.0`/`ios`, or any other (client, platform) baseline.
+21 live production requests / 1 correlated subject, 100% `SUPPORTED_HWID_PRESENT`
+in `mgboost_hwid_compat_subjects` (zero `HWID_MISSING`/`HWID_UNSUPPORTED_OR_
+MALFORMED` observations), single stable HWID reference across every request
+(no per-request rotation). `incy`/`2.5.0`/`ios` was deliberately left
+unchanged pending its own evidence review -- adding this one exact-match
+tuple does incidentally lower the (`incy`,`ios`) baseline used by the
+existing 2026-08-29 min-version rule from 2.5.2 to 2.5.1 (that rule's
+semantics are untouched; only the registry data changed), so 2.5.0 stays
+`UNKNOWN` while 2.5.2+ remain `SUPPORTED` exactly as before.
+
 No raw HWID, UUID, subscription token, username, IP or Telegram ID belongs in
 this file, ever.
 """
@@ -62,7 +75,7 @@ class CompatibilityRecord:
 # REGISTRY_VERSION must be bumped whenever an entry is added, removed,
 # reclassified, or whenever the classify() lookup semantics themselves
 # change (as in the 2026-08-29 min-supported-version change below).
-REGISTRY_VERSION = 4
+REGISTRY_VERSION = 5
 
 # --- SUPPORTED: exact (client, version, platform) tuples with positive,
 # reviewed evidence that the real client actually sends a well-formed HWID
@@ -83,6 +96,12 @@ _REGISTRY: tuple[CompatibilityRecord, ...] = (
         "incy", "2.5.2", "ios", SUPPORTED, "ORGANIC_LIVE", "2026-08-25",
         "17 live requests / 7 correlated subjects, including the approved "
         "PH3-03 dormant canary device.",
+    ),
+    CompatibilityRecord(
+        "incy", "2.5.1", "ios", SUPPORTED, "ORGANIC_LIVE", "2026-08-31",
+        "21 live requests / 1 correlated subject, stable well-formed HWID "
+        "across every request, zero malformed/missing observations -- "
+        "found during account_id=3 support triage.",
     ),
     CompatibilityRecord(
         "incy", "3.5.4", "android", SUPPORTED, "ORGANIC_LIVE", "2026-08-25",

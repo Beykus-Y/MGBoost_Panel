@@ -13,6 +13,30 @@ def test_exact_supported_tuple():
     assert cr.classify("incy", "2.5.2", "ios") == cr.SUPPORTED
 
 
+def test_incy_ios_251_hotfix_supported_250_unchanged_252_plus_unaffected():
+    # 2026-08-31 account_id=3 hotfix: 2.5.1 is now an explicit evidenced
+    # SUPPORTED tuple. 2.5.0 must remain exactly as before (UNKNOWN --
+    # deliberately not touched by this hotfix, pending its own evidence
+    # review). 2.5.2 and newer must remain SUPPORTED, unaffected by the
+    # baseline incidentally shifting down to 2.5.1.
+    assert cr.classify("incy", "2.5.1", "ios") == cr.SUPPORTED
+    assert cr.classify("incy", "2.5.0", "ios") == cr.UNKNOWN
+    assert cr.classify("incy", "2.5.2", "ios") == cr.SUPPORTED
+    assert cr.classify("incy", "2.5.5", "ios") == cr.SUPPORTED
+    assert cr.classify("incy", "99.0.0", "ios") == cr.SUPPORTED
+    # Baseline must not leak to other clients/platforms.
+    assert cr.classify("incy", "2.5.1", "android") == cr.UNKNOWN
+    assert cr.classify("throne", "2.5.1", "ios") == cr.UNKNOWN
+
+
+def test_incy_ios_baseline_is_now_251_not_252():
+    assert cr._MIN_SUPPORTED_VERSION[("incy", "ios")] == (2, 5, 1)
+
+
+def test_registry_version_bumped_for_incy_251_hotfix():
+    assert cr.REGISTRY_VERSION == 5
+
+
 def test_case_and_whitespace_insensitive_but_still_exact():
     assert cr.classify("Happ", " 3.26.3 ", "ANDROID") == cr.SUPPORTED
 
