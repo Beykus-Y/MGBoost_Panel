@@ -78,6 +78,7 @@ from .routes.admin_accounts import (
     handle_admin_dashboard,
     handle_admin_migration_grace,
 )
+from .routes.admin_ops import handle_admin_ops_health
 from .routes.admin_devices import (
     handle_device_disable,
     handle_device_enable,
@@ -161,6 +162,7 @@ _ROUTES = [
     ("POST",   re.compile(r"^/admin/session/logout$"),         lambda h: handle_admin_session_logout(h) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/session/rotate$"),         lambda h: handle_admin_session_rotate(h) if require_admin_auth(h) else None),
     ("GET",    re.compile(r"^/admin/dashboard$"),              lambda h: handle_admin_dashboard(h)),
+    ("GET",    re.compile(r"^/admin/ops/health$"),             lambda h: handle_admin_ops_health(h)),
     ("GET",    re.compile(r"^/admin/accounts$"),               lambda h: handle_admin_accounts_list(h)),
     ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})$"),
      lambda h, account_id: handle_admin_account_detail(h, account_id)),

@@ -17,6 +17,25 @@
 
 ### Added
 
+- PH8-04 Step 1+2 operator observability foundation (implemented locally,
+  NO push/deploy). Step 1: `logger.*`/`print()` calls repo-wide now log
+  `type(e).__name__` instead of interpolating the raw exception object (26
+  call sites in `src/stars.py`, `src/bot_monitor.py`, `src/database.py`,
+  `src/bot_support.py`) — a raw exception can echo secrets/tokens from an
+  underlying HTTP client; the class name is enough for triage. Step 2:
+  authenticated read-only `GET /admin/ops/health` (`src/ops_observability.py`,
+  `src/routes/admin_ops.py`) composes collector freshness/outbox
+  age/drift/reconciliation-worker-health (existing PH6-07 read model), WL
+  usage-cursor monotonicity, PH4-02 `ERROR_RECONCILE` migration backlog, and
+  a new P0 legacy-commercial-transition `MANUAL_REVIEW` backlog snapshot —
+  aggregate counts/timestamps/enums only, never a raw token/HWID/UUID/
+  username/password, no new table, no new write. Fail-open: any one signal's
+  read failure degrades only that signal to `UNKNOWN` (never a raw exception
+  message) and the endpoint's `status` becomes `DEGRADED` — it never returns
+  `500`, and the observability module is imported only by this one admin
+  route, never by `src/database.py`/bootstrap. No alert thresholds are set;
+  see `ROADMAP.md` PH8-04 for the deferred-threshold list.
+
 - P0 legacy `LEGACY_PAID_COMPAT` → commercial transition foundation: durable
   payment-bound transition/events/explicit device-selection rows, one-time
   UTC-hour `LEGACY_COMMERCIAL_ALIGNMENT_GRACE`, conservative WL

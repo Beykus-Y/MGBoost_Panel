@@ -473,6 +473,15 @@ class Database:
 
         """)
         self._conn.commit()
+        # PH8-04: these apply_*_schema() calls run unguarded at startup --
+        # if one raises, the process crashes and systemd's Restart=on-failure
+        # loops it. Primary evidence for that failure is `systemctl show -p
+        # Result,ExecMainStatus,NRestarts mgboost-panel.service` / journald,
+        # NOT this database: a schema migration failure can itself leave
+        # this DB inconsistent or unreadable, so it cannot be trusted as the
+        # evidence source for its own failure. Any future DB-backed startup
+        # record is best-effort/secondary only, written after schema
+        # application has already succeeded enough to be writable.
         apply_parent_account_schema(self._conn)
         apply_account_consolidation_schema(self._conn)
         apply_device_slot_schema(self._conn)
