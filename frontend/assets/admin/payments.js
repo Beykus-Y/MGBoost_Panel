@@ -149,6 +149,73 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
     renderProducts();
   }
 
+  async function openLegacyTransition(ctx){
+    const catalog=await ensureCatalog(ctx.adminFetch);
+    const current=await ctx.adminFetch(`/admin/accounts/${ctx.account.id}/legacy-transition`)
+      .then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error||'transition fetch failed');return data.transition;});
+    const modal=openModal({title:'Перевести с архивного тарифа'});
+
+    const request=async(path,body={})=>{
+      const response=await ctx.adminFetch(path,{method:'POST',body:JSON.stringify(body)});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||'transition request failed');
+      return data.transition;
+    };
+    const renderTransition=transition=>{
+      const selectable=(transition.devices||[]).filter(device=>!device.selected);
+      renderHtml(modal.el.querySelector('.modal-body'),html`
+        <dl class="ops-dl">
+          <dt>Состояние</dt><dd>${badge(transition.state)}</dd>
+          <dt>Переход</dt><dd>${humanLabel(transition.source_plan_code)} → ${humanLabel(transition.target_plan_code)}</dd>
+          <dt>Оплата</dt><dd>${formatRub(transition.expected_amount_minor)} · ${transition.duration_days} дн.</dd>
+          <dt>Исходный срок</dt><dd>${formatTimestamp(transition.original_source_expiry)}</dd>
+          <dt>Активация</dt><dd>${formatTimestamp(transition.activation_at)}</dd>
+          <dt>Новый срок</dt><dd>${formatTimestamp(transition.target_expiry)}</dd>
+          <dt>Устройства</dt><dd>${transition.active_device_count} / ${transition.target_device_limit}</dd>
+        </dl>
+        ${transition.state==='PENDING_PAYMENT'?html`<div class="notice notice-amber">Confirm payment фиксирует реальную оплату и одноразовый alignment grace. После этого отмена и правка запрещены.</div><button class="primary" id="lct-confirm">Подтвердить реальную оплату</button><button class="danger" id="lct-cancel">Отменить до подтверждения</button>`:''}
+        ${transition.state==='SELECTION_REQUIRED'?html`<div class="notice notice-amber">Явно выберите ровно ${transition.capacity_excess} устройств. До activation_at они продолжат работать.</div>
+          <div class="ops-form">${selectable.map(device=>html`<label><input type="checkbox" data-lct-device value="${device.slot_generation_id}"/> Слот ${device.slot_number} · generation ${device.generation}</label>`)}
+          <label>Причина выбора<input id="lct-selection-reason" maxlength="300" value="capacity transition selection"/></label><button class="primary" id="lct-select">Записать выбор</button></div>`:''}
+        ${transition.state==='MANUAL_REVIEW'?html`<div class="notice notice-amber">${transition.review_reason||'Требуется ручная проверка'}. Retry не меняет frozen facts и не выдаёт новый grace.</div><button id="lct-retry">Повторить после устранения причины</button>`:''}
+        <details><summary>Audit/history</summary>${(transition.events||[]).map(event=>html`<div class="list-row"><div><strong>${humanLabel(event.event_type)}</strong><div class="cell-sub">${formatTimestamp(event.created_at)} · ${event.reason}</div></div></div>`)}</details>`);
+      modal.el.querySelector('#lct-confirm')?.addEventListener('click',async()=>renderTransition(await request(`/admin/legacy-transitions/${transition.id}/confirm`)));
+      modal.el.querySelector('#lct-cancel')?.addEventListener('click',async()=>{
+        const reason=window.prompt('Причина отмены (8..300 символов)')||'';
+        renderTransition(await request(`/admin/legacy-transitions/${transition.id}/cancel`,{reason}));
+      });
+      modal.el.querySelector('#lct-select')?.addEventListener('click',async()=>{
+        const ids=[...modal.el.querySelectorAll('[data-lct-device]:checked')].map(node=>Number(node.value));
+        const reason=modal.el.querySelector('#lct-selection-reason').value.trim();
+        renderTransition(await request(`/admin/legacy-transitions/${transition.id}/select-devices`,{slot_generation_ids:ids,reason}));
+      });
+      modal.el.querySelector('#lct-retry')?.addEventListener('click',async()=>{
+        const reason=window.prompt('Что проверено/исправлено (8..300 символов)')||'';
+        renderTransition(await request(`/admin/legacy-transitions/${transition.id}/retry-review`,{reason}));
+      });
+    };
+    if(current){renderTransition(current);return;}
+    const plans=catalog.plans.filter(item=>['BASIC','BASIC_PLUS','BASIC_PRO','WL','EXTENDED','FAMILY'].includes(item.plan_code));
+    renderHtml(modal.el.querySelector('.modal-body'),html`<div class="cell-sub">Текущий архивный тариф работает до UTC-hour activation boundary. Цена проверяется серверным RUB-каталогом.</div>
+      <div class="ops-form"><label>Commercial product<select id="lct-product">${plans.map((plan,index)=>html`<option value="${index}">${plan.display_name} · ${plan.duration_days} дн. · ${formatRub(plan.amount_minor)}</option>`)}</select></label>
+      <label>Способ оплаты<input id="lct-method" maxlength="100"/></label><label>External reference<input id="lct-ref" maxlength="200"/></label>
+      <label>Evidence/comment<textarea id="lct-comment" maxlength="500"></textarea></label><label>Audit reason<input id="lct-reason" maxlength="300" value="real paid legacy commercial transition"/></label>
+      <button class="primary" id="lct-create">Создать payment/transition</button></div>`);
+    modal.el.querySelector('#lct-create').addEventListener('click',async event=>{
+      event.currentTarget.disabled=true;
+      try{
+        const plan=plans[Number(modal.el.querySelector('#lct-product').value)];
+        const body={plan_code:plan.plan_code,duration_days:plan.duration_days,recorded_amount_minor:plan.amount_minor,
+          payment_method:modal.el.querySelector('#lct-method').value.trim(),external_reference:modal.el.querySelector('#lct-ref').value.trim(),
+          comment:modal.el.querySelector('#lct-comment').value.trim()||null,idempotency_key:`adm-lct-${crypto.randomUUID()}`};
+        if(!body.payment_method||!body.external_reference)throw new Error('Заполните method и external reference');
+        const paymentResponse=await ctx.adminFetch(`/admin/accounts/${ctx.account.id}/manual-payments`,{method:'POST',body:JSON.stringify(body)});
+        const paymentData=await paymentResponse.json();if(!paymentResponse.ok)throw new Error(paymentData.error||'payment create failed');
+        const transition=await request(`/admin/manual-payments/${paymentData.payment.id}/legacy-transition`,{reason:modal.el.querySelector('#lct-reason').value.trim()});
+        renderTransition(transition);ctx.reload&&ctx.reload();
+      }finally{event.currentTarget.disabled=false;}
+    });
+  }
+
   // --- record management ---------------------------------------------------
 
   function recordBody(record,syncState){
@@ -307,7 +374,7 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
     return html`<div class="card">
       <div class="list-row"><div><div class="card-title">Ручные внешние платежи (RUB)</div>
       <span class="cell-sub">Server-authoritative: цены только из versioned fixed RUB-каталога; произвольная цена/тариф отклоняются сервером.</span></div>
-      <button class="primary" data-action="new-manual-payment" data-account-id="${detail.account.id}">Новый внешний платёж</button></div>
+      <div class="ops-actions">${detail.subscription?.plan_code?.startsWith('LEGACY_PAID_COMPAT_V1_')?html`<button data-action="legacy-commercial-transition">Перевести с архивного тарифа</button>`:''}<button class="primary" data-action="new-manual-payment" data-account-id="${detail.account.id}">Новый внешний платёж</button></div></div>
       ${records.length?records.map(rec=>html`<div class="list-row clickable" data-action="open-manual-payment" data-payment-id="${rec.id}" data-account-id="${detail.account.id}">
         <div><strong>${rec.public_id}</strong><div class="cell-sub">${rec.kind==='PLAN_PRODUCT'?`${humanLabel(rec.plan_code)} · ${rec.duration_days} дн.`:humanLabel(rec.package_sku)} · ${rec.payment_method} · ref <code>${rec.external_reference}</code></div></div>
         <div class="pay-status">${formatRub(rec.amount_minor)} ${badge(rec.status)}${rec.sync_state&&rec.sync_state!=='SYNCED'&&rec.status==='APPLIED'?html`<span class="badge badge-amber">sync: ${humanLabel(rec.sync_state)}</span>`:''}</div>
@@ -324,5 +391,5 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
       <div class="cell-sub">${inv.tariff_name} · ${inv.stars_price} ⭐ · ${inv.status}</div></div></div>`)}</div>`:html``}`;
   }
 
-  return {ensureCatalog,openNewPayment,openRecordModal,paymentsTab};
+  return {ensureCatalog,openNewPayment,openLegacyTransition,openRecordModal,paymentsTab};
 }

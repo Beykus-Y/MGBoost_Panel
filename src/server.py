@@ -112,6 +112,11 @@ from .routes.admin_payments import (
     handle_manual_payment_sync,
     handle_manual_payments_list,
 )
+from .routes.admin_legacy_transitions import (
+    handle_account_transition, handle_transition_cancel, handle_transition_confirm,
+    handle_transition_create, handle_transition_detail, handle_transition_retry_review,
+    handle_transition_select,
+)
 from .routes.admin_session import (
     handle_admin_session_login,
     handle_admin_session_logout,
@@ -211,6 +216,20 @@ _ROUTES = [
      lambda h, payment_record_id: handle_manual_payment_apply(h, payment_record_id)),
     ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/sync$"),
      lambda h, payment_record_id: handle_manual_payment_sync(h, payment_record_id)),
+    ("POST",   re.compile(r"^/admin/manual-payments/(?P<payment_record_id>\d{1,18})/legacy-transition$"),
+     lambda h, payment_record_id: handle_transition_create(h, payment_record_id)),
+    ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/legacy-transition$"),
+     lambda h, account_id: handle_account_transition(h, account_id)),
+    ("GET",    re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})$"),
+     lambda h, transition_id: handle_transition_detail(h, transition_id)),
+    ("POST",   re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})/confirm$"),
+     lambda h, transition_id: handle_transition_confirm(h, transition_id)),
+    ("POST",   re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})/select-devices$"),
+     lambda h, transition_id: handle_transition_select(h, transition_id)),
+    ("POST",   re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})/cancel$"),
+     lambda h, transition_id: handle_transition_cancel(h, transition_id)),
+    ("POST",   re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})/retry-review$"),
+     lambda h, transition_id: handle_transition_retry_review(h, transition_id)),
     # PH7-05 (Wave B): device revoke/free/rebind over the PH3-05 lifecycle.
     ("POST",   re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/devices/(?P<slot_number>\d{1,3})/revoke$"),
      lambda h, account_id, slot_number: handle_device_revoke(h, account_id, slot_number)),

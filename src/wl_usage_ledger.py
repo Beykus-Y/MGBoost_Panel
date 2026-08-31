@@ -244,6 +244,51 @@ class WLUsageLedgerStore:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def register_transition_baseline(
+        self, *, transition_id: int, account_id: int, wl_period_id: int,
+        child_intent_ids: list[int], node_ids: list[int], now: int,
+    ) -> None:
+        """Register one conservative post-activation observation per lineage.
+
+        The next observed cumulative counter is intentionally forgiven and
+        advances the ordinary cursor.  This is the only safe treatment for a
+        collector interval that crossed a legacy UNLIMITED -> LIMITED hour
+        boundary: no pre-boundary byte can enter the new period, and a replay
+        cannot create another free interval because the identity is durable.
+        """
+        if not child_intent_ids or not node_ids:
+            return
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                period = self._conn.execute(
+                    "SELECT id FROM mgboost_wl_periods WHERE id=? AND account_id=? "
+                    "AND quota_mode='LIMITED'",
+                    (int(wl_period_id), int(account_id)),
+                ).fetchone()
+                if period is None:
+                    raise WLUsageLedgerError("transition baseline requires a LIMITED account period")
+                for child_id in sorted({int(value) for value in child_intent_ids}):
+                    child = self._conn.execute(
+                        "SELECT id FROM mgboost_child_user_intents WHERE id=? AND account_id=? "
+                        "AND observed_state='ACTIVE'",
+                        (child_id, int(account_id)),
+                    ).fetchone()
+                    if child is None:
+                        raise WLUsageLedgerError("transition baseline child is not an active account lineage")
+                    for node_id in sorted({int(value) for value in node_ids}):
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO mgboost_wl_transition_baselines "
+                            "(transition_id,account_id,wl_period_id,child_intent_id,node_id,state,created_at) "
+                            "VALUES (?,?,?,?,?,'PENDING',?)",
+                            (int(transition_id), int(account_id), int(wl_period_id),
+                             child_id, node_id, int(now)),
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     # ------------------------------------------------------------------
     # The core idempotent write. Must run with an already-observed
     # (cursor_before, cursor_after) pair -- this function performs no
@@ -285,6 +330,72 @@ class WLUsageLedgerStore:
 
                 reset_detected = cursor_after < cursor_before
                 delta_bytes = cursor_after if reset_detected else (cursor_after - cursor_before)
+
+                # Consume exactly one transition baseline atomically with the
+                # cursor advance.  Do not emit an event/sample: that would
+                # make the intentionally forgiven crossing interval appear in
+                # quota accounting.  The durable state is the replay guard.
+                baseline = self._conn.execute(
+                    "SELECT id FROM mgboost_wl_transition_baselines "
+                    "WHERE account_id=? AND child_intent_id=? AND node_id=? "
+                    "AND wl_period_id IS ? AND state='PENDING'",
+                    (int(account_id), int(child_intent_id), int(node_id), wl_period_id),
+                ).fetchone()
+                if baseline is not None:
+                    if cursor_row is None:
+                        self._conn.execute(
+                            "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
+                            "last_polled_at=?,row_version=row_version+1,updated_at=? "
+                            "WHERE child_intent_id=? AND node_id=?",
+                            (int(cursor_after), int(collected_at), int(collected_at),
+                             int(child_intent_id), int(node_id)),
+                        )
+                    else:
+                        updated = self._conn.execute(
+                            "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
+                            "last_polled_at=?,reset_count=reset_count+?,row_version=row_version+1,"
+                            "updated_at=? WHERE id=? AND row_version=?",
+                            (int(cursor_after), int(collected_at), 1 if reset_detected else 0,
+                             int(collected_at), cursor_row["id"], cursor_row_version),
+                        )
+                        if updated.rowcount != 1:
+                            raise WLUsageLedgerError("usage cursor changed concurrently")
+                    consumed = self._conn.execute(
+                        "UPDATE mgboost_wl_transition_baselines SET state='CONSUMED',consumed_at=? "
+                        "WHERE id=? AND state='PENDING'", (int(collected_at), baseline["id"]),
+                    )
+                    if consumed.rowcount != 1:
+                        raise WLUsageLedgerError("transition baseline changed concurrently")
+                    self._conn.commit()
+                    return {"child_intent_id": int(child_intent_id), "node_id": int(node_id),
+                            "sample_hour": sample_hour, "cursor_before": cursor_before,
+                            "cursor_after": int(cursor_after), "delta_bytes": 0,
+                            "reset_detected": reset_detected, "transition_baseline": True}
+
+                # An unchanged cumulative observation is a heartbeat, not a
+                # cursor transition.  Persisting it in the event uniqueness
+                # domain (child,node,cursor_before) would make the next real
+                # increase look like a replay and lose billable bytes.
+                if delta_bytes == 0 and not reset_detected:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO mgboost_wl_usage_samples "
+                        "(account_id,child_intent_id,node_id,wl_period_id,sample_hour,bytes_delta,"
+                        "first_collected_at,last_collected_at,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,0,?,?,?,?)",
+                        (int(account_id),int(child_intent_id),int(node_id),wl_period_id,
+                         sample_hour,int(collected_at),int(collected_at),int(collected_at),
+                         int(collected_at)),
+                    )
+                    self._conn.execute(
+                        "UPDATE mgboost_wl_usage_cursors SET last_polled_at=?,"
+                        "row_version=row_version+1,updated_at=? WHERE child_intent_id=? AND node_id=?",
+                        (int(collected_at), int(collected_at), int(child_intent_id), int(node_id)),
+                    )
+                    self._conn.commit()
+                    return {"child_intent_id": int(child_intent_id), "node_id": int(node_id),
+                            "sample_hour": sample_hour, "cursor_before": cursor_before,
+                            "cursor_after": int(cursor_after), "delta_bytes": 0,
+                            "reset_detected": False, "transition_baseline": False}
 
                 try:
                     self._conn.execute(

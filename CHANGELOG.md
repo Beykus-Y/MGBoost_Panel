@@ -17,6 +17,14 @@
 
 ### Added
 
+- P0 legacy `LEGACY_PAID_COMPAT` → commercial transition foundation: durable
+  payment-bound transition/events/explicit device-selection rows, one-time
+  UTC-hour `LEGACY_COMMERCIAL_ALIGNMENT_GRACE`, conservative WL
+  `TRANSITION_BASELINE`, primary-admin transition API and a 30-second
+  standalone worker unit. Existing legacy terms remain active until the
+  aligned boundary; a crossing WL collector interval is forgiven rather
+  than charging any pre-transition traffic to a new LIMITED period.
+
 - Bot UX redesign, slice C1-C2 (implemented locally, NO push/deploy):
   единая карточка подписки «📱 Моя подписка» в боте на новом read-only
   слое `src/entitlement_read_model.py` (композиция существующих сторов:

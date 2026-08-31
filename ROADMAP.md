@@ -4121,6 +4121,43 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Статус:** planning only — implementation остаётся OPEN (PH7-14).
 - **Связано:** PH3-01, PH2-05, PH5-04/09, PH5-13, PH7-09/10, DL-060.
 
+## DL-062 — Paid reusable LEGACY_PAID_COMPAT → commercial transition
+
+- **Дата:** 2026-08-31.
+- **Решение (owner):** реальная внешняя оплата legacy-клиента фиксируется
+  только как canonical `MANUAL_RUB` / `EXTERNAL_PAYMENT`, после чего один
+  durable transition переводит любой `LEGACY_PAID_COMPAT_V1_*` в один из
+  `BASIC`, `BASIC_PLUS`, `BASIC_PRO`, `WL`, `EXTENDED`, `FAMILY` на 30/60
+  дней. `ADMIN_GRANT`, новый parent account, прямое изменение Marzban expiry
+  и commercial→commercial switching запрещены.
+- **Timing:** `base_boundary=max(original_source_expiry,payment_confirmed_at)`;
+  `activation_at=ceil_to_utc_hour(base_boundary)` без добавочного часа при
+  точном UTC-hour; purchased duration начинается полностью с `activation_at`.
+  Разрешён ровно один typed `LEGACY_COMMERCIAL_ALIGNMENT_GRACE` длиной
+  0..3599 секунд на прежних legacy-условиях; повторный grace после ошибки
+  запрещён.
+- **Устройства:** если target limit ниже active generations, до boundary
+  operator явно и заранее выбирает immutable `slot_generation_id`. Система
+  никогда не выбирает сама; на boundary только выбранные lineage проходят
+  canonical `REVOKE -> remote verify -> FREE`. Staleness/divergence ведёт в
+  `MANUAL_REVIEW`.
+- **WL:** commercial periods остаются UTC-hour aligned. Для перехода
+  legacy UNLIMITED → commercial LIMITED существующий ledger получает
+  additive conservative `TRANSITION_BASELINE`: первая observation каждой
+  surviving child lineage / WL node полностью прощает crossing interval,
+  следующие delta считаются обычно. Это не меняет same-commercial renewal.
+- **Payment:** confirmation и entitlement `APPLIED` разделены; после
+  confirmation frozen payment нельзя edit/cancel/generic apply/resolve.
+  Отмена возможна только до confirmation, пока нет отдельного audited
+  compensation/refund engine.
+- **UX/operations:** reusable account-centric admin flow, один standalone
+  authoritative worker с cadence 30 секунд, durable history/CAS/outbox;
+  production deploy только после independent review.
+- **Кто:** owner.
+- **Статус:** P0 implementation checkpoint подготовлен на отдельной ветке;
+  production rollout запрещён до independent review.
+- **Связано:** PH3-05/08/09, PH5-02/04/05/06/09, PH6-02, PH7-10, DL-044/061.
+
 # Contradictions and migration hazards
 
 1. Current production Stars 199/349 совпадает по цене с будущим WL, но schema не содержит plan/WL/device semantics; старые invoices нельзя молча переинтерпретировать.

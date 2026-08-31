@@ -101,6 +101,14 @@ def _latest_subscription(conn, account_id: int):
     ).fetchone()
 
 
+def _confirmed_legacy_transition(conn, account_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM mgboost_legacy_commercial_transitions WHERE account_id=? "
+        "AND payment_confirmed_at IS NOT NULL AND state NOT IN ('APPLIED','CANCELLED') LIMIT 1",
+        (int(account_id),),
+    ).fetchone() is not None
+
+
 def _target_expiry(subscription, kind: str, value: int | None, *, now: int) -> int:
     current = subscription["current_expiry"]
     if kind == "EXTEND_DAYS":
@@ -140,6 +148,10 @@ class SubscriptionAdminOpsStore:
             "value": value, "wl_periods_touched": False,
         }
         with self._lock:
+            if _confirmed_legacy_transition(self._conn, account_id):
+                raise AdminExpiryConflict(
+                    "confirmed legacy commercial transition locks source expiry"
+                )
             subscription = _latest_subscription(self._conn, account_id)
             if subscription is None:
                 raise AdminExpiryError("account has no subscription")
@@ -188,6 +200,10 @@ class SubscriptionAdminOpsStore:
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                if _confirmed_legacy_transition(self._conn, account_id):
+                    raise AdminExpiryConflict(
+                        "confirmed legacy commercial transition locks source expiry"
+                    )
                 subscription = _latest_subscription(self._conn, account_id)
                 if subscription is None:
                     raise AdminExpiryError("account has no subscription")

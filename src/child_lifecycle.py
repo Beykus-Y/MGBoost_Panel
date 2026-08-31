@@ -442,7 +442,8 @@ def process_revoke(db, operation_id: str, *, worker_id: str, revoke_fn, now: int
     )
 
 
-def process_free(db, operation_id: str, *, worker_id: str, now: int) -> dict | None:
+def process_free(db, operation_id: str, *, worker_id: str, now: int,
+                 strict_generation: bool = False) -> dict | None:
     """Refuses to release the slot until the matching REVOKE operation is
     durably `APPLIED`; only then calls the existing PH3-02 `release()`."""
     from .device_slots import StaleSlotGeneration
@@ -461,6 +462,8 @@ def process_free(db, operation_id: str, *, worker_id: str, now: int) -> dict | N
             reason=row["reason"], now=now,
         )
     except StaleSlotGeneration:
+        if strict_generation:
+            raise
         pass  # a prior attempt already released this slot -- idempotent.
     return db.child_lifecycle.finish_free(operation_id, worker_id=worker_id, now=now)
 

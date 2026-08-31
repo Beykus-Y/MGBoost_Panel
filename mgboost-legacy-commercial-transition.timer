@@ -1,0 +1,11 @@
+[Unit]
+Description=MGBoost legacy to commercial transition cadence
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+RandomizedDelaySec=0
+Unit=mgboost-legacy-commercial-transition.service
+
+[Install]
+WantedBy=timers.target

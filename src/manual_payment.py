@@ -291,6 +291,7 @@ class ManualPaymentStore:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._require_record_locked(payment_record_id)
+                self._reject_confirmed_transition_payment_locked(row["id"])
                 if row["status"] != "PENDING":
                     raise ManualPaymentError(
                         f"a {row['status']} record can no longer be edited "
@@ -409,6 +410,7 @@ class ManualPaymentStore:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._require_record_locked(payment_record_id)
+                self._reject_confirmed_transition_payment_locked(row["id"])
                 if row["status"] != "MANUAL_REVIEW":
                     raise ManualPaymentError(
                         f"a {row['status']} record is not in manual review"
@@ -448,6 +450,7 @@ class ManualPaymentStore:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._require_record_locked(payment_record_id)
+                self._reject_confirmed_transition_payment_locked(row["id"])
                 if row["status"] == "APPLIED":
                     raise ManualPaymentError(
                         "an applied manual payment is immutable and cannot be cancelled"
@@ -486,6 +489,7 @@ class ManualPaymentStore:
         actor_ref = self._authority.require(capability)
         with self._lock:
             row = dict(self._require_record_locked(payment_record_id))
+            self._reject_confirmed_transition_payment_locked(row["id"])
             if row["status"] == "CANCELLED":
                 raise ManualPaymentError("cancelled records are never applicable")
             if row["status"] == "MANUAL_REVIEW":
@@ -820,6 +824,18 @@ class ManualPaymentStore:
         if row is None:
             raise ManualPaymentError("manual payment record not found")
         return row
+
+    def _reject_confirmed_transition_payment_locked(self, payment_record_id: int) -> None:
+        bound = self._conn.execute(
+            "SELECT 1 FROM mgboost_legacy_commercial_transitions "
+            "WHERE payment_record_id=? AND payment_confirmed_at IS NOT NULL "
+            "AND state NOT IN ('APPLIED','CANCELLED')",
+            (int(payment_record_id),),
+        ).fetchone()
+        if bound:
+            raise ManualPaymentError(
+                "confirmed legacy transition payment is orchestrator-locked"
+            )
 
     def _require_live_account_locked(self, account_id: int) -> None:
         row = self._conn.execute(
