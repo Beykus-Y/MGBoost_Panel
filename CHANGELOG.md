@@ -24,6 +24,10 @@
   standalone worker unit. Existing legacy terms remain active until the
   aligned boundary; a crossing WL collector interval is forgiven rather
   than charging any pre-transition traffic to a new LIMITED period.
+  Follow-up hardening adds per-step lease fencing, crash recovery for the
+  canonical `REVOKE -> FREE` lifecycle, frozen source subscription identity
+  and revision, authoritative surviving-lineage verification, and
+  period-independent one-shot WL baseline consumption.
 
 - Bot UX redesign, slice C1-C2 (implemented locally, NO push/deploy):
   единая карточка подписки «📱 Моя подписка» в боте на новом read-only

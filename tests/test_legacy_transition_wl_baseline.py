@@ -203,3 +203,42 @@ def test_ordinary_limited_observation_has_no_transition_forgiveness(db):
     )
     assert sample["delta_bytes"] == 75
     assert compute_parent_wl_pool(db._conn, account_id=account_id, wl_period_id=period_id)["consumed_bytes"] == 75
+
+
+import pytest
+
+
+@pytest.mark.parametrize("period_number", [2, 3])
+def test_transition_baseline_consumes_in_later_commercial_period_once(db, period_number):
+    _clean_topology_ok(db)
+    fx = _build_applied_child(db)
+    account_id = fx["account"]["account_id"]
+    first = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=3600, ends_at=7200, now=3600,
+        quota_mode="LIMITED", base_quota_bytes=100_000,
+    )
+    current_start = 3600 * period_number
+    current = _seed_active_wl_period(
+        db, account_id=account_id, starts_at=current_start, ends_at=current_start + 3600, now=current_start,
+        quota_mode="LIMITED", base_quota_bytes=100_000,
+    )
+    db._conn.execute("UPDATE mgboost_wl_periods SET status='CLOSED' WHERE id=?", (first,))
+    db._conn.commit()
+    tid = _transition(db, account_id, number=82)
+    db.wl_usage_ledger.register_transition_baseline(
+        transition_id=tid, account_id=account_id, wl_period_id=first,
+        child_intent_ids=[fx["child_intent_id"]], node_ids=[4], now=3600,
+    )
+    forgiven = db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=fx["child_intent_id"], node_id=4,
+        cursor_after=5000, collector_id="late-period", collected_at=current_start + 1,
+        wl_period_id=current,
+    )
+    charged = db.wl_usage_ledger.record_sample(
+        account_id=account_id, child_intent_id=fx["child_intent_id"], node_id=4,
+        cursor_after=5075, collector_id="late-period", collected_at=current_start + 60,
+        wl_period_id=current,
+    )
+    assert forgiven["transition_baseline"] is True and forgiven["delta_bytes"] == 0
+    assert charged["delta_bytes"] == 75
+    assert compute_parent_wl_pool(db._conn, account_id=account_id, wl_period_id=current)["consumed_bytes"] == 75

@@ -11,11 +11,28 @@ boundary. The worker never chooses devices. At the boundary it re-reads each
 selection and performs `REVOKE -> verify -> FREE`; stale/rebound lineage is
 `MANUAL_REVIEW`.
 
+Before the first revoke the worker fences the exact transition lease/revision
+and proves that the selected set still equals the current capacity excess.
+Every later destructive step repeats that fence. Durable `REVOKE/APPLIED` and
+a release performed by the same durable `FREE` operation are recoverable crash
+points; a foreign/rebound generation is never accepted as such a replay.
+
 For `WL`, `EXTENDED`, and `FAMILY`, the first observation for each surviving
 child/node after activation is a durable `TRANSITION_BASELINE`: the complete
 crossing collector interval is forgiven, and only later deltas count. This
 is intentionally limited to legacy UNLIMITED -> commercial LIMITED and does
 not change ordinary renewal accounting.
+
+Baseline consumption is period-independent: a collector outage across one or
+more commercial periods still consumes the baseline on the first relevant
+post-boundary observation, then charges later deltas normally. Before LIMITED
+apply every surviving current generation must have one authoritative ACTIVE
+child lineage; missing or ambiguous lineage fails closed.
+
+Confirmation freezes the exact source subscription id and its post-grace
+`row_version`. Plan/expiry/status ABA changes or replacement of the latest
+subscription row therefore require `MANUAL_REVIEW` even if visible values were
+later restored.
 
 Do not use `ADMIN_GRANT`, direct Marzban expiry changes, raw SQL, or a new
 parent account. A failed/manual-review transition needs an explicit audited

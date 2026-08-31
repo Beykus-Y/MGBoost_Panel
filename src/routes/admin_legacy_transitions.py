@@ -69,6 +69,8 @@ def handle_transition_detail(handler, transition_id):
     if not require_admin_auth(handler):
         return
     db = handler.server.db
+    if require_primary_capability(handler, db) is None:
+        return
     row = db.legacy_commercial_transitions.get(int(transition_id))
     if not row:
         error_response(handler, 404, "Transition not found")
@@ -80,6 +82,8 @@ def handle_account_transition(handler, account_id):
     if not require_admin_auth(handler):
         return
     db = handler.server.db
+    if require_primary_capability(handler, db) is None:
+        return
     row = db._conn.execute(
         "SELECT * FROM mgboost_legacy_commercial_transitions WHERE account_id=? "
         "AND state NOT IN ('APPLIED','CANCELLED') ORDER BY id DESC LIMIT 1",

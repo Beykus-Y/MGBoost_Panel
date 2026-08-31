@@ -69,12 +69,12 @@ class LegacyCommercialTransitionStore:
                     raise LegacyCommercialTransitionError('target must be a billable commercial plan')
                 cursor = self._conn.execute(
                     "INSERT INTO mgboost_legacy_commercial_transitions "
-                    "(public_id,account_id,payment_record_id,state,source_plan_version_id,source_subscription_status,original_source_expiry,aligned_source_expiry,target_plan_version_id,duration_days,catalog_version_id,plan_price_id,expected_amount_minor,actor_ref,reason,created_at,updated_at) "
-                    "VALUES (?,?,?,'PENDING_PAYMENT',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "(public_id,account_id,payment_record_id,state,source_plan_version_id,source_subscription_status,original_source_expiry,aligned_source_expiry,target_plan_version_id,duration_days,catalog_version_id,plan_price_id,expected_amount_minor,actor_ref,reason,created_at,updated_at,source_subscription_id) "
+                    "VALUES (?,?,?,'PENDING_PAYMENT',?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ('lct_' + secrets.token_urlsafe(18), payment['account_id'], payment['id'], source['current_plan_version_id'],
                      source['status'], source['current_expiry'], ceil_to_utc_hour(max(int(source['current_expiry'] or 0), timestamp)),
                      target['id'], payment['duration_days_snapshot'], payment['catalog_version_id'], payment['plan_price_id'],
-                     payment['expected_amount_minor'], actor, reason, timestamp, timestamp),
+                     payment['expected_amount_minor'], actor, reason, timestamp, timestamp, source['id']),
                 )
                 tid = cursor.lastrowid
                 self._event(tid, 'CREATED', actor, reason, 1, timestamp)
@@ -124,7 +124,8 @@ class LegacyCommercialTransitionStore:
                     "SELECT id,current_plan_version_id,current_expiry,status,row_version FROM mgboost_subscriptions "
                     "WHERE account_id=? ORDER BY id DESC LIMIT 1", (row['account_id'],)
                 ).fetchone()
-                if not source or source['current_plan_version_id'] != row['source_plan_version_id'] \
+                if not source or (row['source_subscription_id'] is not None and source['id'] != row['source_subscription_id']) \
+                        or source['current_plan_version_id'] != row['source_plan_version_id'] \
                         or source['current_expiry'] != row['original_source_expiry'] \
                         or source['status'] != row['source_subscription_status']:
                     raise LegacyCommercialTransitionConflict('source entitlement diverged before confirmation')
@@ -154,10 +155,12 @@ class LegacyCommercialTransitionStore:
                     "UPDATE mgboost_legacy_commercial_transitions SET state=?,"
                     "payment_confirmed_at=?,aligned_source_expiry=?,activation_at=?,target_expiry=?,"
                     "target_plan_version_id=?,duration_days=?,catalog_version_id=?,plan_price_id=?,"
-                    "expected_amount_minor=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+                    "expected_amount_minor=?,source_subscription_id=?,source_post_confirmation_row_version=?,"
+                    "revision=revision+1,updated_at=? WHERE id=? AND revision=?",
                     (next_state,timestamp, activation, activation, target_expiry,payment['plan_version_id'],
                      payment['duration_days_snapshot'],payment['catalog_version_id'],payment['plan_price_id'],
-                     payment['expected_amount_minor'],timestamp, row['id'], row['revision']),
+                     payment['expected_amount_minor'],source['id'],int(source['row_version'])+1,
+                     timestamp, row['id'], row['revision']),
                 )
                 if updated.rowcount != 1: raise LegacyCommercialTransitionConflict('transition CAS failed')
                 fresh = self._conn.execute('SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?', (row['id'],)).fetchone()
@@ -188,8 +191,10 @@ class LegacyCommercialTransitionStore:
                 if not row or row['state']!='PENDING_PAYMENT' or row['payment_confirmed_at'] is not None:
                     raise LegacyCommercialTransitionConflict('only an unconfirmed transition may be cancelled')
                 self._conn.execute("UPDATE mgboost_manual_payment_records SET status='CANCELLED',cancelled_at=?,cancel_reason=?,updated_at=? WHERE id=? AND status='PENDING'",(timestamp,reason,timestamp,row['payment_record_id']))
-                self._conn.execute("UPDATE mgboost_legacy_commercial_transitions SET state='CANCELLED',revision=revision+1,updated_at=? WHERE id=?",(timestamp,row['id']))
-                fresh=self._conn.execute('SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?',(row['id'],)).fetchone(); self._event(row['id'],'CANCELLED',actor,reason,fresh['revision'],timestamp); self._conn.commit(); return dict(fresh)
+                fresh=self._conn.execute('SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?',(row['id'],)).fetchone()
+                if fresh['state'] != 'CANCELLED':
+                    raise LegacyCommercialTransitionConflict('payment cancellation did not cancel transition')
+                self._conn.commit(); return dict(fresh)
             except Exception:
                 self._conn.rollback(); raise
 
@@ -275,9 +280,10 @@ class LegacyCommercialTransitionStore:
         reread prevents a known stale source from causing any device revoke.
         """
         row = self._conn.execute(
-            "SELECT t.*,s.current_plan_version_id,s.current_expiry,s.status AS current_subscription_status,a.status AS account_status,"
+            "SELECT t.*,s.current_plan_version_id,s.current_expiry,s.status AS current_subscription_status,"
+            "s.row_version AS current_source_row_version,a.status AS account_status,"
             "p.status AS payment_status FROM mgboost_legacy_commercial_transitions t "
-            "JOIN mgboost_subscriptions s ON s.account_id=t.account_id "
+            "JOIN mgboost_subscriptions s ON s.id=t.source_subscription_id "
             "JOIN mgboost_accounts a ON a.id=t.account_id "
             "JOIN mgboost_manual_payment_records p ON p.id=t.payment_record_id "
             "WHERE t.id=? ORDER BY s.id DESC LIMIT 1", (int(transition_id),),
@@ -286,11 +292,109 @@ class LegacyCommercialTransitionStore:
                 or row["current_plan_version_id"] != row["source_plan_version_id"]
                 or row["current_expiry"] != row["aligned_source_expiry"]
                 or row["current_subscription_status"] != "ACTIVE"
+                or row["current_source_row_version"] != row["source_post_confirmation_row_version"]
                 or row["account_status"] != "ACTIVE" or row["payment_status"] != "PENDING"):
             raise LegacyCommercialTransitionConflict("source entitlement diverged before retirement")
         return dict(row)
 
-    def assess_capacity(self, transition_id: int, *, now: int, worker_id: str | None = None) -> dict:
+    def assert_lease(self, transition_id: int, *, worker_id: str,
+                     expected_revision: int, now: int) -> dict:
+        """Fencing check used immediately around every retirement side effect."""
+        row = self._conn.execute(
+            "SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?",
+            (int(transition_id),),
+        ).fetchone()
+        if (not row or row['state'] != 'RETIREMENT_IN_PROGRESS'
+                or row['lease_owner'] != str(worker_id)
+                or row['lease_expires_at'] is None or int(row['lease_expires_at']) <= int(now)
+                or int(row['revision']) != int(expected_revision)):
+            raise LegacyCommercialTransitionLeaseLost('transition lease was superseded or expired')
+        return dict(row)
+
+    def validate_retirement_topology(self, transition_id: int, *, worker_id: str,
+                                     expected_revision: int, now: int) -> list[dict]:
+        """Fail before the first revoke unless the selected set is the exact excess."""
+        with self._lock:
+            self._conn.execute('BEGIN IMMEDIATE')
+            try:
+                row = self.assert_lease(
+                    transition_id, worker_id=worker_id,
+                    expected_revision=expected_revision, now=now,
+                )
+                target = self._conn.execute(
+                    'SELECT device_limit FROM mgboost_plan_versions WHERE id=?',
+                    (row['target_plan_version_id'],),
+                ).fetchone()
+                active = self._conn.execute(
+                    "SELECT g.id AS slot_generation_id,g.account_id,g.status,g.generation,"
+                    "s.current_generation,c.id AS child_id,c.account_id AS child_account_id,"
+                    "c.slot_generation_id AS child_generation_id,c.desired_state,c.observed_state "
+                    "FROM mgboost_device_slot_generations g "
+                    "JOIN mgboost_device_slots s ON s.id=g.slot_id "
+                    "LEFT JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
+                    "WHERE g.account_id=? AND g.status='ACTIVE' AND s.current_generation=g.generation "
+                    "ORDER BY g.id", (row['account_id'],),
+                ).fetchall()
+                selections = self._conn.execute(
+                    "SELECT x.slot_generation_id,c.id AS selected_child_id,c.account_id AS child_account_id,"
+                    "c.slot_generation_id AS child_generation_id,g.account_id AS generation_account_id "
+                    "FROM mgboost_legacy_commercial_transition_selections x "
+                    "JOIN mgboost_device_slot_generations g ON g.id=x.slot_generation_id "
+                    "LEFT JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
+                    "WHERE x.transition_id=? ORDER BY x.slot_generation_id", (row['id'],),
+                ).fetchall()
+                by_id = {int(value['slot_generation_id']): value for value in active}
+                result = []
+                remaining = 0
+                for selection in selections:
+                    generation_id = int(selection['slot_generation_id'])
+                    if (selection['generation_account_id'] != row['account_id']
+                            or selection['selected_child_id'] is None
+                            or selection['child_account_id'] != row['account_id']
+                            or selection['child_generation_id'] != generation_id):
+                        raise LegacyCommercialTransitionConflict('selected generation binding diverged')
+                    value = by_id.get(generation_id)
+                    revoke = self._conn.execute(
+                        "SELECT state,old_child_intent_id,old_slot_generation_id FROM "
+                        "mgboost_child_lifecycle_operations WHERE account_id=? "
+                        "AND old_child_intent_id=? AND old_slot_generation_id=? "
+                        "AND operation_kind='REVOKE'",
+                        (row['account_id'], selection['selected_child_id'], generation_id),
+                    ).fetchone()
+                    if value is not None:
+                        remaining += 1
+                        if (value['child_id'] != selection['selected_child_id']
+                                or (value['observed_state'] != 'ACTIVE'
+                                    and not revoke)
+                                or (value['desired_state'] == 'REVOKED'
+                                    and not revoke)):
+                            raise LegacyCommercialTransitionConflict('selected generation binding diverged')
+                    else:
+                        free = self._conn.execute(
+                            "SELECT state,old_child_intent_id,old_slot_generation_id FROM "
+                            "mgboost_child_lifecycle_operations WHERE account_id=? "
+                            "AND old_child_intent_id=? AND old_slot_generation_id=? "
+                            "AND operation_kind='FREE'",
+                            (row['account_id'], selection['selected_child_id'], generation_id),
+                        ).fetchone()
+                        if (not revoke or revoke['state'] != 'APPLIED' or not free
+                                or free['state'] not in {'IN_FLIGHT','APPLIED'}):
+                            raise LegacyCommercialTransitionConflict('selected generation is no longer current')
+                    item = dict(selection)
+                    item['revoke_state'] = revoke['state'] if revoke else None
+                    result.append(item)
+                excess = max(0, len(active) - int(target['device_limit']))
+                if remaining != excess:
+                    raise LegacyCommercialTransitionConflict(
+                        'selected generation set no longer matches authoritative capacity excess')
+                self._conn.commit()
+                return result
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def assess_capacity(self, transition_id: int, *, now: int, worker_id: str | None = None,
+                        expected_revision: int | None = None) -> dict:
         """Durably request explicit retirement; never selects a device."""
         with self._lock:
             try:
@@ -298,8 +402,12 @@ class LegacyCommercialTransitionStore:
                 row=self._conn.execute('SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?',(int(transition_id),)).fetchone()
                 if not row or row['state'] != 'RETIREMENT_IN_PROGRESS':
                     raise LegacyCommercialTransitionConflict('transition capacity state is not actionable')
-                if worker_id is not None and row['lease_owner'] != str(worker_id):
-                    raise LegacyCommercialTransitionLeaseLost('transition lease was superseded')
+                if worker_id is not None:
+                    self.assert_lease(
+                        row['id'], worker_id=worker_id,
+                        expected_revision=row['revision'] if expected_revision is None else expected_revision,
+                        now=now,
+                    )
                 target=self._conn.execute('SELECT device_limit FROM mgboost_plan_versions WHERE id=?',(row['target_plan_version_id'],)).fetchone()
                 active=self._conn.execute("SELECT COUNT(*) FROM mgboost_device_slot_generations WHERE account_id=? AND status='ACTIVE'",(row['account_id'],)).fetchone()[0]
                 required=max(0, int(active)-int(target['device_limit']))
@@ -337,13 +445,15 @@ class LegacyCommercialTransitionStore:
                 if not row or row['state']!='MANUAL_REVIEW':
                     raise LegacyCommercialTransitionConflict('transition is not in manual review')
                 source=self._conn.execute(
-                    "SELECT s.current_plan_version_id,s.current_expiry,s.status AS subscription_status,"
+                    "SELECT s.id AS subscription_id,s.current_plan_version_id,s.current_expiry,s.status AS subscription_status,s.row_version,"
                     "a.status AS account_status "
                     "FROM mgboost_subscriptions s JOIN mgboost_accounts a ON a.id=s.account_id "
-                    "WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",(row['account_id'],),
+                    "WHERE s.id=?",(row['source_subscription_id'] or -1,),
                 ).fetchone()
                 payment=self._conn.execute('SELECT status FROM mgboost_manual_payment_records WHERE id=?',(row['payment_record_id'],)).fetchone()
-                if (not source or source['current_plan_version_id']!=row['source_plan_version_id']
+                if (not source or source['subscription_id']!=row['source_subscription_id']
+                        or source['row_version']!=row['source_post_confirmation_row_version']
+                        or source['current_plan_version_id']!=row['source_plan_version_id']
                         or source['current_expiry']!=row['aligned_source_expiry']
                         or source['subscription_status']!='ACTIVE'
                         or source['account_status']!='ACTIVE' or not payment or payment['status']!='PENDING'):
@@ -376,8 +486,11 @@ class LegacyCommercialTransitionStore:
                 row=self._conn.execute('SELECT * FROM mgboost_legacy_commercial_transitions WHERE id=?',(int(transition_id),)).fetchone()
                 if not row or row['state'] != 'READY_TO_APPLY' or row['activation_at'] > timestamp:
                     raise LegacyCommercialTransitionConflict('transition is not ready for apply')
-                sub=self._conn.execute('SELECT * FROM mgboost_subscriptions WHERE account_id=? ORDER BY id DESC LIMIT 1',(row['account_id'],)).fetchone()
-                if (not sub or sub['current_plan_version_id'] != row['source_plan_version_id']
+                sub=self._conn.execute('SELECT * FROM mgboost_subscriptions WHERE id=?',(row['source_subscription_id'] or -1,)).fetchone()
+                latest=self._conn.execute('SELECT id FROM mgboost_subscriptions WHERE account_id=? ORDER BY id DESC LIMIT 1',(row['account_id'],)).fetchone()
+                if (not sub or not latest or latest['id'] != row['source_subscription_id']
+                        or sub['row_version'] != row['source_post_confirmation_row_version']
+                        or sub['current_plan_version_id'] != row['source_plan_version_id']
                         or sub['current_expiry'] != row['aligned_source_expiry'] or sub['status']!='ACTIVE'):
                     raise LegacyCommercialTransitionConflict('source entitlement diverged after scheduling')
                 account=self._conn.execute('SELECT status FROM mgboost_accounts WHERE id=?',(row['account_id'],)).fetchone()
@@ -388,6 +501,24 @@ class LegacyCommercialTransitionStore:
                 updated=self._conn.execute("UPDATE mgboost_subscriptions SET current_plan_version_id=?,status='ACTIVE',current_expiry=?,updated_at=?,row_version=row_version+1 WHERE id=? AND row_version=?",(row['target_plan_version_id'],row['target_expiry'],timestamp,sub['id'],sub['row_version']))
                 if updated.rowcount != 1: raise LegacyCommercialTransitionConflict('subscription CAS failed')
                 target=self._conn.execute('SELECT * FROM mgboost_plan_versions WHERE id=?',(row['target_plan_version_id'],)).fetchone()
+                surviving_children = []
+                generations = self._conn.execute(
+                    "SELECT g.id AS generation_id,g.account_id,g.generation,s.current_generation,"
+                    "c.id AS child_id,c.account_id AS child_account_id,c.slot_generation_id,"
+                    "c.desired_state,c.observed_state "
+                    "FROM mgboost_device_slot_generations g JOIN mgboost_device_slots s ON s.id=g.slot_id "
+                    "LEFT JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
+                    "WHERE g.account_id=? AND g.status='ACTIVE' AND s.current_generation=g.generation",
+                    (row['account_id'],),
+                ).fetchall()
+                for generation in generations:
+                    if (generation['child_id'] is None
+                            or generation['child_account_id'] != row['account_id']
+                            or generation['slot_generation_id'] != generation['generation_id']
+                            or generation['desired_state'] == 'REVOKED'
+                            or generation['observed_state'] != 'ACTIVE'):
+                        raise LegacyCommercialTransitionConflict('surviving child lineage is not authoritative')
+                    surviving_children.append(int(generation['child_id']))
                 mutation=self._conn.execute("INSERT INTO mgboost_entitlement_mutations (account_id,subscription_id,operation,payment_channel,mutation_source,actor_type,actor_ref,reason,external_reference,before_json,after_json,created_at) VALUES (?,?,'LEGACY_COMMERCIAL_TRANSITION','EXTERNAL_PAYMENT','MANUAL_PAYMENT','PRIMARY_ADMIN',?,?,?,?,?,?)",(row['account_id'],sub['id'],row['actor_ref'],row['reason'],payment['external_reference'],json.dumps({'plan_version_id':row['source_plan_version_id'],'current_expiry':row['aligned_source_expiry']},sort_keys=True),json.dumps({'plan_version_id':row['target_plan_version_id'],'new_expiry':row['target_expiry']},sort_keys=True),timestamp)).lastrowid
                 duration=self._conn.execute('SELECT * FROM mgboost_plan_durations WHERE id=?',(payment['duration_id'],)).fetchone()
                 term=self._conn.execute("INSERT INTO mgboost_subscription_terms (account_id,subscription_id,sequence_no,plan_version_id,duration_id,duration_days,starts_at,ends_at,billing_required_snapshot,device_limit_mode_snapshot,device_limit_snapshot,wl_mode_snapshot,wl_quota_bytes_snapshot,wl_period_days_snapshot,plan_snapshot_json,mutation_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(row['account_id'],sub['id'],self._conn.execute('SELECT COALESCE(MAX(sequence_no),0)+1 FROM mgboost_subscription_terms WHERE subscription_id=?',(sub['id'],)).fetchone()[0],target['id'],duration['id'],row['duration_days'],row['activation_at'],row['target_expiry'],1,target['device_limit_mode'],target['device_limit'],target['wl_mode'],target['wl_quota_bytes'],target['wl_period_days'],json.dumps({'plan_code':target['plan_code'],'duration_days':row['duration_days']},sort_keys=True),mutation,timestamp)).lastrowid
@@ -399,21 +530,13 @@ class LegacyCommercialTransitionStore:
                     for index,(start,end) in enumerate(schedule_wl_period_windows(anchor=row['activation_at'],duration_days=row['duration_days'],wl_period_days=target['wl_period_days']),1):
                         pid=self._conn.execute("INSERT INTO mgboost_wl_periods (account_id,subscription_id,subscription_term_id,sequence_no,starts_at,ends_at,quota_mode,base_quota_bytes,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",(row['account_id'],sub['id'],term,base+index,start,end,'LIMITED',target['wl_quota_bytes'],'PLANNED',timestamp)).lastrowid; periods.append(pid)
                     first_period_id=periods[0]
-                    children=self._conn.execute(
-                        "SELECT c.id FROM mgboost_child_user_intents c "
-                        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
-                        "JOIN mgboost_device_slots s ON s.id=g.slot_id "
-                        "WHERE c.account_id=? AND c.observed_state='ACTIVE' AND c.desired_state!='REVOKED' "
-                        "AND g.status='ACTIVE' AND s.current_generation=g.generation",
-                        (row['account_id'],),
-                    ).fetchall()
-                    for child in children:
+                    for child_id in surviving_children:
                         for node_id in sorted(WL_NODE_IDS):
                             self._conn.execute(
                                 "INSERT INTO mgboost_wl_transition_baselines "
                                 "(transition_id,account_id,wl_period_id,child_intent_id,node_id,state,created_at) "
                                 "VALUES (?,?,?,?,?,'PENDING',?)",
-                                (row['id'],row['account_id'],first_period_id,child['id'],node_id,timestamp),
+                                (row['id'],row['account_id'],first_period_id,child_id,node_id,timestamp),
                             )
                 self._conn.execute("INSERT INTO mgboost_manual_payment_applications (payment_record_id,account_id,entitlement_mutation_id,applied_operation,applied_expiry,related_grant_id,entitlement_snapshot_json,created_at) VALUES (?,?,?,'RENEW',?,NULL,?,?)",(payment['id'],row['account_id'],mutation,row['target_expiry'],json.dumps({'transition_id':row['id'],'term_id':term},sort_keys=True),timestamp))
                 self._conn.execute("UPDATE mgboost_manual_payment_records SET status='APPLIED',applied_at=?,entitlement_mutation_id=?,applied_operation='RENEW',applied_expiry=?,updated_at=? WHERE id=? AND status='PENDING'",(timestamp,mutation,row['target_expiry'],timestamp,payment['id']))

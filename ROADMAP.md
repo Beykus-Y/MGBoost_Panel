@@ -4141,11 +4141,18 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   никогда не выбирает сама; на boundary только выбранные lineage проходят
   canonical `REVOKE -> remote verify -> FREE`. Staleness/divergence ведёт в
   `MANUAL_REVIEW`.
+  Worker использует revision-fenced unique lease identity перед каждым
+  destructive step, повторно сверяет exact current excess и восстанавливает
+  только доказанные crash points того же durable `REVOKE/FREE` operation.
 - **WL:** commercial periods остаются UTC-hour aligned. Для перехода
   legacy UNLIMITED → commercial LIMITED существующий ledger получает
   additive conservative `TRANSITION_BASELINE`: первая observation каждой
   surviving child lineage / WL node полностью прощает crossing interval,
   следующие delta считаются обычно. Это не меняет same-commercial renewal.
+  Consumption не зависит от номера commercial WL period; перед LIMITED apply
+  полный surviving generation set обязан иметь authoritative child lineage.
+- **Source CAS:** confirmation замораживает exact subscription id и post-grace
+  `row_version`; ABA и replacement latest subscription fail closed.
 - **Payment:** confirmation и entitlement `APPLIED` разделены; после
   confirmation frozen payment нельзя edit/cancel/generic apply/resolve.
   Отмена возможна только до confirmation, пока нет отдельного audited

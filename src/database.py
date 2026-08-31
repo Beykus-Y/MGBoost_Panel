@@ -72,6 +72,7 @@ from .stars_purchase import StarsPurchaseStore
 from .manual_payment_schema import apply_manual_payment_schema
 from .manual_payment import ManualPaymentStore
 from .legacy_commercial_transition_schema import apply_legacy_commercial_transition_schema
+from .legacy_commercial_transition_schema_v2 import apply_legacy_commercial_transition_schema_v2
 from .legacy_commercial_transition import LegacyCommercialTransitionStore
 from .admin_grant import AdminGrantStore
 from .entitlement_engine import EntitlementEngine
@@ -497,6 +498,7 @@ class Database:
         apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
         apply_legacy_commercial_transition_schema(self._conn)
+        apply_legacy_commercial_transition_schema_v2(self._conn)
         apply_promo_schema(self._conn)
         apply_promo_schema_v2(self._conn)
         apply_subscription_credential_schema(self._conn)

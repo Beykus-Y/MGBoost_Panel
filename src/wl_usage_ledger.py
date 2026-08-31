@@ -336,10 +336,12 @@ class WLUsageLedgerStore:
                 # make the intentionally forgiven crossing interval appear in
                 # quota accounting.  The durable state is the replay guard.
                 baseline = self._conn.execute(
-                    "SELECT id FROM mgboost_wl_transition_baselines "
-                    "WHERE account_id=? AND child_intent_id=? AND node_id=? "
-                    "AND wl_period_id IS ? AND state='PENDING'",
-                    (int(account_id), int(child_intent_id), int(node_id), wl_period_id),
+                    "SELECT b.id FROM mgboost_wl_transition_baselines b "
+                    "JOIN mgboost_legacy_commercial_transitions t ON t.id=b.transition_id "
+                    "WHERE b.account_id=? AND b.child_intent_id=? AND b.node_id=? "
+                    "AND b.state='PENDING' AND COALESCE(t.activation_at,b.created_at)<=? "
+                    "ORDER BY t.activation_at,b.id LIMIT 1",
+                    (int(account_id), int(child_intent_id), int(node_id), int(collected_at)),
                 ).fetchone()
                 if baseline is not None:
                     if cursor_row is None:

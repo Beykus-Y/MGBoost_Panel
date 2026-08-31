@@ -6,6 +6,7 @@ from src.child_contract import source_contract_hash
 from src.manual_payment import ManualPaymentError
 from src.legacy_commercial_transition import (
     LegacyCommercialTransitionConflict, LegacyCommercialTransitionError,
+    LegacyCommercialTransitionLeaseLost,
 )
 from src.plan_catalog import RUB_PRICES, seed_plan_catalog
 from tests.test_legacy_paid_compat import db, _capability, _reviewed_account
@@ -194,6 +195,34 @@ def test_pre_confirmation_edit_and_cancel_are_allowed(db):
     )
     assert cancelled["state"] == "CANCELLED"
     assert db.manual_payments.get_record(payment["id"])["status"] == "CANCELLED"
+    current = db.legacy_commercial_transitions.get(transition["id"])
+    assert current["revision"] == transition["revision"] + 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_commercial_transition_events "
+        "WHERE transition_id=? AND event_type='CANCELLED'", (transition["id"],),
+    ).fetchone()[0] == 1
+
+
+def test_generic_payment_cancel_has_same_single_transition_audit(db):
+    account_id, cap = _legacy(db, expiry=4321, username="lct-generic-cancel", tg=997911)
+    payment = _payment(db, cap, account_id, tag="generic-cancel")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    db.manual_payments.cancel_record(
+        cap, payment["id"], reason="payment was not received", now=1001,
+    )
+    current = db.legacy_commercial_transitions.get(transition["id"])
+    assert current["state"] == "CANCELLED"
+    assert current["revision"] == transition["revision"] + 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_commercial_transition_events "
+        "WHERE transition_id=? AND event_type='CANCELLED'", (transition["id"],),
+    ).fetchone()[0] == 1
+    with pytest.raises(ManualPaymentError):
+        db.manual_payments.cancel_record(
+            cap, payment["id"], reason="duplicate cancellation replay", now=1002,
+        )
 
 
 @pytest.mark.parametrize("column,value", [
@@ -211,6 +240,67 @@ def test_source_divergence_is_detected_before_device_mutation(db, column, value)
     db._conn.commit()
     db.legacy_commercial_transitions.claim_due(worker_id="divergence-worker", now=transition["activation_at"])
     with pytest.raises(LegacyCommercialTransitionConflict):
+        db.legacy_commercial_transitions.validate_due_source(transition["id"])
+
+
+@pytest.mark.parametrize("column,temporary", [
+    ("current_expiry", 9999),
+    ("status", "DISABLED"),
+    ("current_plan_version_id", None),
+])
+def test_source_aba_is_detected_by_post_confirmation_row_version(db, column, temporary):
+    account_id, cap = _legacy(db, expiry=3600, username=f"lct-aba-{column}", tg=997930+len(column))
+    payment = _payment(db, cap, account_id, tag=f"aba-{column}")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    original = db._conn.execute(
+        f"SELECT {column} FROM mgboost_subscriptions WHERE id=?",
+        (transition["source_subscription_id"],),
+    ).fetchone()[0]
+    if column == "current_plan_version_id":
+        temporary = db._conn.execute(
+            "SELECT id FROM mgboost_plan_versions WHERE plan_code='BASIC'",
+        ).fetchone()[0]
+    db._conn.execute(
+        f"UPDATE mgboost_subscriptions SET {column}=?,row_version=row_version+1 WHERE id=?",
+        (temporary, transition["source_subscription_id"]),
+    )
+    db._conn.execute(
+        f"UPDATE mgboost_subscriptions SET {column}=?,row_version=row_version+1 WHERE id=?",
+        (original, transition["source_subscription_id"]),
+    )
+    db._conn.commit()
+    db.legacy_commercial_transitions.claim_due(worker_id="aba-worker", now=transition["activation_at"])
+    with pytest.raises(LegacyCommercialTransitionConflict, match="diverged"):
+        db.legacy_commercial_transitions.validate_due_source(transition["id"])
+
+
+def test_replacement_subscription_with_same_values_is_rejected(db):
+    account_id, cap = _legacy(db, expiry=3600, username="lct-replacement", tg=997949)
+    payment = _payment(db, cap, account_id, tag="replacement")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    source = db._conn.execute(
+        "SELECT * FROM mgboost_subscriptions WHERE id=?", (transition["source_subscription_id"],),
+    ).fetchone()
+    db._conn.execute(
+        "UPDATE mgboost_subscriptions SET status='CANCELLED',row_version=row_version+1 WHERE id=?",
+        (source["id"],),
+    )
+    db._conn.execute(
+        "INSERT INTO mgboost_subscriptions "
+        "(account_id,current_plan_version_id,status,started_at,current_expiry,created_at,updated_at,row_version) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (account_id, source["current_plan_version_id"], "ACTIVE", source["started_at"],
+         source["current_expiry"], 2000, 2000, source["row_version"]),
+    )
+    db._conn.commit()
+    db.legacy_commercial_transitions.claim_due(worker_id="replacement-worker", now=transition["activation_at"])
+    with pytest.raises(LegacyCommercialTransitionConflict, match="diverged"):
         db.legacy_commercial_transitions.validate_due_source(transition["id"])
 
 
@@ -232,6 +322,58 @@ def test_atomic_apply_rolls_back_every_local_fact_on_injected_failure(db):
     assert tuple(after) == tuple(before)
     assert db.legacy_commercial_transitions.get(transition["id"])["state"] == "READY_TO_APPLY"
     assert db.manual_payments.get_record(payment["id"])["status"] == "PENDING"
+
+
+@pytest.mark.parametrize("stage,trigger_sql", [
+    ("subscription", "BEFORE UPDATE ON mgboost_subscriptions WHEN NEW.current_plan_version_id!=OLD.current_plan_version_id"),
+    ("mutation", "BEFORE INSERT ON mgboost_entitlement_mutations WHEN NEW.operation='LEGACY_COMMERCIAL_TRANSITION'"),
+    ("term", "BEFORE INSERT ON mgboost_subscription_terms"),
+    ("period", "BEFORE INSERT ON mgboost_wl_periods"),
+    ("baseline", "BEFORE INSERT ON mgboost_wl_transition_baselines"),
+    ("application", "BEFORE INSERT ON mgboost_manual_payment_applications"),
+    ("payment", "BEFORE UPDATE ON mgboost_manual_payment_records WHEN NEW.status='APPLIED'"),
+    ("sync", "BEFORE INSERT ON mgboost_manual_payment_sync_jobs"),
+    ("transition", "BEFORE UPDATE ON mgboost_legacy_commercial_transitions WHEN NEW.state='APPLIED'"),
+    ("event", "BEFORE INSERT ON mgboost_legacy_commercial_transition_events WHEN NEW.event_type='APPLIED'"),
+])
+def test_atomic_apply_failure_matrix_rolls_back_logical_stages(db, stage, trigger_sql):
+    account_id, cap = _legacy(
+        db, expiry=3600, username=f"lct-atomic-{stage}", tg=998100+len(stage),
+    )
+    _add_child(db, account_id, suffix=f"atomic-{stage}")
+    payment = _payment(db, cap, account_id, plan="WL", tag=f"atomic-{stage}")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    db.legacy_commercial_transitions.claim_due(worker_id="atomic-matrix-worker", now=transition["activation_at"])
+    db.legacy_commercial_transitions.assess_capacity(transition["id"], now=transition["activation_at"])
+    before_sub = tuple(db._conn.execute(
+        "SELECT current_plan_version_id,status,current_expiry,row_version FROM mgboost_subscriptions WHERE id=?",
+        (transition["source_subscription_id"],),
+    ).fetchone())
+    before_counts = {
+        table: db._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "mgboost_entitlement_mutations", "mgboost_subscription_terms", "mgboost_wl_periods",
+            "mgboost_wl_transition_baselines", "mgboost_manual_payment_applications",
+            "mgboost_manual_payment_sync_jobs",
+        )
+    }
+    db._conn.execute(
+        f"CREATE TEMP TRIGGER inject_{stage} {trigger_sql} "
+        "BEGIN SELECT RAISE(ABORT,'injected logical stage failure'); END"
+    )
+    with pytest.raises(Exception, match="injected logical stage failure"):
+        db.legacy_commercial_transitions.apply_ready(transition["id"], now=transition["activation_at"])
+    assert tuple(db._conn.execute(
+        "SELECT current_plan_version_id,status,current_expiry,row_version FROM mgboost_subscriptions WHERE id=?",
+        (transition["source_subscription_id"],),
+    ).fetchone()) == before_sub
+    assert db.manual_payments.get_record(payment["id"])["status"] == "PENDING"
+    assert db.legacy_commercial_transitions.get(transition["id"])["state"] == "READY_TO_APPLY"
+    for table, count in before_counts.items():
+        assert db._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == count
 
 
 @pytest.mark.parametrize("plan,limited", [
@@ -276,6 +418,34 @@ def test_transition_baseline_created_only_for_surviving_limited_lineages(db, pla
     ).fetchall()] == [tuple(row) for row in credentials_before]
 
 
+@pytest.mark.parametrize("shape", ["non_active", "missing"])
+def test_limited_apply_rejects_unproven_surviving_lineage(db, shape):
+    account_id, cap = _legacy(db, expiry=3600, username=f"lct-survivor-{shape}", tg=996700+len(shape))
+    if shape == "non_active":
+        child = _add_child(db, account_id, suffix=shape)
+        db._conn.execute(
+            "UPDATE mgboost_child_user_intents SET observed_state='REVOKED',desired_state='REVOKED' WHERE id=?",
+            (child["child_intent_id"],),
+        )
+    else:
+        db.device_slots.claim(account_id, "missing-child-hwid", HWID_KEY, now=300)
+    db._conn.commit()
+    payment = _payment(db, cap, account_id, plan="WL", tag=f"survivor-{shape}")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    db.legacy_commercial_transitions.claim_due(worker_id="survivor-worker", now=transition["activation_at"])
+    db.legacy_commercial_transitions.assess_capacity(transition["id"], now=transition["activation_at"])
+    with pytest.raises(LegacyCommercialTransitionConflict, match="surviving child lineage"):
+        db.legacy_commercial_transitions.apply_ready(transition["id"], now=transition["activation_at"])
+    assert db.manual_payments.get_record(payment["id"])["status"] == "PENDING"
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_wl_transition_baselines WHERE transition_id=?",
+        (transition["id"],),
+    ).fetchone()[0] == 0
+
+
 def test_capacity_conflict_requires_explicit_generation_and_never_retires_early(db):
     account_id, cap = _legacy(
         db, expiry=3600, username="lct-selection", tg=996900,
@@ -305,6 +475,187 @@ def test_capacity_conflict_requires_explicit_generation_and_never_retires_early(
     assert [row["status"] for row in states] == ["ACTIVE", "ACTIVE", "ACTIVE", "ACTIVE"]
 
 
+def _selected_retirement_fixture(db, suffix):
+    account_id, cap = _legacy(
+        db, expiry=3600, username=f"lct-retire-{suffix}", tg=996910+len(suffix),
+        observed_device_count=4, approved_limit=6,
+    )
+    children = [_add_child(db, account_id, suffix=f"{suffix}-{index}", now=300+index*20)
+                for index in range(4)]
+    payment = _payment(db, cap, account_id, plan="BASIC", tag=f"retire-{suffix}")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    transition = db.legacy_commercial_transitions.record_selection(
+        cap, transition["id"], generation_ids=[children[0]["slot"]["generation_id"]],
+        reason="operator selected exact excess", now=1100,
+    )
+    claimed = db.legacy_commercial_transitions.claim_due(
+        worker_id=f"retire-worker-{suffix}", now=transition["activation_at"], lease_seconds=60,
+    )[0]
+    return account_id, cap, payment, transition, claimed, children
+
+
+def test_revoke_applied_crash_recovers_free_and_transition_apply(db):
+    from src.child_lifecycle import process_free, process_revoke
+    account_id, _cap, payment, transition, claimed, children = _selected_retirement_fixture(db, "revoke-crash")
+    worker = "retire-worker-revoke-crash"
+    selected = db.legacy_commercial_transitions.validate_retirement_topology(
+        transition["id"], worker_id=worker, expected_revision=claimed["revision"],
+        now=transition["activation_at"],
+    )[0]
+    revoke = db.child_lifecycle.prepare_revoke(
+        account_id=account_id, old_child_intent_id=selected["selected_child_id"],
+        reason="legacy commercial selected retirement",
+        idempotency_key=f"legacy-transition-revoke:{transition['id']}:{selected['slot_generation_id']}",
+        now=transition["activation_at"],
+    )
+    process_revoke(
+        db, revoke["operation_id"], worker_id=worker,
+        revoke_fn=lambda _payload: {"outcome": "REVOKED"}, now=transition["activation_at"],
+    )
+    # Simulated crash: FREE was never prepared. Recovery must prove the exact
+    # selection/revoke binding and continue rather than classify it as stale.
+    recovered = db.legacy_commercial_transitions.validate_retirement_topology(
+        transition["id"], worker_id=worker, expected_revision=claimed["revision"],
+        now=transition["activation_at"],
+    )[0]
+    assert recovered["revoke_state"] == "APPLIED"
+    free = db.child_lifecycle.prepare_free(
+        account_id=account_id, old_child_intent_id=recovered["selected_child_id"],
+        reason="legacy commercial selected retirement",
+        idempotency_key=f"legacy-transition-free:{transition['id']}:{recovered['slot_generation_id']}",
+        now=transition["activation_at"],
+    )
+    process_free(db, free["operation_id"], worker_id=worker,
+                 now=transition["activation_at"], strict_generation=True)
+    db.legacy_commercial_transitions.assess_capacity(
+        transition["id"], now=transition["activation_at"], worker_id=worker,
+        expected_revision=claimed["revision"],
+    )
+    applied = db.legacy_commercial_transitions.apply_ready(
+        transition["id"], now=transition["activation_at"],
+    )
+    assert applied["state"] == "APPLIED"
+    assert db.manual_payments.get_record(payment["id"])["status"] == "APPLIED"
+
+
+def test_free_release_crash_replay_is_proven(db):
+    from src.child_lifecycle import process_free, process_revoke
+    account_id, _cap, _payment_row, transition, _claimed, children = _selected_retirement_fixture(db, "free-crash")
+    child = children[0]
+    reason = "legacy commercial selected retirement"
+    revoke = db.child_lifecycle.prepare_revoke(
+        account_id=account_id, old_child_intent_id=child["child_intent_id"], reason=reason,
+        idempotency_key=f"legacy-transition-revoke:{transition['id']}:{child['slot']['generation_id']}",
+        now=transition["activation_at"],
+    )
+    process_revoke(db, revoke["operation_id"], worker_id="free-crash-worker",
+                   revoke_fn=lambda _payload: {"outcome": "REVOKED"}, now=transition["activation_at"])
+    free = db.child_lifecycle.prepare_free(
+        account_id=account_id, old_child_intent_id=child["child_intent_id"], reason=reason,
+        idempotency_key=f"legacy-transition-free:{transition['id']}:{child['slot']['generation_id']}",
+        now=transition["activation_at"],
+    )
+    claimed_free = db.child_lifecycle.claim(
+        free["operation_id"], worker_id="free-crash-worker", now=transition["activation_at"],
+    )
+    db.child_lifecycle.apply_free(
+        free["operation_id"], worker_id="free-crash-worker", now=transition["activation_at"],
+    )
+    generation = db._conn.execute(
+        "SELECT generation FROM mgboost_device_slot_generations WHERE id=?",
+        (claimed_free["old_slot_generation_id"],),
+    ).fetchone()[0]
+    db.device_slots.release(account_id, claimed_free["slot_id"], generation,
+                            reason=reason, now=transition["activation_at"])
+    recovered = process_free(
+        db, free["operation_id"], worker_id="free-crash-recovery",
+        now=transition["activation_at"]+31, strict_generation=True,
+    )
+    assert recovered["state"] == "APPLIED"
+
+
+def test_free_release_crash_recovery_rejects_real_rebind(db):
+    from src.child_lifecycle import process_free, process_revoke
+    from src.device_slots import StaleSlotGeneration
+    account_id, _cap, _payment_row, transition, _claimed, children = _selected_retirement_fixture(db, "free-rebind")
+    child = children[0]
+    reason = "legacy commercial selected retirement"
+    revoke = db.child_lifecycle.prepare_revoke(
+        account_id=account_id, old_child_intent_id=child["child_intent_id"], reason=reason,
+        idempotency_key=f"legacy-transition-revoke:{transition['id']}:{child['slot']['generation_id']}",
+        now=transition["activation_at"],
+    )
+    process_revoke(db, revoke["operation_id"], worker_id="free-rebind-worker",
+                   revoke_fn=lambda _payload: {"outcome": "REVOKED"}, now=transition["activation_at"])
+    free = db.child_lifecycle.prepare_free(
+        account_id=account_id, old_child_intent_id=child["child_intent_id"], reason=reason,
+        idempotency_key=f"legacy-transition-free:{transition['id']}:{child['slot']['generation_id']}",
+        now=transition["activation_at"],
+    )
+    claimed_free = db.child_lifecycle.claim(
+        free["operation_id"], worker_id="free-rebind-worker", now=transition["activation_at"],
+    )
+    db.child_lifecycle.apply_free(
+        free["operation_id"], worker_id="free-rebind-worker", now=transition["activation_at"],
+    )
+    generation = db._conn.execute(
+        "SELECT generation FROM mgboost_device_slot_generations WHERE id=?",
+        (claimed_free["old_slot_generation_id"],),
+    ).fetchone()[0]
+    db.device_slots.release(account_id, claimed_free["slot_id"], generation,
+                            reason=reason, now=transition["activation_at"])
+    rebound = db.device_slots.claim(
+        account_id, "free-rebind-new-hwid", HWID_KEY, now=transition["activation_at"]-1,
+    )
+    with pytest.raises(StaleSlotGeneration):
+        process_free(db, free["operation_id"], worker_id="free-rebind-recovery",
+                     now=transition["activation_at"]+31, strict_generation=True)
+    assert rebound["generation_id"] != child["slot"]["generation_id"]
+
+
+def test_pre_revoke_topology_shrink_and_growth_fail_before_mutation(db):
+    from src.child_lifecycle import process_free, process_revoke
+    for suffix, grow in (("shrink", False), ("grow", True)):
+        account_id, _cap, _payment_row, transition, claimed, children = _selected_retirement_fixture(db, suffix)
+        worker = f"retire-worker-{suffix}"
+        if grow:
+            _add_child(db, account_id, suffix=f"{suffix}-extra", now=1200)
+        else:
+            victim = children[-1]
+            revoke = db.child_lifecycle.prepare_revoke(
+                account_id=account_id, old_child_intent_id=victim["child_intent_id"],
+                reason="independent device removal", idempotency_key=f"independent-revoke-{suffix}---",
+                now=1200,
+            )
+            process_revoke(db, revoke["operation_id"], worker_id=f"independent-{suffix}",
+                           revoke_fn=lambda _payload: {"outcome": "REVOKED"}, now=1200)
+            free = db.child_lifecycle.prepare_free(
+                account_id=account_id, old_child_intent_id=victim["child_intent_id"],
+                reason="independent device removal", idempotency_key=f"independent-free-{suffix}---",
+                now=1201,
+            )
+            process_free(db, free["operation_id"], worker_id=f"independent-{suffix}", now=1201)
+        before = db._conn.execute(
+            "SELECT COUNT(*) FROM mgboost_child_lifecycle_operations WHERE account_id=? "
+            "AND operation_kind='REVOKE' AND old_child_intent_id=?",
+            (account_id, children[0]["child_intent_id"]),
+        ).fetchone()[0]
+        with pytest.raises(LegacyCommercialTransitionConflict, match="capacity excess"):
+            db.legacy_commercial_transitions.validate_retirement_topology(
+                transition["id"], worker_id=worker, expected_revision=claimed["revision"],
+                now=transition["activation_at"],
+            )
+        after = db._conn.execute(
+            "SELECT COUNT(*) FROM mgboost_child_lifecycle_operations WHERE account_id=? "
+            "AND operation_kind='REVOKE' AND old_child_intent_id=?",
+            (account_id, children[0]["child_intent_id"]),
+        ).fetchone()[0]
+        assert after == before == 0
+
+
 def test_worker_units_are_single_30_second_hardened_driver():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
@@ -327,6 +678,15 @@ def test_transition_migration_is_idempotent_and_foreign_keys_are_clean(db):
         "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?", (MIGRATION_ID,),
     ).fetchone()
     assert marker[0] == SCHEMA_CHECKSUM
+    from src.legacy_commercial_transition_schema_v2 import (
+        MIGRATION_ID as V2_MIGRATION_ID, SCHEMA_CHECKSUM as V2_SCHEMA_CHECKSUM,
+        apply_legacy_commercial_transition_schema_v2,
+    )
+    assert apply_legacy_commercial_transition_schema_v2(db._conn, now=10000) is False
+    assert db._conn.execute(
+        "SELECT schema_checksum FROM mgboost_schema_migrations WHERE migration_id=?",
+        (V2_MIGRATION_ID,),
+    ).fetchone()[0] == V2_SCHEMA_CHECKSUM
     assert db._conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -366,6 +726,24 @@ def test_worker_claim_is_exclusive_and_recoverable_after_lease_expiry(db):
         db.legacy_commercial_transitions.assess_capacity(
             transition["id"], now=transition["activation_at"]+31, worker_id="worker-first",
         )
+
+
+def test_stolen_lease_fences_old_worker_before_next_destructive_stage(db):
+    account_id, _cap, _payment_row, transition, claimed, children = _selected_retirement_fixture(db, "lease-steal")
+    old_worker = "retire-worker-lease-steal"
+    recovered = db.legacy_commercial_transitions.claim_due(
+        worker_id="new-distinct-worker", now=transition["activation_at"]+61, lease_seconds=60,
+    )[0]
+    assert recovered["revision"] != claimed["revision"]
+    with pytest.raises(LegacyCommercialTransitionLeaseLost):
+        db.legacy_commercial_transitions.assert_lease(
+            transition["id"], worker_id=old_worker, expected_revision=claimed["revision"],
+            now=transition["activation_at"]+61,
+        )
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_child_lifecycle_operations WHERE old_child_intent_id=?",
+        (children[0]["child_intent_id"],),
+    ).fetchone()[0] == 0
 
 
 def test_manual_review_requires_explicit_audited_retry_and_never_regrants_grace(db):

@@ -424,26 +424,31 @@ class ChildLifecycleStore:
 # individually idempotent, so a crash/restart at any point converges safely
 # on retry without ever creating a duplicate remote effect.
 
-def process_revoke(db, operation_id: str, *, worker_id: str, revoke_fn, now: int) -> dict | None:
+def process_revoke(db, operation_id: str, *, worker_id: str, revoke_fn, now: int,
+                   fence_fn=None) -> dict | None:
     """`revoke_fn(payload: dict) -> {"outcome": "REVOKED"|"ALREADY_REVOKED"|"ALREADY_ABSENT"}`
     is the typed `child.user.revoke` broker call, injected so this stays
     testable without a real broker/Marzban."""
     claimed = db.child_lifecycle.claim(operation_id, worker_id=worker_id, now=now)
     if claimed is None:
         return None
+    if fence_fn is not None:
+        fence_fn()
     # Deliberately does not auto-classify the exception here: the caller
     # (worker loop / test) decides RETRY (transient: broker/Marzban outage,
     # timeout) vs ERROR (permanent: verifier mismatch/contract drift) and
     # calls retry_later()/record_error() accordingly. The lease is simply
     # left to expire if the caller does neither, which is still safe.
     result = revoke_fn(claimed["payload"])
+    if fence_fn is not None:
+        fence_fn()
     return db.child_lifecycle.acknowledge_revoke(
         operation_id, worker_id=worker_id, outcome=result["outcome"], now=now
     )
 
 
 def process_free(db, operation_id: str, *, worker_id: str, now: int,
-                 strict_generation: bool = False) -> dict | None:
+                 strict_generation: bool = False, fence_fn=None) -> dict | None:
     """Refuses to release the slot until the matching REVOKE operation is
     durably `APPLIED`; only then calls the existing PH3-02 `release()`."""
     from .device_slots import StaleSlotGeneration
@@ -451,20 +456,42 @@ def process_free(db, operation_id: str, *, worker_id: str, now: int,
     claimed = db.child_lifecycle.claim(operation_id, worker_id=worker_id, now=now)
     if claimed is None:
         return None
+    if fence_fn is not None:
+        fence_fn()
     row = db.child_lifecycle.apply_free(operation_id, worker_id=worker_id, now=now)
     old_generation = db._conn.execute(
         "SELECT generation FROM mgboost_device_slot_generations WHERE id=?",
         (row["old_slot_generation_id"],),
     ).fetchone()
     try:
+        if fence_fn is not None:
+            fence_fn()
         db.device_slots.release(
             row["account_id"], row["slot_id"], old_generation["generation"],
             reason=row["reason"], now=now,
         )
     except StaleSlotGeneration:
         if strict_generation:
-            raise
+            # A crash can occur after the exact generation was released but
+            # before this durable FREE operation was marked APPLIED.  Accept
+            # only that provable replay shape; a rebound/current replacement
+            # remains a hard stale-generation failure.
+            proof = db._conn.execute(
+                "SELECT g.status,g.end_reason,s.current_generation,s.desired_state,s.observed_state "
+                "FROM mgboost_device_slot_generations g "
+                "JOIN mgboost_device_slots s ON s.id=g.slot_id "
+                "WHERE g.id=? AND g.account_id=? AND g.slot_id=?",
+                (row["old_slot_generation_id"], row["account_id"], row["slot_id"]),
+            ).fetchone()
+            if (not proof or proof["status"] != "RELEASED"
+                    or proof["end_reason"] != row["reason"]
+                    or proof["current_generation"] != old_generation["generation"]
+                    or proof["desired_state"] != "FREE"
+                    or proof["observed_state"] != "FREE"):
+                raise
         pass  # a prior attempt already released this slot -- idempotent.
+    if fence_fn is not None:
+        fence_fn()
     return db.child_lifecycle.finish_free(operation_id, worker_id=worker_id, now=now)
 
 
