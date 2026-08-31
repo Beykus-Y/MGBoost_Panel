@@ -2493,6 +2493,62 @@ added simulating one corrupted source).
 Targeted coverage in `tests/test_admin_operational_admin.py` (24 checks after
 the review's additions).
 
+**Slot ↔ real-device telemetry projection implemented locally (2026-09-01,
+checkpoint only, NO push/deploy):** the previously misleading `devices[].
+real_migration_lineage` UI label ("Реальное устройство: Есть/Нет") actually
+meant "this slot's current generation has a `mgboost_migration_bindings` row
+from the PH4-02 migration flow", never "we know this device's model/OS/VPN
+client" — those two facts were silently conflated in one Boolean. New pure
+matching engine `src/device_real_projection.py::project_real_device()`
+separates them: it accepts only one proof key, the current generation's
+`hwid_verifier` (the same PH3-02 keyed HMAC already used everywhere else,
+never a raw HWID/timestamp-proximity/platform-similarity heuristic), and
+returns one of four explicit states — `CONFIRMED` / `GENESIS_PLACEHOLDER`
+(the PH4-03 bootstrap slot, not a customer device) / `NOT_CLAIMED` (no
+active generation) / `UNKNOWN` (evidence absent, never guessed).
+`admin_read_models._device_summaries()` wires this into `devices[].
+real_device` (`account_detail`/`GET /admin/accounts/{id}`), and
+`frontend/assets/admin/accounts.js`'s Devices tab renders one clear block
+(model · platform · VPN client+version · last confirmed request · match
+state) instead of the old Boolean, alongside the unchanged, separately
+labeled `Миграция` badge. **Known architecture gap, not a bug:** forensic
+review of `routes/sub.py`/`opaque_resolver.py`/`hwid_gate.py` found that no
+currently-live request path ever stamps a legacy `user_devices` telemetry
+row with the canonical `hwid_verifier` — the one path that would
+(`legacy_bridge_resolver` → `resolve_account_device` →
+`device_slots.claim()` with the request's real raw HWID) is gated off by
+`LEGACY_BRIDGE_ENABLED` (default false, documented dormant), and even were
+it live, `mgboost_device_slot_generations` itself never stores
+platform/client/model at all (by original design, HWID-only). So
+`admin_read_models` always calls the matcher with an empty evidence list
+today — every slot honestly resolves to `NOT_CLAIMED`/`GENESIS_PLACEHOLDER`/
+`UNKNOWN`, never a fabricated `CONFIRMED`, exactly per the "never guess"
+invariant this feature exists to enforce. `CONFIRMED` is fully implemented
+and unit-tested (`tests/test_device_real_projection.py`, 14 checks: exact
+match, cross-account rejection, genesis exclusion, rebind/old-generation
+non-inheritance, deterministic newest-observation tie-break, malformed-input
+fail-closed, no raw HWID/verifier in output) so that wiring in a real
+evidence pipeline later requires no change to this matching contract — see
+`## [ ]` follow-up below. Read-only production forensic on the account #3
+reference case found the local/dev database empty (no accessible production
+snapshot in this environment); see PH8-04-adjacent operational note.
+Targeted: `tests/test_device_real_projection.py`,
+`tests/test_admin_account_read_models.py` (3 new checks). Broader: device
+slot/child lifecycle/provisioning/admin routes/compat registry/legacy
+commercial transition/ops health suites all green, 162 tests. Full
+unscoped `pytest` run before checkpoint commit.
+
+**Follow-up (not built here, explicitly out of scope for this checkpoint):**
+making `CONFIRMED` reachable in production requires a durable link between
+the two currently-incommensurable identity spaces (`mgboost_device_slot_
+generations.hwid_verifier`, HMAC-keyed, vs `user_devices.request_key`,
+unsalted SHA-256) — e.g. an additive `user_devices.hwid_masked` column
+computed via the existing `device_slots.privacy_safe_hwid()` at the same
+`check_device_access()` call site that already receives the raw HWID in
+`device_metadata`. That touches the live `/sub/{token}` hot path and was
+judged out of scope for a single projection-read-model checkpoint; flag for
+owner review before attempting.
+
 ## [ ] PH7-06 — Explicit conflict resolution on limit reduction
 
 **Depends:** PH7-05 and ticket workflow. **Fixed policy:** OPD-07/08 and DL-021/022 — downgrade только через ticket; active 5 -> limit 3 требует явного выбора, no silent automatic choice.

@@ -400,3 +400,53 @@ def test_real_lineage_denominator_and_genesis_proof_are_separate(db):
     assert after["accounts_with_real_lineage"] == 1
     assert after["accounts_without_real_lineage"] == 0
     assert after["total_real_lineages"] == 1
+
+
+def test_real_device_projection_is_wired_and_honestly_unknown_without_a_live_evidence_path(db):
+    # PH8-05: `_account()` claims slot 1 with a real (non-genesis) synthetic
+    # HWID. No live route stamps `user_devices` telemetry with that same
+    # keyed verifier, so even with known client telemetry present for this
+    # account, the slot must resolve to UNKNOWN, never a guessed match.
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_REAL_DEVICE", alias="real-device-user")
+    account_id = account["account_id"]
+    db.check_device_access(
+        "real-device-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "c" * 32,
+            "device_name": "iPad",
+            "platform": "ios",
+            "client_name": "incy",
+            "client_version": "2.5.1",
+        },
+    )
+    detail = account_detail(db, account_id, now=400, device_slot_hmac_key=HWID_KEY)
+    slot_one = next(row for row in detail["devices"] if row["slot_number"] == 1)
+    assert slot_one["proven_genesis_bootstrap"] is False
+    assert slot_one["real_device"]["matched"] is False
+    assert slot_one["real_device"]["match_state"] == "UNKNOWN"
+    assert slot_one["real_device"]["model"] is None
+
+
+def test_real_device_projection_marks_genesis_slot_distinctly_from_unknown(db):
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_REAL_DEVICE_GENESIS", alias="genesis-rd-user")
+    account_id = account["account_id"]
+    db.device_slots.claim(account_id, _genesis_hwid(account_id), HWID_KEY, now=101)
+    detail = account_detail(db, account_id, now=200, device_slot_hmac_key=HWID_KEY)
+    genesis_row = next(row for row in detail["devices"] if row["proven_genesis_bootstrap"])
+    assert genesis_row["real_device"]["match_state"] == "GENESIS_PLACEHOLDER"
+    assert genesis_row["real_device"]["matched"] is False
+
+
+def test_real_device_projection_never_leaks_raw_hwid_verifier_or_masked_form(db):
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_REAL_DEVICE_PRIVACY", alias="privacy-rd-user")
+    account_id = account["account_id"]
+    detail = account_detail(db, account_id, now=200, device_slot_hmac_key=HWID_KEY)
+    for row in detail["devices"]:
+        rd = row["real_device"]
+        assert set(rd) == {
+            "matched", "match_state", "model", "model_source",
+            "platform", "client_name", "client_version", "last_seen_at",
+        }
+        dumped = json.dumps(rd)
+        assert "hmac-sha256" not in dumped
+        assert "hwid_" not in dumped

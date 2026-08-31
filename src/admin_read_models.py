@@ -16,6 +16,7 @@ from .entitlement_engine import EntitlementNotFoundError
 from .internal_entitlements import InternalEntitlementError
 from .legacy_grace_observability import account_grace_snapshot, classify_action
 from .legacy_grace_migration import is_genesis_hwid_verifier
+from .device_real_projection import project_real_device
 
 
 _MIGRATED_STATES = ("MIGRATED", "LEGACY_REVOKE_PENDING", "LEGACY_REVOKED")
@@ -190,6 +191,19 @@ def _device_summaries(
             else "NO_REAL_DEVICE_LINEAGE"
         )
         item["real_migration_lineage"] = item["migration_state"] is not None
+        # PH8-05: no live path stamps `user_devices` telemetry with the
+        # canonical hwid_verifier yet (see device_real_projection module
+        # docstring) -- always UNKNOWN/GENESIS_PLACEHOLDER/NOT_CLAIMED today,
+        # by honest construction, not by omission.
+        item["real_device"] = project_real_device(
+            {
+                "account_id": account_id,
+                "generation_status": item["generation_status"],
+                "is_genesis": item["proven_genesis_bootstrap"],
+                "hwid_verifier": verifier,
+            },
+            [],
+        )
         result.append(item)
     return result
 

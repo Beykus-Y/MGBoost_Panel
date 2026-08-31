@@ -17,6 +17,31 @@
 
 ### Added
 
+- PH7-05 slot ↔ real-device telemetry projection (implemented locally, NO
+  push/deploy). New `src/device_real_projection.py::project_real_device()`
+  matches a canonical device slot's current generation to real client
+  telemetry using only one durable proof key — the exact same keyed HWID
+  verifier the rest of the device-slot system already uses — and returns
+  one of four explicit states: `CONFIRMED`, `GENESIS_PLACEHOLDER` (bootstrap
+  slot, not a customer device), `NOT_CLAIMED`, or `UNKNOWN`. Never a
+  fuzzy/heuristic match (no "closest timestamp", "similar platform", "same
+  client"): absent proof always resolves to `UNKNOWN`. Wired into
+  `account_detail()`/`GET /admin/accounts/{id}` as `devices[].real_device`
+  (`src/admin_read_models.py`), and rendered in the admin Devices tab
+  (`frontend/assets/admin/accounts.js`) as one clear "Реальное устройство"
+  block (model/platform/VPN client+version/last confirmed request/match
+  state), replacing the previously misleading `real_migration_lineage`
+  Boolean that actually meant "has a migration-lineage record", not "device
+  identity confirmed" — that migration-lineage fact is preserved unchanged
+  as its own separate "Миграция" line. **Invariant: a slot's current
+  generation never inherits a prior (released/rebound) generation's device
+  evidence, and telemetry from another account can never match.** Known
+  limitation: no currently-live request path stamps legacy telemetry with
+  the canonical verifier yet (the one path that would is feature-flagged
+  off), so `CONFIRMED` is fully implemented/tested but does not yet occur
+  for real production accounts — see `ROADMAP.md` PH7-05 for the follow-up
+  needed to close that gap.
+
 - PH8-04 Step 1+2 operator observability foundation (implemented locally,
   NO push/deploy). Step 1: `logger.*`/`print()` calls repo-wide now log
   `type(e).__name__` instead of interpolating the raw exception object (26
