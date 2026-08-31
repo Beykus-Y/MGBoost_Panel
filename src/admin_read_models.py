@@ -163,8 +163,40 @@ def _credential_summary(connection, account_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _telemetry_observations(db, account_id: int, aliases: list[dict]) -> list[dict]:
+    """PH7-05 internal-only evidence feed for `project_real_device` -- never
+    returned directly. Every observation is tagged with THIS account's own
+    `account_id` (never another account's, by construction: telemetry is
+    only ever pulled for this account's own reviewed legacy aliases), so a
+    cross-account HWID can never even be considered a candidate. Rows
+    without a stamped `hwid_verifier` yet (no live request since the PH7-05
+    telemetry bridge shipped, or the HMAC key was unavailable at write time)
+    are simply not evidence -- excluded, never treated as a weak match.
+    """
+    observations = []
+    for alias in aliases:
+        username = alias.get("legacy_username")
+        if not username:
+            continue
+        for row in db.get_user_devices_with_verifier(username):
+            if not row.get("is_active") or not row.get("hwid_verifier"):
+                continue
+            observations.append({
+                "account_id": account_id,
+                "hwid_verifier": row["hwid_verifier"],
+                "observed_id": row.get("id"),
+                "model": row.get("display_name") or row.get("device_name"),
+                "platform": _humanize_platform(row.get("platform")),
+                "client_name": _humanize_client_name(row.get("client_name")),
+                "client_version": row.get("client_version") or None,
+                "last_seen_at": row.get("last_seen"),
+            })
+    return observations
+
+
 def _device_summaries(
     connection, account_id: int, *, device_slot_hmac_key: bytes | str = "",
+    telemetry_observations: list[dict] | None = None,
 ) -> list[dict]:
     rows = connection.execute(
         "SELECT s.slot_number,s.slot_kind,s.desired_state,s.observed_state,s.created_at,s.updated_at,"
@@ -191,10 +223,11 @@ def _device_summaries(
             else "NO_REAL_DEVICE_LINEAGE"
         )
         item["real_migration_lineage"] = item["migration_state"] is not None
-        # PH8-05: no live path stamps `user_devices` telemetry with the
-        # canonical hwid_verifier yet (see device_real_projection module
-        # docstring) -- always UNKNOWN/GENESIS_PLACEHOLDER/NOT_CLAIMED today,
-        # by honest construction, not by omission.
+        # PH7-05: telemetry_observations only carries evidence once a real
+        # request has hit the PH7-05 telemetry bridge (Database.
+        # check_device_access(hwid_hmac_key=...)) for this account's own
+        # username(s) -- see device_real_projection module docstring for the
+        # exact proof-key contract.
         item["real_device"] = project_real_device(
             {
                 "account_id": account_id,
@@ -202,7 +235,7 @@ def _device_summaries(
                 "is_genesis": item["proven_genesis_bootstrap"],
                 "hwid_verifier": verifier,
             },
-            [],
+            telemetry_observations or [],
         )
         result.append(item)
     return result
@@ -476,6 +509,7 @@ def account_detail(
     action_availability = _device_action_availability(db._conn, account_id)
     devices = _device_summaries(
         db._conn, account_id, device_slot_hmac_key=device_slot_hmac_key,
+        telemetry_observations=_telemetry_observations(db, account_id, aliases),
     )
     for device in devices:
         device["actions"] = action_availability.get(device["slot_number"], {})

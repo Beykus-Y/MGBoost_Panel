@@ -42,6 +42,26 @@
   for real production accounts — see `ROADMAP.md` PH7-05 for the follow-up
   needed to close that gap.
 
+- PH7-05 durable telemetry proof-key bridge (implemented locally, NO
+  push/deploy), closing the gap above. New nullable `user_devices.
+  hwid_verifier` column (additive migration,
+  `Database._ensure_user_devices_columns`), stamped by
+  `Database.check_device_access(..., hwid_hmac_key=...)` with the exact
+  same canonical keyed verifier `device_slots.claim()` already computes
+  from the identical raw HWID in the identical `/sub/{token}` request
+  (`src/routes/sub.py` now passes `DEVICE_SLOT_HMAC_KEY`) — the raw HWID
+  itself is still never stored. Old telemetry rows stay `NULL` forever (no
+  backfill possible); a row acquires the verifier the moment its device
+  makes its next real request. `admin_read_models._telemetry_observations()`
+  feeds these into `project_real_device()` (internal-only
+  `Database.get_user_devices_with_verifier`, never exposed to `/lk` or
+  legacy admin routes), so `devices[].real_device` now reports `CONFIRMED`
+  for any migrated account whose device re-requests its subscription after
+  this deploy **and** whose account already has a real (non-genesis) ACTIVE
+  slot generation with a matching verifier. Fails open: a malformed/absent
+  HWID candidate never blocks an otherwise-legal legacy request, it just
+  leaves the verifier as it already was.
+
 - PH8-04 Step 1+2 operator observability foundation (implemented locally,
   NO push/deploy). Step 1: `logger.*`/`print()` calls repo-wide now log
   `type(e).__name__` instead of interpolating the raw exception object (26

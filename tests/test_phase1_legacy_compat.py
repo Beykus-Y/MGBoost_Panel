@@ -21,7 +21,7 @@ class _SubscriptionDB:
         self.device_checks = []
         self.requests = []
 
-    def check_device_access(self, username, token, metadata):
+    def check_device_access(self, username, token, metadata, *, hwid_hmac_key=None):
         self.device_checks.append((username, token, metadata))
         return False, None
 

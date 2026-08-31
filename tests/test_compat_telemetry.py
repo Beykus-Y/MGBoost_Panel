@@ -221,7 +221,7 @@ class _DB:
         if self.observer_error:
             raise self.observer_error
 
-    def check_device_access(self, username, token, device_metadata):
+    def check_device_access(self, username, token, device_metadata, *, hwid_hmac_key=None):
         self.device_checks.append((username, token, device_metadata))
         return False, None
 

@@ -284,7 +284,9 @@ def handle_sub(handler, token):
 
     request_key = device_metadata.get("request_key")
     if request_key and request_key.startswith("hwid:") and username:
-        blocked, reason = db.check_device_access(username, token, device_metadata)
+        blocked, reason = db.check_device_access(
+            username, token, device_metadata, hwid_hmac_key=DEVICE_SLOT_HMAC_KEY,
+        )
         if blocked:
             contact = db.get_setting("block_contact") or None
             fake = _fake_sub(reason, contact)

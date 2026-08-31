@@ -2549,6 +2549,37 @@ computed via the existing `device_slots.privacy_safe_hwid()` at the same
 judged out of scope for a single projection-read-model checkpoint; flag for
 owner review before attempting.
 
+**Follow-up implemented locally (2026-09-01, checkpoint only, NO
+push/deploy):** the bridge above is built. `user_devices.hwid_verifier`
+(additive, nullable) is stamped by `Database.check_device_access(...,
+hwid_hmac_key=DEVICE_SLOT_HMAC_KEY)` — now the actual name/value, using the
+canonical `device_slots.privacy_safe_hwid()` helper directly, not a
+separately-named `hwid_masked` column, so it can never be mistaken for a
+display-only mask. `src/routes/sub.py` passes the key on its one live call
+site; raw HWID is still never persisted anywhere by this bridge.
+`admin_read_models._telemetry_observations()`/`get_user_devices_with_
+verifier()` feed this into `project_real_device()`, internal-only (never
+exposed via `/lk` or legacy `/admin` device routes). Old rows stay `NULL`
+(no backfill possible); `CONFIRMED` now appears the next time a real device
+re-requests its subscription, **for any account whose canonical slot
+already carries a real (non-genesis) ACTIVE generation** — which itself
+still requires the existing, separately-gated `LEGACY_BRIDGE_ENABLED` +
+per-account `mgboost_legacy_bridge_bindings.enabled` path (unchanged,
+untouched here — reused exactly as-is, no second allocator written).
+Idempotent by construction (unchanged `UNIQUE(username, request_key)`);
+account boundary holds because telemetry is only ever pulled from an
+account's own reviewed aliases; rebind safety holds because the matcher
+only ever receives the slot's CURRENT active generation's verifier.
+Targeted: `tests/test_device_real_projection.py`,
+`tests/test_admin_account_read_models.py` (7 new checks: verifier stamped
+on write, repeated-request idempotency, exact/negative match, rebind drops
+old device, cross-account isolation, genesis stays genesis alongside real
+telemetry), plus `tests/test_device_slots.py`/`test_phase1_legacy_compat.py`/
+`test_audit_log.py`/`test_token_containment.py`/`test_compat_telemetry.py`/
+`test_legacy_grace_route_hooks.py` (fake-DB stubs updated for the new
+keyword-only `check_device_access` parameter) — 108 passed. No full
+regression run for this incremental checkpoint (by design).
+
 ## [ ] PH7-06 — Explicit conflict resolution on limit reduction
 
 **Depends:** PH7-05 and ticket workflow. **Fixed policy:** OPD-07/08 and DL-021/022 — downgrade только через ticket; active 5 -> limit 3 требует явного выбора, no silent automatic choice.

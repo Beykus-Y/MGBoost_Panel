@@ -56,7 +56,7 @@ class _SubDB:
         if self.grace_error:
             raise self.grace_error
 
-    def check_device_access(self, username, token, device_metadata):
+    def check_device_access(self, username, token, device_metadata, *, hwid_hmac_key=None):
         return False, None
 
     def log_request(self, *args):

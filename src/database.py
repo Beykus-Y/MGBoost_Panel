@@ -46,7 +46,7 @@ from .ownership_rebind import OwnershipRebindStore
 from .shadow_resolver_schema import apply_shadow_resolver_schema
 from .shadow_resolver import ShadowResolverBindingStore
 from .device_slot_schema import apply_device_slot_schema
-from .device_slots import DeviceSlotStore
+from .device_slots import DeviceSlotStore, InvalidHWID, privacy_safe_hwid
 from .internal_entitlement_schema import apply_internal_entitlement_schema
 from .internal_entitlements import InternalEntitlementStore
 from .plan_catalog_schema import apply_plan_catalog_schema
@@ -523,6 +523,7 @@ class Database:
         self._ensure_sub_request_columns()
         self._ensure_node_settings_columns()
         self._ensure_stars_invoice_columns()
+        self._ensure_user_devices_columns()
         self._conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_sub_requests_token_key
                 ON sub_requests(token, request_key);
@@ -714,6 +715,20 @@ class Database:
             for name, column_type in expected.items():
                 if name not in columns:
                     self._conn.execute(f"ALTER TABLE node_settings ADD COLUMN {name} {column_type}")
+            self._conn.commit()
+
+    def _ensure_user_devices_columns(self):
+        """PH7-05 durable telemetry proof key -- additive, nullable. Old rows
+        stay NULL forever (raw HWID was never stored, so a NULL cannot be
+        backfilled); a row acquires this the moment its device makes its
+        next real request while a valid HMAC key is available."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(user_devices)").fetchall()
+        }
+        with self._lock:
+            if "hwid_verifier" not in columns:
+                self._conn.execute("ALTER TABLE user_devices ADD COLUMN hwid_verifier TEXT")
             self._conn.commit()
 
     def _ensure_stars_invoice_columns(self):
@@ -1261,11 +1276,24 @@ class Database:
 
     # --- user_devices / hwid_lock ---
 
-    def check_device_access(self, username: str, token: str, device_metadata: dict) -> tuple:
+    def check_device_access(
+        self, username: str, token: str, device_metadata: dict, *, hwid_hmac_key=None,
+    ) -> tuple:
         """
         Returns (blocked: bool, reason: str | None).
         Side effect: registers or refreshes device entry if access is granted.
         Only enforces limits for hwid: keys; fp: keys pass through.
+
+        PH7-05: when `hwid_hmac_key` is supplied and the request carries a
+        raw HWID candidate, this also stamps the stored row with the exact
+        same canonical keyed verifier `device_slots.claim()` computes from
+        the identical raw value (`privacy_safe_hwid`) -- this is the only
+        durable proof key `device_real_projection` accepts. The raw HWID
+        itself is never persisted, here or anywhere in this method. Fails
+        open on any verifier-computation error: a malformed/oversized HWID
+        candidate must never turn an otherwise-legal legacy request into a
+        block, it just leaves the telemetry row's verifier as it already
+        was (COALESCE, never regresses a known-good verifier to NULL).
         """
         request_key = device_metadata.get("request_key")
         if not request_key or not request_key.startswith("hwid:"):
@@ -1273,6 +1301,14 @@ class Database:
 
         now = int(time.time())
         token_ref = subscription_token_ref(token)
+        hwid_verifier = None
+        if hwid_hmac_key:
+            raw_hwid = device_metadata.get("device_id")
+            if isinstance(raw_hwid, str) and raw_hwid:
+                try:
+                    hwid_verifier, _masked = privacy_safe_hwid(raw_hwid, hwid_hmac_key)
+                except (InvalidHWID, ValueError, TypeError):
+                    hwid_verifier = None
 
         with self._lock:
             # 1. Global anti-sharing check
@@ -1290,8 +1326,9 @@ class Database:
 
             if existing and existing["is_active"]:
                 self._conn.execute(
-                    "UPDATE user_devices SET last_seen=?, token=?, client_version=? WHERE id=?",
-                    (now, token_ref, device_metadata.get("client_version"), existing["id"]),
+                    "UPDATE user_devices SET last_seen=?, token=?, client_version=?, "
+                    "hwid_verifier=COALESCE(?, hwid_verifier) WHERE id=?",
+                    (now, token_ref, device_metadata.get("client_version"), hwid_verifier, existing["id"]),
                 )
                 self._conn.commit()
                 return False, None
@@ -1311,20 +1348,21 @@ class Database:
             if existing:
                 self._conn.execute(
                     """UPDATE user_devices
-                       SET is_active=1, last_seen=?, token=?, client_name=?, client_version=?, device_name=?
+                       SET is_active=1, last_seen=?, token=?, client_name=?, client_version=?,
+                           device_name=?, hwid_verifier=COALESCE(?, hwid_verifier)
                        WHERE id=?""",
                     (now, token_ref, device_metadata.get("client_name"),
-                     device_metadata.get("client_version"), device_name, existing["id"]),
+                     device_metadata.get("client_version"), device_name, hwid_verifier, existing["id"]),
                 )
             else:
                 self._conn.execute(
                     """INSERT INTO user_devices
                        (username, token, request_key, device_name, platform, client_name,
-                        client_version, is_active, first_seen, last_seen)
-                       VALUES (?,?,?,?,?,?,?,1,?,?)""",
+                        client_version, is_active, first_seen, last_seen, hwid_verifier)
+                       VALUES (?,?,?,?,?,?,?,1,?,?,?)""",
                     (username, token_ref, request_key, device_name,
                      device_metadata.get("platform"), device_metadata.get("client_name"),
-                     device_metadata.get("client_version"), now, now),
+                     device_metadata.get("client_version"), now, now, hwid_verifier),
                 )
 
             # 5. Acquire hwid_lock
@@ -1347,6 +1385,21 @@ class Database:
             rows = self._conn.execute(
                 """SELECT id, request_key, device_name, display_name, platform, client_name,
                           client_version, is_active, first_seen, last_seen
+                   FROM user_devices WHERE username=? ORDER BY last_seen DESC""",
+                (username,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_user_devices_with_verifier(self, username: str) -> list:
+        """PH7-05 internal-only variant carrying `hwid_verifier` -- the
+        canonical proof key `device_real_projection` matches against.
+        Never call this from a user-facing or legacy-admin route; only the
+        Wave-A admin read model (`admin_read_models.py`) may use it, and it
+        strips the verifier before any JSON response is built."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, device_name, display_name, platform, client_name,
+                          client_version, is_active, first_seen, last_seen, hwid_verifier
                    FROM user_devices WHERE username=? ORDER BY last_seen DESC""",
                 (username,),
             ).fetchall()

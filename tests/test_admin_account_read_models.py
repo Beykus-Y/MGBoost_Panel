@@ -402,11 +402,13 @@ def test_real_lineage_denominator_and_genesis_proof_are_separate(db):
     assert after["total_real_lineages"] == 1
 
 
-def test_real_device_projection_is_wired_and_honestly_unknown_without_a_live_evidence_path(db):
-    # PH8-05: `_account()` claims slot 1 with a real (non-genesis) synthetic
-    # HWID. No live route stamps `user_devices` telemetry with that same
-    # keyed verifier, so even with known client telemetry present for this
-    # account, the slot must resolve to UNKNOWN, never a guessed match.
+def test_real_device_projection_is_unknown_when_telemetry_carries_no_verifier(db):
+    # `_account()` claims slot 1 with a real (non-genesis) synthetic HWID.
+    # This call to check_device_access() omits `hwid_hmac_key` (mirrors any
+    # caller that hasn't been updated, or a request with no usable HMAC key)
+    # so the telemetry row never gets a verifier -- must stay UNKNOWN, never
+    # a guessed match, even though known client telemetry exists for this
+    # account.
     account, _alias_id, _slot = _account(db, mapping="ADMIN_REAL_DEVICE", alias="real-device-user")
     account_id = account["account_id"]
     db.check_device_access(
@@ -450,3 +452,170 @@ def test_real_device_projection_never_leaks_raw_hwid_verifier_or_masked_form(db)
         dumped = json.dumps(rd)
         assert "hmac-sha256" not in dumped
         assert "hwid_" not in dumped
+
+
+def test_new_request_with_hmac_key_stamps_telemetry_with_the_canonical_verifier(db):
+    account, _alias_id, slot = _account(db, mapping="ADMIN_RD_BRIDGE_STAMP", alias="bridge-stamp-user")
+    account_id = account["account_id"]
+    db.check_device_access(
+        "bridge-stamp-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "d" * 32,
+            "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_STAMP",
+            "device_name": "iPad", "platform": "ios",
+            "client_name": "incy", "client_version": "2.5.1",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    row = db._conn.execute(
+        "SELECT hwid_verifier FROM user_devices WHERE username='bridge-stamp-user'"
+    ).fetchone()
+    assert row["hwid_verifier"] is not None
+    expected = db._conn.execute(
+        "SELECT hwid_verifier FROM mgboost_device_slot_generations WHERE id=?",
+        (slot["generation_id"],),
+    ).fetchone()["hwid_verifier"]
+    assert row["hwid_verifier"] == expected
+
+
+def test_repeated_requests_from_the_same_device_do_not_multiply_telemetry_rows(db):
+    account, _alias_id, _slot = _account(db, mapping="ADMIN_RD_BRIDGE_REPEAT", alias="bridge-repeat-user")
+    metadata = {
+        "request_key": "hwid:" + "e" * 32,
+        "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_REPEAT",
+        "device_name": "iPad", "platform": "ios",
+        "client_name": "incy", "client_version": "2.5.1",
+    }
+    for _ in range(3):
+        blocked, reason = db.check_device_access(
+            "bridge-repeat-user", "legacy-token-1", metadata, hwid_hmac_key=HWID_KEY,
+        )
+        assert (blocked, reason) == (False, None)
+    count = db._conn.execute(
+        "SELECT COUNT(*) FROM user_devices WHERE username='bridge-repeat-user'"
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_exact_verifier_confirms_slot_and_a_different_hwid_never_matches(db):
+    account, _alias_id, slot = _account(db, mapping="ADMIN_RD_BRIDGE_CONFIRM", alias="bridge-confirm-user")
+    account_id = account["account_id"]
+    db.check_device_access(
+        "bridge-confirm-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "f" * 32,
+            "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_CONFIRM",
+            "device_name": "iPad", "platform": "ios",
+            "client_name": "incy", "client_version": "2.5.2",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    detail = account_detail(db, account_id, now=500, device_slot_hmac_key=HWID_KEY)
+    slot_one = next(row for row in detail["devices"] if row["slot_number"] == 1)
+    rd = slot_one["real_device"]
+    assert rd["matched"] is True
+    assert rd["match_state"] == "CONFIRMED"
+    assert rd["model"] == "iPad"
+    assert rd["platform"] == "iOS"
+    assert rd["client_name"] == "INCY"
+    assert rd["client_version"] == "2.5.2"
+    assert rd["model_source"] == "CLIENT_REPORTED"
+
+    # A telemetry row from an entirely different device (different raw HWID
+    # -> different verifier) must never match this slot.
+    db.check_device_access(
+        "bridge-confirm-user", "legacy-token-2",
+        {
+            "request_key": "hwid:" + "0" * 32,
+            "device_id": "some-other-unrelated-device-hwid",
+            "device_name": "Windows PC", "platform": "windows",
+            "client_name": "happ", "client_version": "1.0.0",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    detail2 = account_detail(db, account_id, now=600, device_slot_hmac_key=HWID_KEY)
+    slot_one_again = next(row for row in detail2["devices"] if row["slot_number"] == 1)
+    # Still confirmed against the SAME device, unaffected by the unrelated one.
+    assert slot_one_again["real_device"]["match_state"] == "CONFIRMED"
+    assert slot_one_again["real_device"]["model"] == "iPad"
+
+
+def test_rebind_drops_the_old_devices_telemetry_match_for_the_new_generation(db):
+    account, _alias_id, slot = _account(db, mapping="ADMIN_RD_BRIDGE_REBIND", alias="bridge-rebind-user")
+    account_id = account["account_id"]
+    db.check_device_access(
+        "bridge-rebind-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "1" * 32,
+            "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_REBIND",
+            "device_name": "Old iPhone", "platform": "ios",
+            "client_name": "incy", "client_version": "2.4.0",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    before = account_detail(db, account_id, now=500, device_slot_hmac_key=HWID_KEY)
+    assert next(r for r in before["devices"] if r["slot_number"] == 1)["real_device"]["match_state"] == "CONFIRMED"
+
+    db.device_slots.rebind(
+        account_id, slot["slot_id"], slot["generation"], "brand-new-device-hwid-after-rebind",
+        HWID_KEY, reason="test rebind", now=600,
+    )
+    after = account_detail(db, account_id, now=700, device_slot_hmac_key=HWID_KEY)
+    slot_one = next(r for r in after["devices"] if r["slot_number"] == 1)
+    # No telemetry yet for the NEW hwid -- must not inherit the old device.
+    assert slot_one["real_device"]["match_state"] == "UNKNOWN"
+    assert slot_one["real_device"]["model"] is None
+
+
+def test_telemetry_from_one_account_cannot_confirm_another_accounts_slot(db):
+    account_a, _alias_a, slot_a = _account(db, mapping="ADMIN_RD_BRIDGE_ACCT_A", alias="bridge-acct-a")
+    account_b, _alias_b, _slot_b = _account(
+        db, mapping="ADMIN_RD_BRIDGE_ACCT_B", alias="bridge-acct-b", tg=905302973,
+    )
+    # Account B's device happens to reuse account A's exact synthetic raw
+    # HWID string -- device_slots.claim() itself is expected to reject this
+    # as CrossAccountHWID (unrelated to this projection), but exercise the
+    # read-model boundary directly regardless: telemetry is only ever
+    # pulled from an account's OWN reviewed aliases, so it structurally
+    # cannot appear as evidence for account A's slot.
+    db.check_device_access(
+        "bridge-acct-b", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "2" * 32,
+            "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_ACCT_B",
+            "device_name": "Other Account Phone", "platform": "android",
+            "client_name": "happ", "client_version": "3.0.0",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    detail_a = account_detail(db, account_a["account_id"], now=500, device_slot_hmac_key=HWID_KEY)
+    slot_one_a = next(r for r in detail_a["devices"] if r["slot_number"] == 1)
+    assert slot_one_a["real_device"]["match_state"] == "UNKNOWN"
+    assert slot_one_a["real_device"]["model"] is None
+
+
+def test_genesis_bootstrap_slot_stays_genesis_even_with_real_telemetry_present_on_the_account(db):
+    # Extends the existing genesis-vs-unknown fixture: this account has BOTH
+    # a genesis bootstrap slot (2) AND real, verifier-stamped telemetry from
+    # a second real device claimed on slot 1 -- the genesis slot must still
+    # never report CONFIRMED, proving the is_genesis short-circuit applies
+    # regardless of what telemetry evidence exists elsewhere on the account.
+    account, _alias_id, slot = _account(db, mapping="ADMIN_RD_BRIDGE_GENESIS2", alias="bridge-genesis2-user")
+    account_id = account["account_id"]
+    db.device_slots.claim(account_id, _genesis_hwid(account_id), HWID_KEY, now=101)
+    db.check_device_access(
+        "bridge-genesis2-user", "legacy-token-1",
+        {
+            "request_key": "hwid:" + "3" * 32,
+            "device_id": "privacy-safe-test-hwid-ADMIN_RD_BRIDGE_GENESIS2",
+            "device_name": "Real Phone", "platform": "ios",
+            "client_name": "incy", "client_version": "1.0.0",
+        },
+        hwid_hmac_key=HWID_KEY,
+    )
+    detail = account_detail(db, account_id, now=200, device_slot_hmac_key=HWID_KEY)
+    genesis_row = next(r for r in detail["devices"] if r["proven_genesis_bootstrap"])
+    assert genesis_row["real_device"]["match_state"] == "GENESIS_PLACEHOLDER"
+    assert genesis_row["real_device"]["matched"] is False
+    real_row = next(r for r in detail["devices"] if r["slot_number"] == 1)
+    assert real_row["real_device"]["match_state"] == "CONFIRMED"
