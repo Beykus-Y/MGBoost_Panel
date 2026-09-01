@@ -5,7 +5,12 @@
 export function createTicketsUi({html,renderHtml,closeModal,proxyApi}){
   let _currentTicketId=null;
   const _TICKET_STATUS_LABELS={open:'Открыт',waiting_human:'Ждёт оператора',new_user:'Новый польз.',closed:'Закрыт'};
-  const _TICKET_STATUS_COLORS={open:'#4af',waiting_human:'#fa4',new_user:'#a4f',closed:'#888'};
+  // Closed status->semantic mapping (redesign plan section 19.2):
+  // waiting_human -> warning (needs operator attention), new_user -> info
+  // (normal expected onboarding state, not a problem), open -> neutral,
+  // closed -> success. No status maps to `error` -- a ticket by itself is
+  // never in an error condition.
+  const _TICKET_STATUS_BADGE={open:'badge-gray',waiting_human:'badge-amber',new_user:'badge-blue',closed:'badge-green'};
 
   function _tsAgo(ts){
     const diff=Math.floor(Date.now()/1000)-ts;
@@ -23,17 +28,17 @@ export function createTicketsUi({html,renderHtml,closeModal,proxyApi}){
       const qs=status?`?status=${status}`:'';
       const r=await proxyApi('/admin/tickets'+qs);
       const tickets=await r.json();
-      if(!tickets.length){renderHtml(tbody,html`<tr><td colspan="6" style="text-align:center;color:var(--text3)">Тикетов нет</td></tr>`);return;}
+      if(!tickets.length){renderHtml(tbody,html`<tr><td colspan="6" class="empty-state">Тикетов нет</td></tr>`);return;}
       renderHtml(tbody,html`${tickets.map(t=>html`
         <tr>
           <td>#${t.id}</td>
-          <td><span style="color:${_TICKET_STATUS_COLORS[t.status]||'#888'};font-weight:600">${_TICKET_STATUS_LABELS[t.status]||t.status}</span></td>
+          <td><span class="badge ${_TICKET_STATUS_BADGE[t.status]||'badge-gray'}">${_TICKET_STATUS_LABELS[t.status]||t.status}</span></td>
           <td>${t.marzban_username||`tg:${t.telegram_id}`}</td>
-          <td style="font-size:12px;color:var(--text2)">${_tsAgo(t.updated_at)}</td>
-          <td style="font-size:12px;color:var(--text3)">${_fmtDate(t.created_at)}</td>
+          <td class="ticket-col-updated">${_tsAgo(t.updated_at)}</td>
+          <td class="ticket-col-created">${_fmtDate(t.created_at)}</td>
           <td><button data-action="open-ticket" data-ticket-id="${t.id}">Открыть</button></td>
         </tr>`)}`);
-    }catch(e){renderHtml(tbody,html`<tr><td colspan="6" style="color:#f66">Ошибка загрузки</td></tr>`);}
+    }catch(e){renderHtml(tbody,html`<tr><td colspan="6" class="error-state">Ошибка загрузки</td></tr>`);}
   }
 
   async function openTicket(id){
@@ -45,13 +50,13 @@ export function createTicketsUi({html,renderHtml,closeModal,proxyApi}){
       `Тикет #${id} — ${ticket.marzban_username||`tg:${ticket.telegram_id}`} [${_TICKET_STATUS_LABELS[ticket.status]||ticket.status}]`;
     const chat=document.getElementById('ticket-chat');
     renderHtml(chat,messages.length?html`${messages.map(m=>{
-      const bg=m.role==='user'?'var(--bg4)':m.role==='ai'?'#1a3a2a':'#2a2a1a';
+      const roleClass=m.role==='user'?'ticket-message--user':m.role==='ai'?'ticket-message--ai':'ticket-message--operator';
       const label=m.role==='user'?'Пользователь':m.role==='ai'?'AI':'Оператор';
-      return html`<div style="margin-bottom:8px;padding:8px;background:${bg};border-radius:6px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${label} · ${_fmtDate(m.ts)}</div>
-        <div style="white-space:pre-wrap;font-size:13px">${m.text}</div>
+      return html`<div class="ticket-message ${roleClass}">
+        <div class="ticket-message-meta">${label} · ${_fmtDate(m.ts)}</div>
+        <div class="ticket-message-text">${m.text}</div>
       </div>`;
-    })}`:html`<div style="color:var(--text3);font-size:13px">Сообщений нет</div>`);
+    })}`:html`<div class="ticket-empty-chat">Сообщений нет</div>`);
     chat.scrollTop=chat.scrollHeight;
     document.getElementById('ticket-reply-text').value='';
     document.getElementById('ticket-action-status').textContent='';
@@ -66,8 +71,8 @@ export function createTicketsUi({html,renderHtml,closeModal,proxyApi}){
     status.textContent='Отправка...';
     const r=await proxyApi(`/admin/tickets/${_currentTicketId}/reply`,{method:'POST',body:JSON.stringify({text})});
     if(!r.ok){status.textContent='Ошибка';return;}
-    status.style.color='#6f6';status.textContent='Отправлено';
-    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
+    status.classList.add('ticket-reply-status--ok');status.textContent='Отправлено';
+    setTimeout(()=>{status.textContent='';status.classList.remove('ticket-reply-status--ok');},2000);
     document.getElementById('ticket-reply-text').value='';
     await openTicket(_currentTicketId);
   }

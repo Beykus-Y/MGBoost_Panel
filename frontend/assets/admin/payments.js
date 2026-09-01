@@ -403,7 +403,7 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
       </div>`):html`<div class="empty-state">Ручных платежей ещё не было</div>`}
     </div>
     <div class="card spaced-card"><div class="card-title">Канонические записи о платежах (provenance)</div>
-      ${legacy.length?legacy.map(row=>html`<div class="list-row"><div><strong>${row.public_id}</strong>
+      ${legacy.length?legacy.map(row=>html`<div class="list-row"><div><strong>${row.public_id}</strong>${row.payment_channel==='ADMIN_GRANT'?html` <span class="badge badge-purple">ADMIN GRANT</span>`:''}
       <div class="cell-sub">${humanLabel(row.payment_channel)} · ${row.record_status}${row.actor_ref?` · actor ${row.actor_ref}`:''}</div></div>
       <span>${row.currency&&row.amount_minor!=null?formatRub(row.amount_minor,row.currency):''}</span></div>`):html`<div class="empty-state">Записей нет</div>`}
     </div>

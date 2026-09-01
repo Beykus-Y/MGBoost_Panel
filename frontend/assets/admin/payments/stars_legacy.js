@@ -31,7 +31,7 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
       const r=await proxyApi('/admin/stars-tariffs');
       const tariffs=await r.json();
       if(!tariffs.length){
-        renderHtml(tbody,html`<tr><td colspan="5" style="text-align:center;color:var(--text3)">Тарифы ещё не настроены — добавьте первый тариф</td></tr>`);
+        renderHtml(tbody,html`<tr><td colspan="5" class="empty-state">Тарифы ещё не настроены — добавьте первый тариф</td></tr>`);
         return;
       }
       renderHtml(tbody,html`${tariffs.map(t=>html`
@@ -39,10 +39,10 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
           <td>${t.name}</td>
           <td>${t.duration_days}</td>
           <td>${t.stars_price} ⭐️</td>
-          <td><input type="checkbox" ${t.active?html`checked`:''} data-change-action="toggle-stars-tariff" data-tariff-id="${t.id}" style="width:auto" /></td>
+          <td><input type="checkbox" ${t.active?html`checked`:''} data-change-action="toggle-stars-tariff" data-tariff-id="${t.id}" class="stars-toggle" /></td>
           <td><button data-action="delete-stars-tariff" data-tariff-id="${t.id}">Удалить</button></td>
         </tr>`)}`);
-    }catch(e){renderHtml(tbody,html`<tr><td colspan="5" style="color:#f66">Ошибка загрузки</td></tr>`);}
+    }catch(e){renderHtml(tbody,html`<tr><td colspan="5" class="error-state">Ошибка загрузки</td></tr>`);}
   }
 
   async function addStarsTariff(){
@@ -70,11 +70,16 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
     loadStarsTariffs();
   }
 
-  const _STARS_STATUS_COLORS={
-    created:'#888',paid:'#4af',plan_committed:'#4af',applied:'#6f6',
-    canonical_applied:'#6f6',
-    manual_review:'#fa4',apply_failed_user_missing:'#f66',
-    apply_retry_exhausted:'#f66',refund_pending:'#fa4',refund_unknown:'#f66',refunded:'#a4f',
+  // Semantic mapping, same taxonomy as tickets (redesign plan section
+  // 19.2): success/warning/error/info/neutral. paid/plan_committed are
+  // still-in-progress states -> info; refunded is a terminal reversal,
+  // not a "success" of the original charge -> neutral, distinct from
+  // applied/canonical_applied which are.
+  const _STARS_STATUS_BADGE={
+    created:'badge-gray',paid:'badge-blue',plan_committed:'badge-blue',applied:'badge-green',
+    canonical_applied:'badge-green',
+    manual_review:'badge-amber',apply_failed_user_missing:'badge-red',
+    apply_retry_exhausted:'badge-red',refund_pending:'badge-amber',refund_unknown:'badge-red',refunded:'badge-gray',
   };
   const _STARS_STATUS_LABELS={
     created:'Создан',paid:'Оплачен',plan_committed:'Тариф зафиксирован',applied:'Применён',
@@ -93,7 +98,7 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
       const qs=status?`?status=${status}`:'';
       const r=await proxyApi('/admin/stars-payments'+qs);
       const rows=await r.json();
-      if(!rows.length){renderHtml(tbody,html`<tr><td colspan="10" style="text-align:center;color:var(--text3)">Платежей нет</td></tr>`);return;}
+      if(!rows.length){renderHtml(tbody,html`<tr><td colspan="10" class="empty-state">Платежей нет</td></tr>`);return;}
       renderHtml(tbody,html`${rows.map(p=>{
         const actions=[];
         if(_STARS_ACTIONABLE.has(p.status)){
@@ -113,16 +118,16 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
           <td>#${p.id}</td>
           <td>${p.marzban_username}</td>
           <td>${p.tariff_name} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
-          <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
+          <td><span class="badge ${_STARS_STATUS_BADGE[p.status]||'badge-gray'}">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
           <td>${p.created_by_telegram_id}</td>
           <td>${p.payer_telegram_id??'—'}</td>
           <td>${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
           <td>${p.applied_expire??'—'}</td>
-          <td style="font-size:11px;color:var(--text3);max-width:220px;overflow:hidden;text-overflow:ellipsis">${p.manual_review_reason||''}</td>
-          <td style="white-space:nowrap">${actions}</td>
+          <td class="stars-reason-cell">${p.manual_review_reason||''}</td>
+          <td class="stars-actions-cell">${actions}</td>
         </tr>`;
       })}`);
-    }catch(e){renderHtml(tbody,html`<tr><td colspan="10" style="color:#f66">Ошибка загрузки</td></tr>`);}
+    }catch(e){renderHtml(tbody,html`<tr><td colspan="10" class="error-state">Ошибка загрузки</td></tr>`);}
   }
 
   async function starsPaymentAction(id,action){
@@ -149,7 +154,7 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
     try{
       const r=await proxyApi('/admin/stars-orphan-payments');
       const rows=await r.json();
-      if(!rows.length){renderHtml(tbody,html`<tr><td colspan="8" style="text-align:center;color:var(--text3)">Непривязанных оплат нет</td></tr>`);return;}
+      if(!rows.length){renderHtml(tbody,html`<tr><td colspan="8" class="empty-state">Непривязанных оплат нет</td></tr>`);return;}
       renderHtml(tbody,html`${rows.map(p=>{
         const actions=[];
         if(p.status==='manual_review')actions.push(html`<button data-action="stars-orphan-action" data-payment-id="${p.id}" data-payment-action="refund">Возврат</button>`);
@@ -158,11 +163,11 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
           <td>#${p.id}</td><td>${p.payer_telegram_id}</td>
           <td>${p.total_amount} ${p.currency}</td><td>${p.invoice_payload}</td>
           <td>${p.telegram_payment_charge_id}</td><td>${p.reason}</td>
-          <td><span style="color:${_STARS_STATUS_COLORS[p.status]||'#888'};font-weight:600">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
-          <td style="white-space:nowrap">${actions}</td>
+          <td><span class="badge ${_STARS_STATUS_BADGE[p.status]||'badge-gray'}">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
+          <td class="stars-actions-cell">${actions}</td>
         </tr>`;
       })}`);
-    }catch(e){renderHtml(tbody,html`<tr><td colspan="8" style="color:#f66">Ошибка загрузки</td></tr>`);}
+    }catch(e){renderHtml(tbody,html`<tr><td colspan="8" class="error-state">Ошибка загрузки</td></tr>`);}
   }
 
   async function starsOrphanAction(id,action){

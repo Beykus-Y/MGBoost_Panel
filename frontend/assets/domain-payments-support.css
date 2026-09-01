@@ -1,0 +1,41 @@
+/* Payments & Support: product picker (payments.js manual-payment wizard,
+   admin_grant_ops.js grant dialog), payment-row status line, ticket
+   workflow (support/tickets.js) and Telegram Stars (payments/
+   stars_legacy.js, legacy revenue channel). */
+
+.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.75rem 0}
+.product-card{display:flex;flex-direction:column;gap:.15rem;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3);color:var(--text);cursor:pointer;text-align:left}
+.product-card:hover{border-color:var(--border2)}
+.product-card.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent2)}
+.product-card small,.product-card span{color:var(--text2)}
+
+/* Previously undefined -- `.pay-status` had zero CSS rule anywhere,
+   rendering as an unstyled inline run of amount + badge(es). */
+.pay-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* ADMIN_GRANT marker (redesign plan section 19.1: permanent semantic
+   badge, not a whole-row tint) -- a new badge color distinct from the
+   existing success/warning/error/info/neutral set, since this is a
+   classification (non-revenue), not a status. */
+.badge-purple{background:#2a1a4a;border-color:#6a3aaa;color:#c299ff}
+
+/* Support tickets */
+.ticket-col-updated{font-size:12px;color:var(--text2)}
+.ticket-col-created{font-size:12px;color:var(--text3)}
+.ticket-message{margin-bottom:8px;padding:8px;border-radius:6px}
+.ticket-message--user{background:var(--bg4)}
+.ticket-message--ai{background:var(--green2)}
+.ticket-message--operator{background:var(--amber2)}
+.ticket-message-meta{font-size:11px;color:var(--text3);margin-bottom:3px}
+.ticket-message-text{white-space:pre-wrap;font-size:13px}
+.ticket-empty-chat{color:var(--text3);font-size:13px}
+.ticket-reply-status--ok{color:var(--green)}
+
+/* Telegram Stars (legacy revenue channel) */
+.stars-toggle{width:auto}
+.stars-reason-cell{font-size:11px;color:var(--text3);max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.stars-actions-cell{white-space:nowrap}
+
+@media (max-width: 560px){
+  .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+}

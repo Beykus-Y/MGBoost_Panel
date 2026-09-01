@@ -170,7 +170,7 @@ def test_account_human_surfaces_use_reusable_russian_labels_and_separated_techni
 
 def test_canonical_applied_stars_payment_is_refundable_and_humanized():
     source = (ADMIN_MODULES / "payments" / "stars_legacy.js").read_text(encoding="utf-8")
-    assert "canonical_applied:'#6f6'" in source
+    assert "canonical_applied:'badge-green'" in source
     assert "canonical_applied:'Применён к аккаунту'" in source
     refundable = re.search(r"const _STARS_REFUNDABLE=new Set\(\[([^]]+)", source)
     assert refundable and "'canonical_applied'" in refundable.group(1)

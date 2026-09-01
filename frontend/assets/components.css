@@ -34,6 +34,7 @@ label:first-child{margin-top:0}
 .ops-checkline{display:flex;align-items:center;gap:.45rem;font-size:.88rem}
 .ops-submit-row{width:100%;text-align:right}
 .ops-consequences{margin:.4rem 0 .6rem 1.1rem;font-size:.9rem;display:flex;flex-direction:column;gap:.25rem}
+.ops-preview h4{margin:.2rem 0 .4rem}
 
 /* Key/value primitives -- shared across Account workspace, Operations
    and Technical/Legacy screens. `.detail-grid` is kept as an alias of

@@ -73,7 +73,6 @@
   .stats-grid,.user-detail-grid{grid-template-columns:1fr}
   .section-heading{align-items:flex-start;flex-direction:column}
   .card{padding:1rem;border-radius:10px}
-  .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
   .timeline-item{grid-template-columns:auto 1fr}
   .timeline-time{grid-column:1/2}
   .timeline-body{grid-column:1/-1}
@@ -85,12 +84,6 @@
    remapped onto real dark tokens in Wave 0 -- what's left here is layout
    only: product picker, queue/timeline widgets. */
 
-.product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.75rem 0}
-.product-card{display:flex;flex-direction:column;gap:.15rem;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3);color:var(--text);cursor:pointer;text-align:left}
-.product-card:hover{border-color:var(--border2)}
-.product-card.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent2)}
-.product-card small,.product-card span{color:var(--text2)}
-.ops-preview h4{margin:.2rem 0 .4rem}
 .device-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem}
 .queue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.8rem}
 .queue-block{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:.85rem}
