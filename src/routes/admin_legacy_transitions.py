@@ -107,11 +107,20 @@ def handle_transitions_queue(handler):
     db = handler.server.db
     if require_primary_capability(handler, db) is None:
         return
+    total = int(db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_commercial_transitions "
+        "WHERE state NOT IN ('APPLIED','CANCELLED')"
+    ).fetchone()[0])
     rows = db._conn.execute(
         "SELECT * FROM mgboost_legacy_commercial_transitions "
         "WHERE state NOT IN ('APPLIED','CANCELLED') ORDER BY updated_at DESC LIMIT 100"
     ).fetchall()
-    json_response(handler, 200, {"transitions": [_queue_view(db, row) for row in rows]})
+    json_response(handler, 200, {
+        "transitions": [_queue_view(db, row) for row in rows],
+        "total": total,
+        "truncated": total > len(rows),
+        "has_more": total > len(rows),
+    })
 
 
 def handle_transition_detail(handler, transition_id):

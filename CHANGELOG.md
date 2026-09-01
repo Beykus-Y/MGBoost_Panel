@@ -18,8 +18,8 @@
 ### Changed — Admin
 
 PH7-16 (Admin v2 / canonical frontend cutover), Waves 3-6, реализованы
-локально 2026-09-01 (commits `3aa1016`..`d8208ad` и Wave 6, ветка `main`,
-**не задеплоено/не запушено в этой сессии**): легаси Marzban-экраны
+локально 2026-09-01 (commits `3aa1016`..`fefebb4` и последующий remediation,
+ветка `main`, **не задеплоено/не запушено в этой сессии**): легаси Marzban-экраны
 (Users, Extra Configs, Tickets, Telegram Stars, Settings) вынесены из
 монолитного `admin.js` в собственные ES-модули по owner-directed
 placement map — Users → `System/Технический` (`admin/technical/
@@ -31,6 +31,15 @@ top-level раздел «Платежи» (`admin/payments/stars_legacy.js`), Se
 перенесено/изолировано. `frontend/assets/admin.js` (бывший
 ~1739-строчный монолит) переименован в `admin/app/router.js` — файла
 `admin.js` в дереве больше не существует.
+
+Independent review remediation, также только локально: admin `node-filters`
+получил тот же primary-admin boundary, что и составной raw-user Save;
+`canonical_applied` Stars invoices снова имеют достижимый refund action;
+ошибки загрузки ES-модулей показываются контролируемо вместо silent no-op;
+Legacy Transitions queue явно сообщает об усечении после 100 записей; Cancel
+в reason prompt не отправляет request; raw `hwid_verifier`/`uuid_verifier`
+больше не отображаются даже в Technical. Статусы разделены явно:
+**implemented — да; independently reviewed/remediated — да; deployed — нет**.
 
 ### Security — Admin (Wave H, отдельный reviewed backend slice)
 

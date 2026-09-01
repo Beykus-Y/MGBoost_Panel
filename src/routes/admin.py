@@ -338,6 +338,12 @@ def handle_node_filters_list(handler):
 
 
 def handle_node_filters_save(handler):
+    # Node filters determine which configs a raw Marzban user receives and
+    # are saved by the same privileged raw-user Save workflow as PUT user.
+    # Keep the internal service route separate, but do not let a secondary
+    # admin partially apply this half of the composite UI operation.
+    if require_primary_capability(handler, handler.server.db) is None:
+        return
     try:
         data = json.loads(_read_body(handler))
         _validate_node_filters(data)

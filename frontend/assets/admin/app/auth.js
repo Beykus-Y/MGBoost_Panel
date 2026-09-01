@@ -43,7 +43,7 @@ export async function doLogin(){
     document.getElementById('sidebar-admin').textContent=d.username;
     document.getElementById('login-page').style.display='none';
     document.getElementById('app').style.display='flex';
-    authenticatedCallback();
+    await authenticatedCallback();
   }catch{e.style.display='block'}
 }
 export function showLoggedOut(){
@@ -67,7 +67,7 @@ export async function restoreAdminSession(){
     document.getElementById('sidebar-admin').textContent=d.username;
     document.getElementById('login-page').style.display='none';
     document.getElementById('app').style.display='flex';
-    authenticatedCallback();
+    await authenticatedCallback();
   }catch{showLoggedOut()}
 }
 

@@ -72,17 +72,19 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
 
   const _STARS_STATUS_COLORS={
     created:'#888',paid:'#4af',plan_committed:'#4af',applied:'#6f6',
+    canonical_applied:'#6f6',
     manual_review:'#fa4',apply_failed_user_missing:'#f66',
     apply_retry_exhausted:'#f66',refund_pending:'#fa4',refund_unknown:'#f66',refunded:'#a4f',
   };
   const _STARS_STATUS_LABELS={
     created:'Создан',paid:'Оплачен',plan_committed:'Тариф зафиксирован',applied:'Применён',
+    canonical_applied:'Применён к аккаунту',
     manual_review:'Ручная проверка',apply_failed_user_missing:'Пользователь не найден',
     apply_retry_exhausted:'Повторы исчерпаны',refund_pending:'Возврат ожидается',
     refund_unknown:'Возврат не подтверждён',refunded:'Возвращён',
   };
   const _STARS_ACTIONABLE=new Set(['manual_review','apply_retry_exhausted']);
-  const _STARS_REFUNDABLE=new Set(['applied','manual_review','apply_retry_exhausted','apply_failed_user_missing']);
+  const _STARS_REFUNDABLE=new Set(['applied','canonical_applied','manual_review','apply_retry_exhausted','apply_failed_user_missing']);
 
   async function loadStarsPayments(status){
     const tbody=document.getElementById('stars-payments-tbody');

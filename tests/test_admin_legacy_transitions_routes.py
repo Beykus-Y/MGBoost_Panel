@@ -82,6 +82,25 @@ def test_queue_lists_open_transitions_and_excludes_terminal_states(db):
     assert "events" not in row
 
 
+def test_queue_reports_when_more_than_one_hundred_open_transitions_are_truncated(db):
+    from src.routes import admin_legacy_transitions as routes
+
+    for index in range(101):
+        # _transition derives its Telegram fixture id from suffix length, so
+        # distinct lengths keep all 101 accounts independently addressable.
+        _transition(db, suffix="m" + ("x" * index))
+
+    handler = make_handler(db, command="GET")
+    routes.handle_transitions_queue(handler)
+
+    assert handler.status == 200
+    body = handler.json()
+    assert len(body["transitions"]) == 100
+    assert body["total"] == 101
+    assert body["truncated"] is True
+    assert body["has_more"] is True
+
+
 def test_all_post_routes_require_auth_primary_and_csrf(db):
     from src.routes import admin_legacy_transitions as routes
     account_id, _cap, payment, transition = _transition(db, suffix="post-auth")

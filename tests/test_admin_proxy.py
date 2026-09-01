@@ -90,6 +90,26 @@ def test_proxy_forwards_allowlisted_read_with_server_side_token(monkeypatch):
     assert "server-only-jwt" not in handler.wfile.getvalue().decode()
 
 
+def test_secondary_admin_cannot_apply_node_filters_half_of_composite_user_save(db):
+    from src.security import require_admin_auth
+    from src.routes.admin import handle_node_filters_save
+
+    db.save_node_filters({"alice": {"all": True}})
+    payload = json.dumps({"alice": {"all": False, "allowed_configs": ["restricted"]}}).encode()
+    handler = FakeHandler(method="POST", path="/admin/node-filters", body=payload, db=db)
+    raw, session = security.create_admin_session("secondary-admin-login", "server-only-jwt")
+    handler.headers.update({
+        "Cookie": f"{security.ADMIN_SESSION_COOKIE}={raw}",
+        "X-CSRF-Token": session.csrf_token,
+    })
+
+    assert require_admin_auth(handler) is True
+    handle_node_filters_save(handler)
+
+    assert handler.status == 403
+    assert db.get_node_filters() == {"alice": {"all": True, "allowed_configs": []}}
+
+
 def test_proxy_rejects_arbitrary_path_and_duplicate_or_excessive_query():
     arbitrary = FakeHandler(path="/admin/marzban/admins")
     _attach_session(arbitrary)

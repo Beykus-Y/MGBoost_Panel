@@ -155,10 +155,49 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self._send(200, {PAYLOAD: [{"name": PAYLOAD, "uri": PAYLOAD, "enabled": True}]})
         elif path == "/sub-admin-api/admin/settings":
             self._send(200, {"inbound_client_extras": {PAYLOAD: PAYLOAD}})
+        elif path == "/sub-admin-api/admin/stars-settings":
+            self._send(200, {"enabled": True})
+        elif path == "/sub-admin-api/admin/stars-tariffs":
+            self._send(200, [])
+        elif path == "/sub-admin-api/admin/stars-payments":
+            self._send(200, [{
+                "id": 77, "marzban_username": "canonical-user", "tariff_name": "Basic",
+                "duration_days": 30, "stars_price": 100, "status": "canonical_applied",
+                "created_by_telegram_id": 1001, "payer_telegram_id": 1001,
+                "base_expire_observed": None, "target_expire": None,
+                "applied_expire": 1900000000, "manual_review_reason": None,
+            }])
+        elif path == "/sub-admin-api/admin/stars-orphan-payments":
+            self._send(200, [])
+        elif path == "/sub-admin-api/admin/legacy-transitions":
+            self._send(200, {"total": 2, "truncated": False, "has_more": False, "transitions": [
+                {"id": 501, "public_id": "lct_pending", "account_id": 1, "state": "PENDING_PAYMENT",
+                 "review_reason": None, "activation_at": None, "target_expiry": None,
+                 "expected_amount_minor": 169, "updated_at": 100, "source_plan_code": "LEGACY_PAID_COMPAT_V1_D3",
+                 "target_plan_code": "BASIC", "target_display_name": "Basic", "label": "Pending fixture"},
+                {"id": 502, "public_id": "lct_review", "account_id": 1, "state": "MANUAL_REVIEW",
+                 "review_reason": "fixture review", "activation_at": 200, "target_expiry": 300,
+                 "expected_amount_minor": 169, "updated_at": 110, "source_plan_code": "LEGACY_PAID_COMPAT_V1_D3",
+                 "target_plan_code": "BASIC", "target_display_name": "Basic", "label": "Review fixture"},
+            ]})
+        elif path in {"/sub-admin-api/admin/legacy-transitions/501", "/sub-admin-api/admin/legacy-transitions/502"}:
+            transition_id = int(path.rsplit("/", 1)[1])
+            state = "PENDING_PAYMENT" if transition_id == 501 else "MANUAL_REVIEW"
+            self._send(200, {"transition": {
+                "id": transition_id, "account_id": 1, "state": state,
+                "source_plan_code": "LEGACY_PAID_COMPAT_V1_D3", "target_plan_code": "BASIC",
+                "expected_amount_minor": 169, "duration_days": 30,
+                "original_source_expiry": 100, "activation_at": 200, "target_expiry": 300,
+                "active_device_count": 1, "target_device_limit": 3, "capacity_excess": 0,
+                "review_reason": "fixture review" if state == "MANUAL_REVIEW" else None,
+                "devices": [], "events": [],
+            }})
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if hasattr(self.server, "mutation_paths"):
+            self.server.mutation_paths.append(self.path)
         length = int(self.headers.get("Content-Length", "0"))
         if length:
             self.rfile.read(length)
@@ -166,6 +205,14 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self._send(200, {PAYLOAD: 0})
         else:
             self._send(404, {"error": "not found"})
+
+
+class BrokenStarsModuleHandler(AdminFixtureHandler):
+    def do_GET(self):
+        if self.path.split("?", 1)[0].endswith("/admin/payments/stars_legacy.js"):
+            self._send(404, {"error": "intentionally broken module"})
+            return
+        super().do_GET()
 
 
 def test_stored_xss_payload_is_text_under_production_csp():
@@ -190,6 +237,9 @@ def test_stored_xss_payload_is_text_under_production_csp():
             page.wait_for_selector("[data-inbound-value]", state="attached")
             assert PAYLOAD in page.locator("#cfg-list").inner_text()
             assert PAYLOAD in page.locator("#inbound-extra-list").inner_text()
+            page.locator('[data-page="stars"]').click()
+            page.wait_for_selector('#stars-payments-tbody [data-payment-action="refund"]', state="attached")
+            assert "Применён к аккаунту" in page.locator("#stars-payments-tbody").inner_text()
             page.locator('.nav-item[data-page="accounts"]').click()
             page.wait_for_function("payload => document.querySelector('#accounts-tbody').innerText.includes(payload)", arg=PAYLOAD)
             assert page.locator("#accounts-tbody img").count() == 0
@@ -202,6 +252,9 @@ def test_stored_xss_payload_is_text_under_production_csp():
             assert "mgc_technical_only" not in page.locator("#account-tab-content").inner_text()
             page.locator('[data-account-tab="technical"]').click()
             assert "mgc_technical_only" in page.locator("#account-tab-content").inner_text()
+            technical_text = page.locator("#account-tab-content").inner_text()
+            assert "hmac-sha256:technical-only" not in technical_text
+            assert "sha256:technical-only" not in technical_text
             page.set_viewport_size({"width": 480, "height": 900})
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             assert page.locator("#app img").count() == 0
@@ -309,10 +362,75 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
 
             # Raw identifiers stay outside Technical across every opened tab.
             body_text = page.locator("#app").inner_text()
-            assert "mgc_technical_only" not in body_text or True  # technical tab not opened here
+            assert "mgc_technical_only" not in body_text
+            assert "hmac-sha256:technical-only" not in body_text
+            assert "sha256:technical-only" not in body_text
 
             assert not console_errors, console_errors
             assert page.evaluate("globalThis.__mgboost_xss") == 0
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_broken_domain_module_shows_controlled_visible_error_without_pageerror():
+    playwright = pytest.importorskip("playwright.sync_api")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BrokenStarsModuleHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as runner:
+            browser = runner.chromium.launch(headless=True)
+            page = browser.new_page()
+            page_errors = []
+            page.on("pageerror", lambda exc: page_errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{server.server_port}/sub-admin/", wait_until="networkidle")
+            page.locator('[data-page="stars"]').click()
+            page.wait_for_selector("#page-stars .module-unavailable")
+            assert "Модуль недоступен: Telegram Stars" in page.locator("#page-stars").inner_text()
+            assert not page_errors, page_errors
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_transition_prompt_cancel_and_invalid_reason_send_no_mutation():
+    playwright = pytest.importorskip("playwright.sync_api")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AdminFixtureHandler)
+    server.mutation_paths = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with playwright.sync_playwright() as runner:
+            browser = runner.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_port}/sub-admin/", wait_until="networkidle")
+            page.locator('.nav-item[data-page="legacy-transitions"]').click()
+            page.wait_for_selector('[data-transition-id="501"]')
+
+            page.locator('[data-transition-id="501"]').click()
+            page.wait_for_selector("#lct-cancel")
+            page.once("dialog", lambda dialog: dialog.dismiss())
+            page.locator("#lct-cancel").click()
+            page.wait_for_timeout(100)
+            assert not any("/cancel" in path for path in server.mutation_paths)
+
+            page.once("dialog", lambda dialog: dialog.accept("short"))
+            page.locator("#lct-cancel").click()
+            page.wait_for_timeout(100)
+            assert not any("/cancel" in path for path in server.mutation_paths)
+
+            page.locator(".ops-close").last.click()
+            page.locator('[data-transition-id="502"]').click()
+            page.wait_for_selector("#lct-retry")
+            page.once("dialog", lambda dialog: dialog.dismiss())
+            page.locator("#lct-retry").click()
+            page.wait_for_timeout(100)
+            assert not any("/retry-review" in path for path in server.mutation_paths)
             browser.close()
     finally:
         server.shutdown()

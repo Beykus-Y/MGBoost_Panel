@@ -72,61 +72,83 @@ let legacyTransitionsUi = null;
 let marzbanUsersUi = null;
 let ticketsUi = null;
 let starsUi = null;
-const MARZBAN_USERS_UI_READY = import(`../technical/marzban_users.js${_MODULE_VERSION}`).then(module=>{
+function showModuleUnavailable(pageName,label){
+  const page=document.getElementById(`page-${pageName}`);
+  if(!page||page.querySelector('.module-unavailable'))return;
+  const notice=document.createElement('div');
+  notice.className='notice notice-amber module-unavailable';
+  notice.textContent=`Модуль недоступен: ${label}. Обновите страницу или повторите позже.`;
+  page.prepend(notice);
+}
+function trackModule(label,pageName,promise){
+  return promise.catch(error=>{
+    console.warn(`admin module unavailable: ${label}`,error);
+    showModuleUnavailable(pageName,label);
+    return null;
+  });
+}
+function withModule(ready,label,pageName,callback){
+  return ready.then(ui=>{
+    if(!ui){showModuleUnavailable(pageName,label);return;}
+    return callback(ui);
+  });
+}
+const MARZBAN_USERS_UI_READY = trackModule('Пользователи Marzban','users',import(`../technical/marzban_users.js${_MODULE_VERSION}`).then(module=>{
   marzbanUsersUi=module.createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxyApi,promptReason,
     getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters});
   return marzbanUsersUi;
-});
-const TICKETS_UI_READY = import(`../support/tickets.js${_MODULE_VERSION}`).then(module=>{
+}));
+const TICKETS_UI_READY = trackModule('Тикеты','tickets',import(`../support/tickets.js${_MODULE_VERSION}`).then(module=>{
   ticketsUi=module.createTicketsUi({html,renderHtml,closeModal,proxyApi});
   return ticketsUi;
-});
-const STARS_UI_READY = import(`../payments/stars_legacy.js${_MODULE_VERSION}`).then(module=>{
+}));
+const STARS_UI_READY = trackModule('Telegram Stars','stars',import(`../payments/stars_legacy.js${_MODULE_VERSION}`).then(module=>{
   starsUi=module.createStarsLegacyUi({html,renderHtml,promptReason,proxyApi});
   return starsUi;
-});
-const ACCOUNT_UI_READY = import(`../accounts.js${_MODULE_VERSION}`).then(module=>{
+}));
+const ACCOUNT_UI_READY = trackModule('Аккаунты','accounts',import(`../accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast});
   return accountUi;
-});
+}));
 // PH7-16 Wave 3: the Operations queue reuses accountUi's own `payments`
 // instance (openLegacyTransitionById) instead of a second createPayments()
 // -- one transition-modal implementation, two entry points.
-const LEGACY_TRANSITIONS_READY = ACCOUNT_UI_READY.then(async readyAccountUi=>{
+const LEGACY_TRANSITIONS_READY = trackModule('Легаси-переходы','legacy-transitions',ACCOUNT_UI_READY.then(async readyAccountUi=>{
+  if(!readyAccountUi)throw new Error('Accounts module dependency unavailable');
   const coreModule=await import(`../core.js${_MODULE_VERSION}`);
   const module=await import(`../legacy_transitions.js${_MODULE_VERSION}`);
   legacyTransitionsUi=module.createLegacyTransitionsQueue({html,renderHtml,toast,adminFetch,getJson,
     formatTimestamp:coreModule.formatTimestamp,humanLabel:coreModule.humanLabel,
     openLegacyTransitionById:readyAccountUi.payments.openLegacyTransitionById,openAccount:readyAccountUi.openAccount});
   return legacyTransitionsUi;
-});
-const ROUTING_UI_READY = import(`../routing.js${_MODULE_VERSION}`).then(module=>{
+}));
+const ROUTING_UI_READY = trackModule('Роутинг хостов','routing',import(`../routing.js${_MODULE_VERSION}`).then(module=>{
   routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
   return routingUi;
-});
-const NODES_UI_READY = import(`../operations/nodes.js${_MODULE_VERSION}`).then(module=>{
+}));
+const NODES_UI_READY = trackModule('Ноды','nodes',import(`../operations/nodes.js${_MODULE_VERSION}`).then(module=>{
   nodesUi=module.createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers});
   return nodesUi;
-});
-const OPS_HEALTH_READY = (async()=>{
+}));
+const OPS_HEALTH_READY = trackModule('Здоровье','ops-health',(async()=>{
   const opsCore=await import(`../core.js${_MODULE_VERSION}`);
   const module=await import(`../ops_health.js${_MODULE_VERSION}`);
   opsHealthUi=module.createOpsHealth({html,renderHtml,toast,getJson,
     formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration});
   return opsHealthUi;
-})();
+})());
 let configsUi=null;
-const CONFIGS_UI_READY = import(`../technical/configs.js${_MODULE_VERSION}`).then(module=>{
+const CONFIGS_UI_READY = trackModule('Доп. конфиги','configs',import(`../technical/configs.js${_MODULE_VERSION}`).then(module=>{
   configsUi=module.createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInbounds,setAllInbounds});
   return configsUi;
-});
+}));
 let settingsUi=null;
-const SETTINGS_UI_READY = import(`../settings.js${_MODULE_VERSION}`).then(module=>{
+const SETTINGS_UI_READY = trackModule('Настройки','settings',import(`../settings.js${_MODULE_VERSION}`).then(module=>{
   settingsUi=module.createSettingsUi({html,renderHtml,toast,proxyApi});
   return settingsUi;
-});
+}));
 let promoOps=null;
-const PROMO_OPS_READY = (async()=>{
+const PROMO_OPS_READY = trackModule('Промокоды','accounts',(async()=>{
   const promoCore=await import(`../core.js${_MODULE_VERSION}`);
   const {createModals}=await import(`../modals.js${_MODULE_VERSION}`);
   const module=await import(`../promo_ops.js${_MODULE_VERSION}`);
@@ -134,7 +156,7 @@ const PROMO_OPS_READY = (async()=>{
   promoOps=module.createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
     formatTimestamp:promoCore.formatTimestamp,humanLabel:promoCore.humanLabel,adminFetch});
   return promoOps;
-})();
+})());
 window.__PROMO_OPS_READY=PROMO_OPS_READY;
 
 const TRAFFIC_PERIODS = {
@@ -221,17 +243,17 @@ function showPage(name){
   page.classList.add('active');
   const nav=document.querySelector(`[data-page="${name}"]`);
   if(nav)nav.classList.add('active');
-  if(name==='accounts')accountUi?.loadAccounts();
-  if(name==='migration')accountUi?.loadMigration();
-  if(name==='users')MARZBAN_USERS_UI_READY.then(()=>marzbanUsersUi&&marzbanUsersUi.loadUsers());
-  if(name==='nodes')NODES_UI_READY.then(()=>nodesUi&&nodesUi.loadNodes());
-  if(name==='ops-health')OPS_HEALTH_READY.then(()=>opsHealthUi&&opsHealthUi.loadOpsHealth());
-  if(name==='legacy-transitions')LEGACY_TRANSITIONS_READY.then(()=>legacyTransitionsUi&&legacyTransitionsUi.loadQueue());
-  if(name==='configs')CONFIGS_UI_READY.then(()=>configsUi&&configsUi.loadConfigsPage());
-  if(name==='settings')SETTINGS_UI_READY.then(()=>settingsUi&&settingsUi.loadSettingsPage());
-  if(name==='tickets')TICKETS_UI_READY.then(()=>ticketsUi&&ticketsUi.loadTickets());
-  if(name==='stars')STARS_UI_READY.then(()=>{if(!starsUi)return;starsUi.loadStarsTariffs();starsUi.loadStarsSettings();starsUi.loadStarsPayments();starsUi.loadStarsOrphans();});
-  if(name==='routing')ROUTING_UI_READY.then(()=>routingUi&&routingUi.loadRouting());
+  if(name==='accounts')runAdminAction(withModule(ACCOUNT_UI_READY,'Аккаунты','accounts',ui=>ui.loadAccounts()));
+  if(name==='migration')runAdminAction(withModule(ACCOUNT_UI_READY,'Аккаунты','migration',ui=>ui.loadMigration()));
+  if(name==='users')runAdminAction(withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.loadUsers()));
+  if(name==='nodes')runAdminAction(withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.loadNodes()));
+  if(name==='ops-health')runAdminAction(withModule(OPS_HEALTH_READY,'Здоровье','ops-health',ui=>ui.loadOpsHealth()));
+  if(name==='legacy-transitions')runAdminAction(withModule(LEGACY_TRANSITIONS_READY,'Легаси-переходы','legacy-transitions',ui=>ui.loadQueue()));
+  if(name==='configs')runAdminAction(withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.loadConfigsPage()));
+  if(name==='settings')runAdminAction(withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.loadSettingsPage()));
+  if(name==='tickets')runAdminAction(withModule(TICKETS_UI_READY,'Тикеты','tickets',ui=>ui.loadTickets()));
+  if(name==='stars')runAdminAction(withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>{ui.loadStarsTariffs();ui.loadStarsSettings();ui.loadStarsPayments();ui.loadStarsOrphans();}));
+  if(name==='routing')runAdminAction(withModule(ROUTING_UI_READY,'Роутинг хостов','routing',ui=>ui.loadRouting()));
 }
 function switchTab(id,el){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
@@ -293,7 +315,12 @@ let allInbounds={};
 function getAllInbounds(){return allInbounds;}
 function setAllInbounds(list){allInbounds=list;}
 export async function bootstrap(){
-  await ACCOUNT_UI_READY;
+  const readyAccountUi=await ACCOUNT_UI_READY;
+  if(!readyAccountUi){
+    showModuleUnavailable('dashboard','Аккаунты');
+    showModuleUnavailable('accounts','Аккаунты');
+    return;
+  }
   loadDashboard();
   loadAccountsSafely();
   try{
@@ -336,50 +363,50 @@ document.addEventListener('click',event=>{
     case'show-page':showPage(el.dataset.page);break;
     case'switch-tab':switchTab(el.dataset.target,el);break;
     case'load-dashboard':work=loadDashboard();break;
-    case'load-nodes':work=nodesUi?.loadNodes();break;
-    case'open-create-user':work=marzbanUsersUi?.openCreateUser();break;
-    case'create-user':work=marzbanUsersUi?.createUser();break;
-    case'open-user':work=marzbanUsersUi?.openUser(username);break;
-    case'open-user-from-node':closeModal('node-modal');work=marzbanUsersUi?.openUser(username);break;
-    case'change-device-limit':work=marzbanUsersUi?.changeDeviceLimit(username,parseInteger(el.dataset.limit));break;
-    case'admin-remove-device':work=marzbanUsersUi?.adminRemoveDevice(parseInteger(el.dataset.deviceId),username);break;
-    case'delete-user':work=marzbanUsersUi?.deleteUser(username);break;
-    case'disable-user':work=marzbanUsersUi?.disableUser(username);break;
-    case'enable-user':work=marzbanUsersUi?.enableUser(username);break;
-    case'reset-traffic':work=marzbanUsersUi?.resetTraffic(username);break;
-    case'save-user':work=marzbanUsersUi?.saveUser(username);break;
-    case'open-node':work=nodesUi?.openNode(nodeId);break;
-    case'open-node-traffic':work=nodesUi?.openNodeTraffic(nodeId);break;
-    case'open-node-settings':nodesUi?.openNodeSettings(nodeId);break;
-    case'reconnect-node':event.stopPropagation();work=nodesUi?.reconnectNode(nodeId);break;
-    case'save-node-settings':work=nodesUi?.saveNodeSettings(nodeId);break;
-    case'add-quiet-hour':nodesUi?.addQuietHour();break;
-    case'remove-quiet-hour':nodesUi?.removeQuietHour(parseInteger(el.dataset.quietIndex));break;
+    case'load-nodes':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.loadNodes());break;
+    case'open-create-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.openCreateUser());break;
+    case'create-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.createUser());break;
+    case'open-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.openUser(username));break;
+    case'open-user-from-node':closeModal('node-modal');work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.openUser(username));break;
+    case'change-device-limit':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.changeDeviceLimit(username,parseInteger(el.dataset.limit)));break;
+    case'admin-remove-device':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.adminRemoveDevice(parseInteger(el.dataset.deviceId),username));break;
+    case'delete-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.deleteUser(username));break;
+    case'disable-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.disableUser(username));break;
+    case'enable-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.enableUser(username));break;
+    case'reset-traffic':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.resetTraffic(username));break;
+    case'save-user':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.saveUser(username));break;
+    case'open-node':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.openNode(nodeId));break;
+    case'open-node-traffic':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.openNodeTraffic(nodeId));break;
+    case'open-node-settings':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.openNodeSettings(nodeId));break;
+    case'reconnect-node':event.stopPropagation();work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.reconnectNode(nodeId));break;
+    case'save-node-settings':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.saveNodeSettings(nodeId));break;
+    case'add-quiet-hour':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.addQuietHour());break;
+    case'remove-quiet-hour':work=withModule(NODES_UI_READY,'Ноды','nodes',ui=>ui.removeQuietHour(parseInteger(el.dataset.quietIndex)));break;
     case'toggle-nf-group':
       if(event.target.closest('input'))return;
-      marzbanUsersUi?.toggleNfGroup(el.dataset.target);break;
-    case'add-global-config':work=configsUi?.addGlobalConfig();break;
-    case'toggle-config':work=configsUi?.toggleConfig(parseInteger(el.dataset.configIndex));break;
-    case'delete-config':work=configsUi?.deleteConfig(parseInteger(el.dataset.configIndex));break;
-    case'add-per-user-config':work=configsUi?.addPerUserConfig();break;
-    case'delete-per-user-config':work=configsUi?.deletePerUserConfig(username,parseInteger(el.dataset.configIndex));break;
-    case'add-inbound-extra':work=configsUi?.addInboundExtra();break;
-    case'delete-inbound-extra':work=configsUi?.deleteInboundExtra(el.dataset.inboundTag);break;
-    case'format-inbound-extra':configsUi?.formatInboundExtraJson(el.dataset.inboundTag);break;
-    case'update-inbound-extra':work=configsUi?.updateInboundExtra(el.dataset.inboundTag);break;
-    case'save-settings':work=settingsUi?.saveSettings();break;
-    case'save-bot-settings':work=settingsUi?.saveBotSettings();break;
-    case'restart-bot':work=settingsUi?.restartBot();break;
-    case'save-support-settings':work=settingsUi?.saveSupportSettings();break;
-    case'open-ticket':work=ticketsUi?.openTicket(numericId);break;
-    case'send-ticket-reply':work=ticketsUi?.sendTicketReply();break;
-    case'close-ticket':work=ticketsUi?.closeTicket();break;
-    case'add-stars-tariff':work=starsUi?.addStarsTariff();break;
-    case'delete-stars-tariff':work=starsUi?.deleteStarsTariff(numericId);break;
-    case'stars-payment-action':work=starsUi?.starsPaymentAction(numericId,el.dataset.paymentAction);break;
-    case'stars-orphan-action':work=starsUi?.starsOrphanAction(numericId,el.dataset.paymentAction);break;
-    case'routing-host-op':if(routingUi)routingUi.handleRoutingClick(el);break;
-    case'open-legacy-transition':if(legacyTransitionsUi)legacyTransitionsUi.handleQueueClick(el);break;
+      work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.toggleNfGroup(el.dataset.target));break;
+    case'add-global-config':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.addGlobalConfig());break;
+    case'toggle-config':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.toggleConfig(parseInteger(el.dataset.configIndex)));break;
+    case'delete-config':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.deleteConfig(parseInteger(el.dataset.configIndex)));break;
+    case'add-per-user-config':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.addPerUserConfig());break;
+    case'delete-per-user-config':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.deletePerUserConfig(username,parseInteger(el.dataset.configIndex)));break;
+    case'add-inbound-extra':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.addInboundExtra());break;
+    case'delete-inbound-extra':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.deleteInboundExtra(el.dataset.inboundTag));break;
+    case'format-inbound-extra':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.formatInboundExtraJson(el.dataset.inboundTag));break;
+    case'update-inbound-extra':work=withModule(CONFIGS_UI_READY,'Доп. конфиги','configs',ui=>ui.updateInboundExtra(el.dataset.inboundTag));break;
+    case'save-settings':work=withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.saveSettings());break;
+    case'save-bot-settings':work=withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.saveBotSettings());break;
+    case'restart-bot':work=withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.restartBot());break;
+    case'save-support-settings':work=withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.saveSupportSettings());break;
+    case'open-ticket':work=withModule(TICKETS_UI_READY,'Тикеты','tickets',ui=>ui.openTicket(numericId));break;
+    case'send-ticket-reply':work=withModule(TICKETS_UI_READY,'Тикеты','tickets',ui=>ui.sendTicketReply());break;
+    case'close-ticket':work=withModule(TICKETS_UI_READY,'Тикеты','tickets',ui=>ui.closeTicket());break;
+    case'add-stars-tariff':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.addStarsTariff());break;
+    case'delete-stars-tariff':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.deleteStarsTariff(numericId));break;
+    case'stars-payment-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsPaymentAction(numericId,el.dataset.paymentAction));break;
+    case'stars-orphan-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsOrphanAction(numericId,el.dataset.paymentAction));break;
+    case'routing-host-op':work=withModule(ROUTING_UI_READY,'Роутинг хостов','routing',ui=>ui.handleRoutingClick(el));break;
+    case'open-legacy-transition':work=withModule(LEGACY_TRANSITIONS_READY,'Легаси-переходы','legacy-transitions',ui=>ui.handleQueueClick(el));break;
     case'close-modal':closeModal(el.dataset.target);break;
     // PH7-16 Wave 1: accounts.js used to register its own separate
     // `document.addEventListener('click', ...)` for every action below
@@ -394,7 +421,7 @@ document.addEventListener('click',event=>{
     // routing-host-op above. handleAccountClick does its own promise
     // catch/toast internally (matching its original behavior exactly), so
     // this default case does not also route through runAdminAction below.
-    default:accountUi?.handleAccountClick(el,event);return;
+    default:runAdminAction(withModule(ACCOUNT_UI_READY,'Аккаунты','accounts',ui=>ui.handleAccountClick(el,event)));return;
   }
   if(work!==undefined)runAdminAction(work);
 });
@@ -405,14 +432,14 @@ document.addEventListener('change',event=>{
   let work;
   switch(el.dataset.changeAction){
     case'traffic-period':work=onTrafficPeriodChange();break;
-    case'load-tickets':work=ticketsUi?.loadTickets(el.value||undefined);break;
-    case'load-stars-payments':work=starsUi?.loadStarsPayments(el.value||undefined);break;
-    case'save-stars-settings':work=starsUi?.saveStarsSettings();break;
-    case'toggle-bot-proxy':settingsUi?.toggleBotProxy();break;
-    case'nf-all-toggle':marzbanUsersUi?.onNfAllToggle();break;
-    case'nf-group-all-toggle':marzbanUsersUi?.onNfGroupAllToggle(el);break;
-    case'nf-cfg-toggle':marzbanUsersUi?.onNfCfgToggle();break;
-    case'toggle-stars-tariff':work=starsUi?.toggleStarsTariff(parseInteger(el.dataset.tariffId),el.checked);break;
+    case'load-tickets':work=withModule(TICKETS_UI_READY,'Тикеты','tickets',ui=>ui.loadTickets(el.value||undefined));break;
+    case'load-stars-payments':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.loadStarsPayments(el.value||undefined));break;
+    case'save-stars-settings':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.saveStarsSettings());break;
+    case'toggle-bot-proxy':work=withModule(SETTINGS_UI_READY,'Настройки','settings',ui=>ui.toggleBotProxy());break;
+    case'nf-all-toggle':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.onNfAllToggle());break;
+    case'nf-group-all-toggle':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.onNfGroupAllToggle(el));break;
+    case'nf-cfg-toggle':work=withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.onNfCfgToggle());break;
+    case'toggle-stars-tariff':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.toggleStarsTariff(parseInteger(el.dataset.tariffId),el.checked));break;
     default:return;
   }
   if(work!==undefined)runAdminAction(work);
@@ -420,7 +447,7 @@ document.addEventListener('change',event=>{
 
 document.addEventListener('input',event=>{
   const el=event.target.closest('[data-input-action]');
-  if(el?.dataset.inputAction==='filter-users')marzbanUsersUi?.filterUsers();
+  if(el?.dataset.inputAction==='filter-users')runAdminAction(withModule(MARZBAN_USERS_UI_READY,'Пользователи Marzban','users',ui=>ui.filterUsers()));
 });
 
 // PH7-16 Wave 0B: the app-init trigger (restoreAdminSession()) moved to

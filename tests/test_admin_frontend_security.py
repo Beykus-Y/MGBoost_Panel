@@ -110,7 +110,14 @@ def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     html_source = ADMIN_HTML.read_text(encoding="utf-8")
     js_source = ROUTER_JS.read_text(encoding="utf-8")
     shell_source = _admin_shell_source()
-    module_source = "\n".join(path.read_text(encoding="utf-8") for path in ADMIN_MODULES.glob("*.js"))
+    # App shell files are already included through shell_source/js_source;
+    # recursively include every remaining domain module, including nested
+    # technical/payments/support/operations directories.
+    module_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in ADMIN_MODULES.rglob("*.js")
+        if ADMIN_APP not in path.parents
+    )
     combined = html_source + "\n" + shell_source + "\n" + js_source + "\n" + module_source
 
     assert not re.search(r"\son[a-z]+\s*=", combined, re.IGNORECASE)
@@ -153,8 +160,26 @@ def test_account_human_surfaces_use_reusable_russian_labels_and_separated_techni
     assert "slot_generation_id=" not in account_source
     assert "technicalField('Slot generation ID'" in account_source
     assert "technicalField('Child intent ID'" in account_source
+    assert "row.hwid_verifier" not in account_source
+    assert "row.uuid_verifier" not in account_source
+    assert "technicalField('HWID verifier'" not in account_source
+    assert "technicalField('Credential verifier'" not in account_source
     assert "<details class=\"technical-generation\"" in account_source
     assert "Лимит устройств" in account_source
+
+
+def test_canonical_applied_stars_payment_is_refundable_and_humanized():
+    source = (ADMIN_MODULES / "payments" / "stars_legacy.js").read_text(encoding="utf-8")
+    assert "canonical_applied:'#6f6'" in source
+    assert "canonical_applied:'Применён к аккаунту'" in source
+    refundable = re.search(r"const _STARS_REFUNDABLE=new Set\(\[([^]]+)", source)
+    assert refundable and "'canonical_applied'" in refundable.group(1)
+
+
+def test_transition_reason_prompt_cancel_and_invalid_input_return_before_request():
+    source = (ADMIN_MODULES / "payments.js").read_text(encoding="utf-8")
+    assert source.count("if(prompted===null)return;") == 2
+    assert source.count("if(reason.length<8||reason.length>300)") == 2
 
 
 def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
@@ -207,24 +232,14 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
     )
     js_source = re.sub(
-        r"const MARZBAN_USERS_UI_READY = import\(`\.\./technical/marzban_users\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const TICKETS_UI_READY = import\(`\.\./support/tickets\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const STARS_UI_READY = import\(`\.\./payments/stars_legacy\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const ACCOUNT_UI_READY = import\(`\.\./accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const ROUTING_UI_READY = import\(`\.\./routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const NODES_UI_READY = import\(`\.\./operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const OPS_HEALTH_READY = \(async\(\)=>\{.*?\n\}\)\(\);\n"
-        r"let configsUi=null;\n"
-        r"const CONFIGS_UI_READY = import\(`\.\./technical/configs\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"let settingsUi=null;\n"
-        r"const SETTINGS_UI_READY = import\(`\.\./settings\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
-        "const ACCOUNT_UI_READY=Promise.resolve(null);",
-        js_source,
-        flags=re.DOTALL,
-    )
-    js_source = re.sub(
-        r"let promoOps=null;\nconst PROMO_OPS_READY = \(async\(\)=>\{.*?\n\}\)\(\);\nwindow\.__PROMO_OPS_READY=PROMO_OPS_READY;",
-        "window.__PROMO_OPS_READY=Promise.resolve(null);",
+        r"let marzbanUsersUi = null;.*?window\.__PROMO_OPS_READY=PROMO_OPS_READY;",
+        """let marzbanUsersUi=null,ticketsUi=null,starsUi=null,configsUi=null,settingsUi=null,promoOps=null;
+const ACCOUNT_UI_READY=Promise.resolve(null),MARZBAN_USERS_UI_READY=Promise.resolve(null),
+TICKETS_UI_READY=Promise.resolve(null),STARS_UI_READY=Promise.resolve(null),
+LEGACY_TRANSITIONS_READY=Promise.resolve(null),ROUTING_UI_READY=Promise.resolve(null),
+NODES_UI_READY=Promise.resolve(null),OPS_HEALTH_READY=Promise.resolve(null),
+CONFIGS_UI_READY=Promise.resolve(null),SETTINGS_UI_READY=Promise.resolve(null),PROMO_OPS_READY=Promise.resolve(null);
+window.__PROMO_OPS_READY=PROMO_OPS_READY;""",
         js_source,
         flags=re.DOTALL,
     )

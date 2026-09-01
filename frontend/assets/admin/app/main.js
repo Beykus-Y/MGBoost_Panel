@@ -22,9 +22,27 @@
 // `Cache-Control: public, max-age=3600` on JS assets.
 const MODULE_VERSION = new URL(import.meta.url).search;
 
-await import(`./kernel.js${MODULE_VERSION}`);
-const {onAuthenticated, restoreAdminSession} = await import(`./auth.js${MODULE_VERSION}`);
-const {bootstrap} = await import(`./router.js${MODULE_VERSION}`);
+function showStartupFailure(){
+  const loginError=document.getElementById('login-err');
+  if(loginError){loginError.textContent='Модуль администрирования недоступен. Обновите страницу или повторите позже.';loginError.style.display='block';}
+  const app=document.getElementById('app');
+  if(app){
+    app.style.display='flex';
+    const main=document.getElementById('main');
+    if(main){const notice=document.createElement('div');notice.className='notice notice-amber module-unavailable';notice.textContent='Модуль администрирования недоступен. Обновите страницу или повторите позже.';main.prepend(notice);}
+  }
+}
 
-onAuthenticated(bootstrap);
-restoreAdminSession();
+try{
+  await import(`./kernel.js${MODULE_VERSION}`);
+  const {onAuthenticated, restoreAdminSession} = await import(`./auth.js${MODULE_VERSION}`);
+  const {bootstrap} = await import(`./router.js${MODULE_VERSION}`);
+  onAuthenticated(async()=>{
+    try{await bootstrap();}
+    catch(error){console.warn('admin bootstrap unavailable',error);showStartupFailure();}
+  });
+  await restoreAdminSession();
+}catch(error){
+  console.warn('admin startup unavailable',error);
+  showStartupFailure();
+}

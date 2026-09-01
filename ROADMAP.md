@@ -3220,7 +3220,13 @@ implementing agent may pick unilaterally, per this roadmap's own
 governance rule.
 **Accept/tests:** not defined until the owner decision above is made.
 
-## [x] PH7-16 — Admin v2 / canonical frontend cutover — production-deployed (implemented 2026-09-01)
+## [x] PH7-16 — Admin v2 / canonical frontend cutover — implemented locally, reviewed/remediated; deployment pending (2026-09-01)
+
+**Status split:** implementation is complete in local `main`; independent
+review found integration issues and the same local review session remediated
+them. Production deployment is **not** claimed: no push/deploy was performed,
+and rollout evidence must be recorded separately before changing the deployed
+status.
 
 **Added:** 2026-09-01 (documentation reconciliation pass), tracking a real
 architectural debt confirmed by production read-only inspection: see
@@ -3249,8 +3255,8 @@ re-opened by an implementing agent without a new, explicit owner decision;
 this item's scope is cutover/reorganization within that existing
 constraint, not a technology choice.
 
-**Implementation (2026-09-01, Waves 0A through 6, all independently
-deployed and regression-gated):** an owner-reviewed corrective plan pass
+**Implementation (2026-09-01, Waves 0A through 6, committed as independent
+local checkpoints and regression-gated):** an owner-reviewed corrective plan pass
 resolved the four open gates below as explicit directives before any code
 was written (git topology re-verified with no real divergence; a false
 "no WL consumption data" claim in the original plan retracted after
@@ -3305,6 +3311,12 @@ monolithic screen code out of `admin.js`" half of PH7-12's "Remaining
 before Wave A `[x]`" note (see PH7-12; its other remaining item, an
 owner-performed authenticated click-through, is independent of this and
 stays open).
+**Independent final review/remediation (2026-09-01, local only):** corrected
+the privileged raw-user composite Save boundary, `canonical_applied` Stars
+refund reachability, controlled dynamic-import failures, explicit queue
+truncation, P0 prompt cancellation, recursive frontend source auditing and
+the Admin v2 prohibition on rendering raw HWID/credential verifiers. This is
+review/remediation evidence, not production rollout evidence.
 **Accept/tests:** not defined — this entry exists to make the debt visible
 and trackable, not to authorize implementation.
 

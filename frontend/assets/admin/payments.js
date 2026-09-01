@@ -180,7 +180,10 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
         <details><summary>Audit/history</summary>${(transition.events||[]).map(event=>html`<div class="list-row"><div><strong>${humanLabel(event.event_type)}</strong><div class="cell-sub">${formatTimestamp(event.created_at)} · ${event.reason}</div></div></div>`)}</details>`);
       modal.el.querySelector('#lct-confirm')?.addEventListener('click',async()=>renderTransition(await request(`/admin/legacy-transitions/${transition.id}/confirm`)));
       modal.el.querySelector('#lct-cancel')?.addEventListener('click',async()=>{
-        const reason=window.prompt('Причина отмены (8..300 символов)')||'';
+        const prompted=window.prompt('Причина отмены (8..300 символов)');
+        if(prompted===null)return;
+        const reason=prompted.trim();
+        if(reason.length<8||reason.length>300){toast('Причина должна содержать 8–300 символов','err');return;}
         renderTransition(await request(`/admin/legacy-transitions/${transition.id}/cancel`,{reason}));
       });
       modal.el.querySelector('#lct-select')?.addEventListener('click',async()=>{
@@ -189,7 +192,10 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
         renderTransition(await request(`/admin/legacy-transitions/${transition.id}/select-devices`,{slot_generation_ids:ids,reason}));
       });
       modal.el.querySelector('#lct-retry')?.addEventListener('click',async()=>{
-        const reason=window.prompt('Что проверено/исправлено (8..300 символов)')||'';
+        const prompted=window.prompt('Что проверено/исправлено (8..300 символов)');
+        if(prompted===null)return;
+        const reason=prompted.trim();
+        if(reason.length<8||reason.length>300){toast('Причина должна содержать 8–300 символов','err');return;}
         renderTransition(await request(`/admin/legacy-transitions/${transition.id}/retry-review`,{reason}));
       });
     };
