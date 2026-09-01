@@ -204,7 +204,9 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
     )
     js_source = re.sub(
         r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
+        r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const NODES_UI_READY = import\(`\./admin/operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const OPS_HEALTH_READY = \(async\(\)=>\{.*?\n\}\)\(\);",
         "const ACCOUNT_UI_READY=Promise.resolve(null);",
         js_source,
         flags=re.DOTALL,

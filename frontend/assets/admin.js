@@ -28,14 +28,25 @@ const {doLogin,doLogout} = await import(`./admin/app/auth.js${_MODULE_VERSION}`)
 
 let allUsers = [];
 let allNodes = [];
+// PH7-16 Wave 2: admin/operations/nodes.js needs the same `allUsers`/
+// `allNodes` caches the legacy Users screen and Dashboard already read
+// and write here -- rather than give it its own independently-cached
+// copy (the exact class of drift risk Wave 1 closed for getJson), it
+// receives explicit getter/setter access to this file's single source of
+// truth for both.
+function getAllUsers(){return allUsers;}
+function setAllUsers(list){allUsers=list;}
+function getAllNodes(){return allNodes;}
+function setAllNodes(list){allNodes=list;}
 let nodeFilters = {};
-let nodeSettings = {};
 let dragIdx = null;
 let perUserConfigs = {};
 let userDeviceCounts = {};
 let inboundClientExtras = {};
 let accountUi = null;
 let routingUi = null;
+let nodesUi = null;
+let opsHealthUi = null;
 const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast});
   return accountUi;
@@ -44,6 +55,17 @@ const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(mod
   routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
   return routingUi;
 });
+const NODES_UI_READY = import(`./admin/operations/nodes.js${_MODULE_VERSION}`).then(module=>{
+  nodesUi=module.createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers});
+  return nodesUi;
+});
+const OPS_HEALTH_READY = (async()=>{
+  const opsCore=await import(`./admin/core.js${_MODULE_VERSION}`);
+  const module=await import(`./admin/ops_health.js${_MODULE_VERSION}`);
+  opsHealthUi=module.createOpsHealth({html,renderHtml,toast,getJson,
+    formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration});
+  return opsHealthUi;
+})();
 let promoOps=null;
 const PROMO_OPS_READY = (async()=>{
   const promoCore=await import(`./admin/core.js${_MODULE_VERSION}`);
@@ -83,55 +105,6 @@ function fmtGb(value){
   const n=Number(value);
   if(!Number.isFinite(n))return'—';
   return `${n.toFixed(n%1===0?0:1)} GB`;
-}
-function nodeKey(id){return id===null||id===undefined||id===''?'null':String(id)}
-function getNodeSetting(id){return nodeSettings[nodeKey(id)]||{currency:'USD',importance:'normal',can_remove:true}}
-function importanceLabel(v){return{normal:'обычная',core:'важная',backup:'backup',test:'test',deprecated:'к выводу'}[v]||'обычная'}
-function importanceClass(v){return{core:'badge-red',backup:'badge-blue',test:'badge-gray',deprecated:'badge-amber',normal:'badge-green'}[v]||'badge-green'}
-function trafficCostLabel(setting,totalBytes){
-  const price=Number(setting.traffic_price_per_tb);
-  if(!Number.isFinite(price)||price<=0)return'—';
-  const gb=(totalBytes||0)/1073741824;
-  const included=Number(setting.traffic_included_gb)||0;
-  const billable=Math.max(0,gb-included);
-  const cost=billable/1024*price;
-  return `${fmtMoney(cost,setting.currency)} за период`;
-}
-function billingGroupKey(id,setting){
-  const group=(setting?.billing_group||'').trim();
-  return group||`node:${nodeKey(id)}`;
-}
-function billingGroupLabel(id,setting){
-  const group=(setting?.billing_group||'').trim();
-  return group||`Нода ${nodeKey(id)}`;
-}
-function buildBillingGroups(usages){
-  const groups={};
-  (usages||[]).forEach(u=>{
-    const s=getNodeSetting(u.node_id);
-    const key=billingGroupKey(u.node_id,s);
-    if(!groups[key])groups[key]={key,label:billingGroupLabel(u.node_id,s),total:0,nodes:[],setting:s};
-    groups[key].total+=(u.uplink||0)+(u.downlink||0);
-    groups[key].nodes.push(u.node_id);
-    const current=groups[key].setting||{};
-    groups[key].setting={
-      ...current,
-      ...s,
-      traffic_included_gb:current.traffic_included_gb??s.traffic_included_gb,
-      traffic_price_per_tb:current.traffic_price_per_tb??s.traffic_price_per_tb,
-      currency:current.currency||s.currency||'USD',
-    };
-  });
-  return groups;
-}
-function groupTrafficCostLabel(id,totalBytes,groups){
-  const s=getNodeSetting(id);
-  const key=billingGroupKey(id,s);
-  const group=groups?.[key];
-  if(!group)return trafficCostLabel(s,totalBytes);
-  const label=trafficCostLabel(group.setting,group.total);
-  if(label==='—')return'—';
-  return group.nodes.length>1?`${label} · группа ${group.label}`:label;
 }
 function parseUTC(v){
   if(!v)return null;
@@ -228,7 +201,8 @@ function showPage(name){
   if(name==='accounts')accountUi?.loadAccounts();
   if(name==='migration')accountUi?.loadMigration();
   if(name==='users')loadUsers();
-  if(name==='nodes')loadNodes();
+  if(name==='nodes')NODES_UI_READY.then(()=>nodesUi&&nodesUi.loadNodes());
+  if(name==='ops-health')OPS_HEALTH_READY.then(()=>opsHealthUi&&opsHealthUi.loadOpsHealth());
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
   if(name==='tickets'){loadTickets();}
@@ -660,253 +634,6 @@ async function createUser(){
   else{const e=await r.json();toast(e.detail||'Ошибка','err');}
 }
 
-// NODES
-async function loadNodes(){
-  const period=getTrafficPeriod();
-  const [nodesR,usageR,settingsR]=await Promise.all([api('/nodes'),api('/nodes/usage'+period.query),proxyApi('/admin/node-settings')]);
-  const nodes=await nodesR.json();
-  allNodes=nodes;
-  const usage=await usageR.json();
-  nodeSettings=settingsR.ok?await settingsR.json():{};
-  const usageMap={};
-  (usage.usages||[]).forEach(u=>usageMap[u.node_id??'null']=u);
-  const billingGroups=buildBillingGroups(usage.usages||[]);
-
-  renderHtml(document.getElementById('nodes-grid'),html`${nodes.map(n=>{
-    const u=usageMap[n.id]||{uplink:0,downlink:0};
-    const total=(u.uplink||0)+(u.downlink||0);
-    const s=getNodeSetting(n.id);
-    return html`<div class="node-card clickable" data-action="open-node" data-node-id="${n.id}">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-        <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
-        <div class="node-name" style="flex:1">${n.name}</div>
-        <button data-action="reconnect-node" data-node-id="${n.id}" style="padding:2px 8px;font-size:11px">⟳</button>
-      </div>
-      <div class="node-addr">${n.address}:${n.port}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
-        <span class="badge ${importanceClass(s.importance)}">${importanceLabel(s.importance)}</span>
-        <span class="badge ${s.can_remove?'badge-green':'badge-red'}">${s.can_remove?'можно убрать':'не трогать'}</span>
-      </div>
-      <div class="node-stats">
-        <span>↑${fmt(u.uplink)}</span>
-        <span>↓${fmt(u.downlink)}</span>
-        <span style="color:var(--text3)">${n.xray_version||'?'}</span>
-      </div>
-      <div style="margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)">
-        <div style="display:flex;justify-content:space-between;gap:8px"><span>VPS / мес</span><b style="color:var(--text)">${fmtMoney(s.monthly_cost,s.currency)}</b></div>
-        <div style="display:flex;justify-content:space-between;gap:8px"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
-        ${(s.provider||s.location)?html`<div style="margin-top:6px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')}</div>`:''}
-        ${s.billing_group?html`<div style="margin-top:4px;color:var(--text3)">группа: ${s.billing_group}</div>`:''}
-        ${total&&s.traffic_price_per_tb?html`<div style="margin-top:4px;color:var(--text3)">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
-      </div>
-      <button data-action="open-node-settings" data-node-id="${n.id}" style="width:100%;margin-top:10px">Настроить</button>
-    </div>`;
-  })}`);
-
-  const tbody=document.getElementById('node-traffic-tbody');
-  renderHtml(tbody,html`${(usage.usages||[]).map(u=>{
-    const total=u.uplink+u.downlink;
-    const s=getNodeSetting(u.node_id);
-    return html`<tr class="clickable" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
-      <td>
-        <div style="font-weight:500">${u.node_name}</div>
-        <div style="font-size:11px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance)}</div>
-      </td>
-      <td>${fmt(u.uplink)}</td>
-      <td>${fmt(u.downlink)}</td>
-      <td style="font-weight:500">${fmt(total)}</td>
-      <td>${fmtMoney(s.monthly_cost,s.currency)}</td>
-      <td>${groupTrafficCostLabel(u.node_id,total,billingGroups)}</td>
-      <td><button data-action="open-node-settings" data-node-id="${u.node_id===null?'null':u.node_id}" style="padding:4px 10px;font-size:12px">Настроить</button></td>
-    </tr>`;
-  })}`);
-}
-
-async function reconnectNode(id){
-  const r=await api('/node/'+id+'/reconnect',{method:'POST'});
-  if(r.ok){toast('Reconnect послан');setTimeout(loadNodes,1000);}
-  else toast('Ошибка','err');
-}
-
-function option(value,current,label){
-  return html`<option value="${value}" ${value===current?html`selected`:''}>${label}</option>`;
-}
-
-function emptyToNumber(id){
-  const raw=document.getElementById(id).value.trim().replace(',','.');
-  if(raw==='')return null;
-  const n=Number(raw);
-  return Number.isFinite(n)&&n>=0?n:null;
-}
-
-function openNodeSettings(id){
-  const node=allNodes.find(n=>sameNodeId(n.id,id));
-  const s={currency:'USD',importance:'normal',can_remove:true,...getNodeSetting(id)};
-  document.getElementById('node-modal-title').textContent=node?`Настройки ноды · ${node.name}`:'Настройки ноды';
-  const body=document.getElementById('node-modal-body');
-  renderHtml(body,html`
-    <div style="font-size:13px;color:var(--text2);margin-bottom:1rem">
-      Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду.
-    </div>
-    <label>Отображаемое имя (в боте)</label>
-    <input type="text" id="node-display-name" maxlength="128" placeholder="${node?node.name:''}" value="${s.node_name||''}" style="margin-bottom:12px" />
-    <div class="form-row">
-      <div>
-        <label>Провайдер</label>
-        <input type="text" id="node-provider" maxlength="64" placeholder="Hetzner, Aeza..." value="${s.provider||''}" />
-      </div>
-      <div>
-        <label>Локация</label>
-        <input type="text" id="node-location" maxlength="64" placeholder="DE, NL, Estonia..." value="${s.location||''}" />
-      </div>
-    </div>
-    <label>Группа тарификации</label>
-    <input type="text" id="node-billing-group" maxlength="128" placeholder="например: Yandex Cloud / Москва" value="${s.billing_group||''}" />
-    <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px">
-      Если несколько нод в одной группе, цена доп. трафика и включённый лимит считаются по суммарному трафику группы.
-    </div>
-    <div class="form-row">
-      <div>
-        <label>Стоимость VPS / месяц</label>
-        <input type="number" id="node-monthly-cost" min="0" step="0.01" placeholder="например: 6.5" value="${s.monthly_cost??''}" />
-      </div>
-      <div>
-        <label>Валюта</label>
-        <input type="text" id="node-currency" maxlength="8" placeholder="USD" value="${s.currency||'USD'}" />
-      </div>
-    </div>
-    <div class="form-row">
-      <div>
-        <label>Включённый трафик, GB</label>
-        <input type="number" id="node-traffic-included" min="0" step="1" placeholder="пусто = неизвестно" value="${s.traffic_included_gb??''}" />
-      </div>
-      <div>
-        <label>Цена доп. трафика за TB</label>
-        <input type="number" id="node-traffic-price" min="0" step="0.01" placeholder="пусто = неизвестно" value="${s.traffic_price_per_tb??''}" />
-      </div>
-    </div>
-    <div class="form-row">
-      <div>
-        <label>Роль ноды</label>
-        <select id="node-importance">
-          ${option('normal',s.importance,'Обычная')}
-          ${option('core',s.importance,'Важная / core')}
-          ${option('backup',s.importance,'Backup')}
-          ${option('test',s.importance,'Тестовая')}
-          ${option('deprecated',s.importance,'К выводу')}
-        </select>
-      </div>
-      <div>
-        <label>Кандидат на удаление</label>
-        <select id="node-can-remove">
-          <option value="true" ${s.can_remove?html`selected`:''}>Можно убрать, если метрики слабые</option>
-          <option value="false" ${!s.can_remove?html`selected`:''}>Не трогать без ручного решения</option>
-        </select>
-      </div>
-    </div>
-    <label>Заметка</label>
-    <textarea id="node-note" maxlength="512" rows="4" placeholder="Например: дешёвая, плохой провайдер, оставить как резерв...">${s.note||''}</textarea>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem">
-      <div class="detail-item"><div class="detail-label">Marzban ID</div><div class="detail-value">${node?node.id:'—'}</div></div>
-      <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?node.address:s.node_address||'—'}</div></div>
-      <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?node.status:'—'}</div></div>
-    </div>
-    <div style="margin-top:1rem">
-      <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Тихие часы мониторинга (UTC)</div>
-      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Во время тихих часов алерты в Telegram не отправляются (для прерываемых ВМ).</div>
-      <div id="node-quiet-hours-list">${renderQuietHours(s.monitor_quiet_hours||[])}</div>
-      <button style="margin-top:6px;font-size:12px" data-action="add-quiet-hour">+ Добавить окно</button>
-    </div>
-    <div class="modal-footer">
-      <button data-action="close-modal" data-target="node-modal">Отмена</button>
-      <button class="primary" data-action="save-node-settings" data-node-id="${id===null?'null':id}">Сохранить</button>
-    </div>
-  `);
-  document.getElementById('node-modal').classList.add('open');
-}
-
-async function saveNodeSettings(id){
-  const node=allNodes.find(n=>sameNodeId(n.id,id));
-  const monthlyCost=emptyToNumber('node-monthly-cost');
-  const trafficIncluded=emptyToNumber('node-traffic-included');
-  const trafficPrice=emptyToNumber('node-traffic-price');
-  if(monthlyCost===null&&document.getElementById('node-monthly-cost').value.trim()!==''){toast('Некорректная цена VPS','err');return}
-  if(trafficIncluded===null&&document.getElementById('node-traffic-included').value.trim()!==''){toast('Некорректный включённый трафик','err');return}
-  if(trafficPrice===null&&document.getElementById('node-traffic-price').value.trim()!==''){toast('Некорректная цена трафика','err');return}
-
-  const payload={
-    node_id:id,
-    node_name:document.getElementById('node-display-name').value.trim()||(node?node.name:(getNodeSetting(id).node_name||'')),
-    node_address:node?node.address:(getNodeSetting(id).node_address||''),
-    billing_group:document.getElementById('node-billing-group').value.trim(),
-    provider:document.getElementById('node-provider').value.trim(),
-    location:document.getElementById('node-location').value.trim(),
-    monthly_cost:monthlyCost,
-    currency:(document.getElementById('node-currency').value.trim()||'USD').toUpperCase(),
-    traffic_included_gb:trafficIncluded,
-    traffic_price_per_tb:trafficPrice,
-    importance:document.getElementById('node-importance').value,
-    can_remove:document.getElementById('node-can-remove').value==='true',
-    note:document.getElementById('node-note').value.trim(),
-    monitor_quiet_hours:collectQuietHours(),
-  };
-  const r=await proxyApi('/admin/node-settings',{method:'POST',body:JSON.stringify(payload)});
-  if(!r.ok){const e=await r.json().catch(()=>({error:'Ошибка'}));toast(e.error||'Ошибка','err');return}
-  const saved=await r.json();
-  nodeSettings[nodeKey(id)]=saved;
-  toast('Настройки ноды сохранены');
-  closeModal('node-modal');
-  loadNodes();
-}
-
-function sameNodeId(a,b){
-  return (a===null&&b===null)||String(a)===String(b);
-}
-
-async function loadUsersUsageForNode(id,period){
-  try{
-    const r=await api('/users/usage'+period.query);
-    if(r.ok){
-      const data=await r.json();
-      const records=(data.usages||[]).filter(x=>sameNodeId(x.node_id,id));
-      if(records.some(x=>x.username)){
-        return records.map(x=>({username:x.username,traffic:x.used_traffic||0}));
-      }
-    }
-  }catch(e){console.warn('users usage endpoint fallback',e)}
-
-  if(!allUsers.length){const r=await api('/users?limit=500');allUsers=(await r.json()).users||[];}
-  return Promise.all(allUsers.map(u=>
-    api('/user/'+encodeURIComponent(u.username)+'/usage'+period.query).then(r=>r.json()).then(d=>{
-      const rec=(d.usages||[]).find(x=>sameNodeId(x.node_id,id));
-      return{username:u.username,traffic:rec?rec.used_traffic:0};
-    }).catch(()=>({username:u.username,traffic:0}))
-  ));
-}
-
-async function openNodeTraffic(id){
-  const period=getTrafficPeriod();
-  const node=allNodes.find(n=>sameNodeId(n.id,id));
-  const usage=(window._dashNodeUsages||[]).find(u=>sameNodeId(u.node_id,id));
-  const title=node?`${node.name} · ${node.address}`:(usage?usage.node_name:'Нода');
-  document.getElementById('node-modal-title').textContent=`${title} · ${period.label}`;
-  const body=document.getElementById('node-modal-body');
-  renderHtml(body,html`<div class="loading"><span class="spinner"></span>Собираю трафик по клиентам...</div>`);
-  document.getElementById('node-modal').classList.add('open');
-
-  const results=await loadUsersUsageForNode(id,period);
-  const sorted=results.filter(r=>r.traffic>0).sort((a,b)=>b.traffic-a.traffic);
-  if(!sorted.length){renderHtml(body,html`<p style="color:var(--text3);padding:1rem 0">Нет трафика через эту ноду за выбранный период</p>`);return}
-  renderHtml(body,html`<div class="table-wrap"><table>
-    <thead><tr><th>Пользователь</th><th style="text-align:right">Трафик</th></tr></thead>
-    <tbody>${sorted.map(r=>html`<tr class="clickable" data-action="open-user-from-node" data-username="${r.username}"><td>${r.username}</td><td style="text-align:right">${fmt(r.traffic)}</td></tr>`)}</tbody>
-  </table></div>`);
-}
-
-async function openNode(id){
-  return openNodeTraffic(id);
-}
-
 // GLOBAL CONFIGS
 async function loadGlobalConfigs(){
   const r=await proxyApi('/admin/configs');
@@ -1168,41 +895,6 @@ async function saveSettings(){
     status.style.color='';
     status.textContent='Ошибка сохранения';
   }
-}
-
-// QUIET HOURS
-function renderQuietHours(list){
-  if(!list||!list.length)return html`<div style="font-size:12px;color:var(--text3)">Не заданы</div>`;
-  return html`${list.map((w,i)=>html`
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-      <input type="time" value="${w.from}" style="width:100px" data-qh-from="${i}" />
-      <span style="font-size:12px;color:var(--text2)">—</span>
-      <input type="time" value="${w.to}" style="width:100px" data-qh-to="${i}" />
-      <button style="padding:2px 8px;font-size:12px" data-action="remove-quiet-hour" data-quiet-index="${i}">✕</button>
-    </div>`)}`;
-}
-function addQuietHour(){
-  const list=document.getElementById('node-quiet-hours-list');
-  const existing=collectQuietHours();
-  existing.push({from:'00:00',to:'01:00'});
-  renderHtml(list,renderQuietHours(existing));
-}
-function removeQuietHour(i){
-  const list=document.getElementById('node-quiet-hours-list');
-  const existing=collectQuietHours();
-  existing.splice(i,1);
-  renderHtml(list,renderQuietHours(existing));
-}
-function collectQuietHours(){
-  const froms=document.querySelectorAll('[data-qh-from]');
-  const tos=document.querySelectorAll('[data-qh-to]');
-  const result=[];
-  froms.forEach((el,i)=>{
-    const f=el.value.trim();
-    const t=tos[i]?tos[i].value.trim():'';
-    if(f&&t)result.push({from:f,to:t});
-  });
-  return result;
 }
 
 // BOT SETTINGS
@@ -1572,7 +1264,7 @@ document.addEventListener('click',event=>{
     case'show-page':showPage(el.dataset.page);break;
     case'switch-tab':switchTab(el.dataset.target,el);break;
     case'load-dashboard':work=loadDashboard();break;
-    case'load-nodes':work=loadNodes();break;
+    case'load-nodes':work=nodesUi?.loadNodes();break;
     case'open-create-user':work=openCreateUser();break;
     case'create-user':work=createUser();break;
     case'open-user':work=openUser(username);break;
@@ -1584,13 +1276,13 @@ document.addEventListener('click',event=>{
     case'enable-user':work=enableUser(username);break;
     case'reset-traffic':work=resetTraffic(username);break;
     case'save-user':work=saveUser(username);break;
-    case'open-node':work=openNode(nodeId);break;
-    case'open-node-traffic':work=openNodeTraffic(nodeId);break;
-    case'open-node-settings':openNodeSettings(nodeId);break;
-    case'reconnect-node':event.stopPropagation();work=reconnectNode(nodeId);break;
-    case'save-node-settings':work=saveNodeSettings(nodeId);break;
-    case'add-quiet-hour':addQuietHour();break;
-    case'remove-quiet-hour':removeQuietHour(parseInteger(el.dataset.quietIndex));break;
+    case'open-node':work=nodesUi?.openNode(nodeId);break;
+    case'open-node-traffic':work=nodesUi?.openNodeTraffic(nodeId);break;
+    case'open-node-settings':nodesUi?.openNodeSettings(nodeId);break;
+    case'reconnect-node':event.stopPropagation();work=nodesUi?.reconnectNode(nodeId);break;
+    case'save-node-settings':work=nodesUi?.saveNodeSettings(nodeId);break;
+    case'add-quiet-hour':nodesUi?.addQuietHour();break;
+    case'remove-quiet-hour':nodesUi?.removeQuietHour(parseInteger(el.dataset.quietIndex));break;
     case'toggle-nf-group':
       if(event.target.closest('input'))return;
       toggleNfGroup(el.dataset.target);break;

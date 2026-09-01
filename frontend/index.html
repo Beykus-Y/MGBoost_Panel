@@ -39,17 +39,21 @@
     <div class="nav-item" data-action="show-page" data-page="tickets">
       <span class="nav-icon">🎫</span> Тикеты
     </div>
+    <div class="nav-section">Операции</div>
+    <div class="nav-item" data-action="show-page" data-page="ops-health">
+      <span class="nav-icon">♥</span> Здоровье
+    </div>
     <div class="nav-item" data-action="show-page" data-page="nodes">
       <span class="nav-icon">◈</span> Ноды
+    </div>
+    <div class="nav-item" data-action="show-page" data-page="routing">
+      <span class="nav-icon">⇆</span> Роутинг хостов
     </div>
     <div class="nav-item" data-action="show-page" data-page="configs">
       <span class="nav-icon">⊕</span> Доп. конфиги
     </div>
     <div class="nav-item" data-action="show-page" data-page="stars">
       <span class="nav-icon">⭐️</span> Платежи / Stars
-    </div>
-    <div class="nav-item" data-action="show-page" data-page="routing">
-      <span class="nav-icon">⇆</span> Роутинг хостов
     </div>
     <div class="nav-section">Система / Техническое</div>
     <div class="nav-item" data-action="show-page" data-page="users">
@@ -162,6 +166,17 @@
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- OPERATIONS / HEALTH -->
+    <div class="page" id="page-ops-health">
+      <div class="page-header">
+        <span class="page-title">Операции / Здоровье</span>
+        <button data-action="show-page" data-page="ops-health">Обновить</button>
+      </div>
+      <div id="ops-health-box">
+        <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
     </div>
 
