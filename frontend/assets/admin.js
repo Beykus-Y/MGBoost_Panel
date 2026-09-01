@@ -23,7 +23,7 @@
 // same singleton kernel/api/auth instances main.js itself is using.
 const _MODULE_VERSION = new URL(import.meta.url).search;
 const {html,renderHtml,toast,closeModal} = await import(`./admin/app/kernel.js${_MODULE_VERSION}`);
-const {api,proxyApi,adminFetch} = await import(`./admin/app/api.js${_MODULE_VERSION}`);
+const {api,proxyApi,adminFetch,getJson} = await import(`./admin/app/api.js${_MODULE_VERSION}`);
 const {doLogin,doLogout} = await import(`./admin/app/auth.js${_MODULE_VERSION}`);
 
 let allUsers = [];
@@ -37,11 +37,11 @@ let inboundClientExtras = {};
 let accountUi = null;
 let routingUi = null;
 const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
-  accountUi=module.createAccountUi({adminFetch,html,renderHtml,showPage,toast});
+  accountUi=module.createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast});
   return accountUi;
 });
 const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(module=>{
-  routingUi=module.createRoutingUi({adminFetch,html,renderHtml,toast});
+  routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
   return routingUi;
 });
 let promoOps=null;
@@ -1616,7 +1616,20 @@ document.addEventListener('click',event=>{
     case'stars-orphan-action':work=starsOrphanAction(numericId,el.dataset.paymentAction);break;
     case'routing-host-op':if(routingUi)routingUi.handleRoutingClick(el);break;
     case'close-modal':closeModal(el.dataset.target);break;
-    default:return;
+    // PH7-16 Wave 1: accounts.js used to register its own separate
+    // `document.addEventListener('click', ...)` for every action below
+    // this line (open-account, account-tab, issue-account-credential,
+    // copy-issued-credential, copy-technical, new-manual-payment,
+    // legacy-commercial-transition, open-manual-payment, tg-rebind,
+    // open-create-account, open-promo-manager, open-admin-grant, plus the
+    // separate `[data-expiry-op]` attribute match) -- a second dispatch
+    // table firing independently on the same click event. It is now a
+    // plain function this single dispatcher falls back to for any action
+    // it doesn't itself recognize, same bridge pattern already used for
+    // routing-host-op above. handleAccountClick does its own promise
+    // catch/toast internally (matching its original behavior exactly), so
+    // this default case does not also route through runAdminAction below.
+    default:accountUi?.handleAccountClick(el,event);return;
   }
   if(work!==undefined)runAdminAction(work);
 });

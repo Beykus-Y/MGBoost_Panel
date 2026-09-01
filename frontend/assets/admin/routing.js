@@ -16,16 +16,9 @@ const CLASS_LABELS = {
   STANDARD: 'обычный хост',
 };
 
-export function createRoutingUi({ adminFetch, html, renderHtml, toast }) {
+export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast }) {
   let state = null;
   const { confirmFlow } = createModals({ html, renderHtml });
-
-  async function getJson(path, opts) {
-    const response = await adminFetch(path, opts);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'request failed');
-    return data;
-  }
 
   function classBadge(cls) {
     const css = cls === 'WL_EXACT' ? 'badge err' : cls === 'WL_SUSPECT' ? 'badge warn' : 'badge ok';
