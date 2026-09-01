@@ -34,18 +34,37 @@
 .ticket-empty-chat{color:var(--text-3);font-size:13px}
 .ticket-reply-status--ok{color:var(--success)}
 
-/* Telegram Stars (legacy revenue channel) */
-.stars-toggle{width:auto}
-.stars-toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-.stars-hint{font-size:12px;color:var(--text3)}
+/* Telegram Stars (legacy revenue channel) -- Admin V2: a financial
+   product/ledger surface, not a generic settings-form-plus-CRUD-table
+   screen. Tariffs read as pricing-plan cards; the toggle above them is
+   a real switch, not a bare checkbox in a labelled row. */
+.stars-toggle-card{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.stars-toggle-main{min-width:0}
+.stars-hint{font-size:12px;color:var(--text-3)}
 .stars-hint--tight{margin-top:8px}
+
+.tariff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.tariff-card{
+  display:flex;flex-direction:column;gap:8px;
+  background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);
+  padding:1rem 1.1rem;transition:border-color var(--dur-base) var(--ease),transform var(--dur-base) var(--ease);
+}
+.tariff-card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+.tariff-card--inactive{opacity:.55}
+.tariff-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.tariff-name{font:var(--text-body-strong);font-size:14px}
+.tariff-price{display:flex;align-items:baseline;gap:5px;font-variant-numeric:tabular-nums}
+.tariff-price-value{font:var(--text-metric);font-size:26px}
+.tariff-price-unit{font-size:16px}
+.tariff-duration{font:var(--text-meta);color:var(--text-3)}
+.tariff-delete-btn{align-self:flex-start;margin-top:4px;color:var(--text-3)}
+.tariff-add-card .card-title{margin-bottom:.85rem}
+
 .stars-add-row{margin-top:14px}
 .stars-add-btn{margin-top:10px}
-.stars-reason-cell{font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.stars-reason-cell{font-size:11px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .stars-actions-cell{white-space:nowrap}
-.stars-filter-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
-.stars-filter-select{width:220px}
-.stars-orphan-hint{font-size:12px;color:var(--text3);margin-bottom:10px}
+.stars-orphans-card .card-title{margin-bottom:.6rem}
 
 /* Priority-column-hiding for the Stars payments/orphans tables
    (redesign plan section 11/19.7: Payments/Stars get column-hiding
@@ -54,5 +73,6 @@
    shared .col-hide-mobile utility itself lives in components.css. */
 @media (max-width: 560px){
   .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
-  .stars-filter-select{width:100%}
+  .tariff-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .stars-toggle-card{flex-direction:column;align-items:flex-start}
 }

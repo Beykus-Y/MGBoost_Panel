@@ -45,21 +45,21 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
       renderHtml(modal.el.querySelector('.modal-body'),html`
         <div class="ops-actions">
           <button class="primary" data-promo-act="create">+ Создать промокод</button>
-          <button data-promo-act="refresh">Обновить</button>
+          <button class="quiet" data-promo-act="refresh">Обновить</button>
         </div>
-        <h4>Определения</h4>
-        ${definitions.length?html`<table><thead><tr>
+        <div class="section-heading promo-section-heading"><div><span class="eyebrow">Промокоды</span><h2>Определения</h2></div></div>
+        ${definitions.length?html`<div class="table-wrap"><table><thead><tr>
             <th>Код</th><th>Эффект</th><th>На польз.</th><th>Статус</th><th></th></tr></thead>
           <tbody>${definitions.map(d=>html`<tr>
             <td><strong>${d.code}</strong></td>
             <td>${effectTitle(d)} ${effectDetails(d)}</td>
             <td>${d.per_user_limit}</td>
             <td><span class="badge ${promoStatusBadgeClass(d.status)}">${d.status}</span></td>
-            <td>${d.status==='ACTIVE'?html`<button data-promo-act="disable" data-code="${d.code}">Отключить</button>`:html``}</td>
-          </tr>`)}</tbody></table>`
+            <td>${d.status==='ACTIVE'?html`<button class="quiet small" data-promo-act="disable" data-code="${d.code}">Отключить</button>`:html``}</td>
+          </tr>`)}</tbody></table></div>`
           :html`<div class="empty-state">Промокодов ещё нет</div>`}
-        <h4>Последние применения</h4>
-        ${redemptions.length?html`<table><thead><tr>
+        <div class="section-heading promo-section-heading"><div><span class="eyebrow">История</span><h2>Последние применения</h2></div></div>
+        ${redemptions.length?html`<div class="table-wrap"><table><thead><tr>
             <th>Код</th><th>Аккаунт</th><th>Статус</th><th>Кем</th><th>Когда</th></tr></thead>
           <tbody>${redemptions.map(r=>html`<tr>
             <td><strong>${r.promo_code}</strong>${r.trial_class?html`<div class="cell-sub">${r.trial_class}</div>`:html``}</td>
@@ -67,7 +67,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
             <td><span class="badge ${redemptionStatusBadgeClass(r.status)}">${r.status}</span></td>
             <td><div class="cell-sub">${r.actor_type}</div></td>
             <td>${formatTimestamp(r.created_at)}</td>
-          </tr>`)}</tbody></table>`
+          </tr>`)}</tbody></table></div>`
           :html`<div class="empty-state">Применений ещё нет</div>`}
         <div id="promo-error"></div>`);
       modal.el.querySelectorAll('[data-promo-act="create"]')

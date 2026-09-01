@@ -416,6 +416,14 @@ document.addEventListener('click',event=>{
     case'delete-stars-tariff':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.deleteStarsTariff(numericId));break;
     case'stars-payment-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsPaymentAction(numericId,el.dataset.paymentAction));break;
     case'stars-orphan-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsOrphanAction(numericId,el.dataset.paymentAction));break;
+    case'stars-status-filter':{
+      const status=el.dataset.status||'';
+      el.parentElement.querySelectorAll('.segment-chip').forEach(chip=>chip.classList.toggle('active',chip===el));
+      const hiddenSelect=document.getElementById('stars-payments-filter');
+      if(hiddenSelect)hiddenSelect.value=status;
+      work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.loadStarsPayments(status||undefined));
+      break;
+    }
     case'routing-host-op':work=withModule(ROUTING_UI_READY,'Роутинг хостов','routing',ui=>ui.handleRoutingClick(el));break;
     case'open-legacy-transition':work=withModule(LEGACY_TRANSITIONS_READY,'Легаси-переходы','legacy-transitions',ui=>ui.handleQueueClick(el));break;
     case'close-modal':closeModal(el.dataset.target);break;

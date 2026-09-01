@@ -4,16 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
-<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-recompose">
-<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-stars-recompose">
 </head>
 <body>
 
@@ -360,28 +360,19 @@
       </div>
 
       <div class="tab-content active" id="tab-stars-tariffs">
-        <div class="card">
-          <div class="card-title">Оплата через Stars</div>
-          <div class="stars-toggle-row">
-            <label class="label-inline">Включить оплату через Telegram Stars</label>
-            <input type="checkbox" id="stars-enabled" data-change-action="save-stars-settings" class="stars-toggle" />
+        <div class="card stars-toggle-card">
+          <div class="stars-toggle-main">
+            <div class="card-title">Оплата через Stars</div>
+            <div class="stars-hint">По умолчанию выключено. Пока не добавлен хотя бы один тариф, кнопка «⭐️ Продлить подписку» в боте недоступна пользователям.</div>
           </div>
-          <div class="stars-hint">
-            По умолчанию выключено. Пока не добавлен хотя бы один тариф, кнопка «⭐️ Продлить подписку» в боте недоступна пользователям.
-          </div>
+          <label class="switch"><input type="checkbox" id="stars-enabled" data-change-action="save-stars-settings" /><span class="switch-track"><span class="switch-thumb"></span></span></label>
         </div>
-        <div class="card">
-          <div class="card-title">Тарифы</div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Название</th><th>Дней</th><th>Цена, ⭐️</th><th>Активен</th><th></th></tr>
-              </thead>
-              <tbody id="stars-tariffs-tbody">
-                <tr><td colspan="5"><div class="loading"><span class="spinner"></span></div></td></tr>
-              </tbody>
-            </table>
-          </div>
+
+        <div class="section-heading"><div><span class="eyebrow">Продукты</span><h2>Тарифы</h2></div></div>
+        <div class="tariff-grid" id="stars-tariffs-tbody"><div class="loading"><span class="spinner"></span></div></div>
+
+        <div class="card tariff-add-card">
+          <div class="card-title">Добавить тариф</div>
           <div class="form-row stars-add-row">
             <div><label>Название</label><input type="text" id="new-tariff-name" maxlength="64" placeholder="1 месяц" class="w-full" /></div>
             <div><label>Дней</label><input type="number" id="new-tariff-days" min="1" max="3650" step="1" class="w-full" /></div>
@@ -395,29 +386,43 @@
       </div>
 
       <div class="tab-content" id="tab-stars-payments">
-        <div class="card">
-          <div class="page-actions stars-filter-row">
-            <select id="stars-payments-filter" data-change-action="load-stars-payments" class="stars-filter-select">
-              <option value="">Все статусы</option>
-              <option value="created">Создан</option>
-              <option value="paid">Оплачен</option>
-              <option value="plan_committed">Тариф зафиксирован</option>
-              <option value="applied">Применён</option>
-              <option value="manual_review">Ручная проверка</option>
-              <option value="apply_failed_user_missing">Пользователь не найден</option>
-              <option value="apply_retry_exhausted">Повторы исчерпаны</option>
-              <option value="refund_pending">Возврат ожидается</option>
-              <option value="refund_unknown">Возврат не подтверждён</option>
-              <option value="refunded">Возвращён</option>
-            </select>
-          </div>
+        <div class="segment-row" id="stars-status-filter" data-select-target="stars-payments-filter">
+          <span class="segment-chip active" data-action="stars-status-filter" data-status="">Все</span>
+          <span class="segment-chip segment-chip--warn" data-action="stars-status-filter" data-status="manual_review">Ручная проверка</span>
+          <span class="segment-chip segment-chip--warn" data-action="stars-status-filter" data-status="apply_retry_exhausted">Повторы исчерпаны</span>
+          <span class="segment-chip" data-action="stars-status-filter" data-status="applied">Применён</span>
+          <span class="segment-chip" data-action="stars-status-filter" data-status="refund_pending">Возврат ожидается</span>
+          <span class="segment-chip" data-action="stars-status-filter" data-status="refunded">Возвращён</span>
+        </div>
+        <select id="stars-payments-filter" class="visually-hidden" tabindex="-1" aria-hidden="true">
+          <option value="">Все статусы</option>
+          <option value="created">Создан</option>
+          <option value="paid">Оплачен</option>
+          <option value="plan_committed">Тариф зафиксирован</option>
+          <option value="applied">Применён</option>
+          <option value="manual_review">Ручная проверка</option>
+          <option value="apply_failed_user_missing">Пользователь не найден</option>
+          <option value="apply_retry_exhausted">Повторы исчерпаны</option>
+          <option value="refund_pending">Возврат ожидается</option>
+          <option value="refund_unknown">Возврат не подтверждён</option>
+          <option value="refunded">Возвращён</option>
+        </select>
+        <div class="card flush-card">
           <div class="table-wrap">
             <table>
               <thead>
+                <tr class="thead-group-row">
+                  <th colspan="4">Счёт</th>
+                  <th colspan="2" class="col-hide-mobile">Служебное</th>
+                  <th colspan="2" class="col-hide-mobile">Expire</th>
+                  <th class="col-hide-mobile"></th>
+                  <th></th>
+                </tr>
                 <tr>
                   <th>#</th><th>Пользователь</th><th>Тариф</th><th>Статус</th>
                   <th class="col-hide-mobile">Создал</th><th class="col-hide-mobile">Плательщик</th>
-                  <th class="col-hide-mobile">Было → цель</th><th class="col-hide-mobile">Применено</th><th class="col-hide-mobile">Причина</th><th></th>
+                  <th class="col-hide-mobile">Было → цель</th><th class="col-hide-mobile">Применено</th>
+                  <th class="col-hide-mobile">Причина</th><th></th>
                 </tr>
               </thead>
               <tbody id="stars-payments-tbody">
@@ -426,11 +431,9 @@
             </table>
           </div>
         </div>
-        <div class="card">
-          <h3>Непривязанные успешные оплаты</h3>
-          <div class="stars-orphan-hint">
-            Деньги получены Telegram, но payload не удалось связать со счётом. Автопродление не выполняется.
-          </div>
+        <div class="card spaced-card stars-orphans-card">
+          <div class="card-title">Непривязанные успешные оплаты</div>
+          <div class="notice notice-amber">Деньги получены Telegram, но payload не удалось связать со счётом. Автопродление не выполняется.</div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -653,6 +656,6 @@
 
 <div id="toast"></div>
 
-<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-recompose"></script>
+<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-stars-recompose"></script>
 </body>
 </html>
