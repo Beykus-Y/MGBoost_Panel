@@ -1,8 +1,18 @@
 /* Operations: node fleet cards + settings modal (operations/nodes.js),
-   health snapshot and legacy-transitions queue layout. This file
-   replaces operations/nodes.js's previous heavy reliance on inline
-   `style="..."` attributes (the least "componentized" file in the
-   admin panel per the redesign audit) with named, scoped classes. */
+   health snapshot, legacy-transitions queue layout, and host delivery
+   routing (routing.js -- "Роутинг хостов" lives under the Операции
+   nav section, so its rules belong here too, not a separate file).
+   This file replaces operations/nodes.js's previous heavy reliance on
+   inline `style="..."` attributes (the least "componentized" file in
+   the admin panel per the redesign audit) with named, scoped classes. */
+
+/* Routing (routing.js): audit-events list -- Wave 8 found it had zero
+   CSS at all, rendering with default browser bullets/margins
+   inconsistent with the dark theme. Relocated here in Wave 9 (was
+   temporarily in legacy.css, unowned). */
+.routing-events{list-style:none;margin:0;padding:0}
+.routing-events li{padding:6px 0;border-bottom:0.5px solid var(--border);font-size:13px}
+.routing-events li:last-child{border-bottom:0}
 
 .nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:1.5rem}
 .node-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:1rem;transition:transform .15s,border-color .15s,background .15s}
@@ -17,10 +27,10 @@
 .node-billing-block{margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
 .node-billing-row{display:flex;justify-content:space-between;gap:8px}
 .node-billing-row b{color:var(--text)}
-.node-billing-note{margin-top:4px;color:var(--text3)}
+.node-billing-note{margin-top:4px;color:var(--text2)}
 .node-card-footer-btn{width:100%;margin-top:10px}
 .node-traffic-name{font-weight:500}
-.node-traffic-sub{font-size:11px;color:var(--text3)}
+.node-traffic-sub{font-size:11px;color:var(--text2)}
 .text-right{text-align:right}
 .node-modal-intro{font-size:13px;color:var(--text2);margin-bottom:1rem}
 .node-input-spaced{margin-bottom:12px}

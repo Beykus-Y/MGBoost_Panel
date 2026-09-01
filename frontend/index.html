@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
 <link rel="stylesheet" href="assets/tokens.css?v=20260901-redesign-wave0">
-<link rel="stylesheet" href="assets/base.css?v=20260901-redesign-wave0">
-<link rel="stylesheet" href="assets/shell.css?v=20260901-redesign-wave7">
-<link rel="stylesheet" href="assets/components.css?v=20260901-redesign-wave8">
-<link rel="stylesheet" href="assets/domain-accounts.css?v=20260901-redesign-wave7">
-<link rel="stylesheet" href="assets/domain-operations.css?v=20260901-redesign-wave6">
-<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260901-redesign-wave7">
-<link rel="stylesheet" href="assets/domain-technical.css?v=20260901-redesign-wave6">
-<link rel="stylesheet" href="assets/legacy.css?v=20260901-redesign-wave8">
+<link rel="stylesheet" href="assets/base.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/shell.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/components.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-accounts.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-operations.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-technical.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260901-redesign-wave9">
+<link rel="stylesheet" href="assets/domain-settings.css?v=20260901-redesign-wave9">
 </head>
 <body>
 
@@ -29,7 +30,7 @@
   </div>
 </div>
 
-<div id="app" style="display:none">
+<div id="app">
   <div id="sidebar">
     <div class="logo">
       <h1>MGBoost</h1>
@@ -76,8 +77,8 @@
     <div class="nav-item" data-action="show-page" data-page="configs">
       <span class="nav-icon">⊕</span> Доп. конфиги
     </div>
-    <div style="flex:1"></div>
-    <div class="nav-item" data-action="logout" style="margin-top:auto">
+    <div class="sidebar-spacer"></div>
+    <div class="nav-item nav-item--logout" data-action="logout">
       <span class="nav-icon">←</span> Выйти
     </div>
   </div>
@@ -89,7 +90,7 @@
       <div class="page-header">
         <span class="page-title">Дашборд</span>
         <div class="page-actions">
-          <select id="traffic-period" data-change-action="traffic-period" style="width:150px">
+          <select id="traffic-period" data-change-action="traffic-period" class="traffic-period-select">
             <option value="1h">1 час</option>
             <option value="12h">12 часов</option>
             <option value="24h" selected>24 часа</option>
@@ -99,8 +100,8 @@
             <option value="all">Все время</option>
             <option value="custom">Период</option>
           </select>
-          <input type="datetime-local" id="traffic-from" data-change-action="traffic-period" style="width:190px;display:none" />
-          <input type="datetime-local" id="traffic-to" data-change-action="traffic-period" style="width:190px;display:none" />
+          <input type="datetime-local" id="traffic-from" data-change-action="traffic-period" class="traffic-date-input" />
+          <input type="datetime-local" id="traffic-to" data-change-action="traffic-period" class="traffic-date-input" />
           <button data-action="load-dashboard">Обновить</button>
         </div>
       </div>
@@ -109,13 +110,13 @@
       <div class="stats-grid" id="sys-stats">
         <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="dash-two-col">
         <div class="card">
           <div class="card-title">Ноды</div>
           <div id="dash-nodes"><div class="loading"><span class="spinner"></span></div></div>
         </div>
         <div class="card">
-          <div class="card-title">Трафик по нодам <span id="traffic-period-label" style="color:var(--text3)"></span></div>
+          <div class="card-title">Трафик по нодам <span id="traffic-period-label" class="muted"></span></div>
           <div id="dash-node-traffic"><div class="loading"><span class="spinner"></span></div></div>
         </div>
       </div>
@@ -200,7 +201,7 @@
         <span class="page-title">Операции / Легаси-переходы</span>
         <button data-action="show-page" data-page="legacy-transitions">Обновить</button>
       </div>
-      <div class="cell-sub" style="margin-bottom:12px">Переходы с архивного (LEGACY_PAID_COMPAT) тарифа на коммерческий, ещё не применённые или не отменённые. Открытие строки — тот же диалог, что и на вкладке «Платежи» аккаунта.</div>
+      <div class="cell-sub cell-sub--spaced">Переходы с архивного (LEGACY_PAID_COMPAT) тарифа на коммерческий, ещё не применённые или не отменённые. Открытие строки — тот же диалог, что и на вкладке «Платежи» аккаунта.</div>
       <div id="legacy-transitions-box">
         <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
@@ -298,8 +299,8 @@
     <div class="page" id="page-tickets">
       <div class="page-header">
         <span class="page-title">Тикеты</span>
-        <div class="page-actions" style="display:flex;gap:8px;align-items:center">
-          <select id="ticket-filter" data-change-action="load-tickets" style="width:160px">
+        <div class="page-actions ticket-filter-row">
+          <select id="ticket-filter" data-change-action="load-tickets" class="ticket-filter-select">
             <option value="">Все</option>
             <option value="open">Open</option>
             <option value="waiting_human">Ждёт оператора</option>
@@ -342,11 +343,11 @@
       <div class="tab-content active" id="tab-stars-tariffs">
         <div class="card">
           <div class="card-title">Оплата через Stars</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-            <label style="margin:0">Включить оплату через Telegram Stars</label>
-            <input type="checkbox" id="stars-enabled" data-change-action="save-stars-settings" style="width:auto" />
+          <div class="stars-toggle-row">
+            <label class="label-inline">Включить оплату через Telegram Stars</label>
+            <input type="checkbox" id="stars-enabled" data-change-action="save-stars-settings" class="stars-toggle" />
           </div>
-          <div style="font-size:12px;color:var(--text3)">
+          <div class="stars-hint">
             По умолчанию выключено. Пока не добавлен хотя бы один тариф, кнопка «⭐️ Продлить подписку» в боте недоступна пользователям.
           </div>
         </div>
@@ -362,13 +363,13 @@
               </tbody>
             </table>
           </div>
-          <div class="form-row" style="margin-top:14px">
-            <div><label>Название</label><input type="text" id="new-tariff-name" maxlength="64" placeholder="1 месяц" style="width:100%" /></div>
-            <div><label>Дней</label><input type="number" id="new-tariff-days" min="1" max="3650" step="1" style="width:100%" /></div>
-            <div><label>Цена, ⭐️</label><input type="number" id="new-tariff-price" min="1" max="1000000" step="1" style="width:100%" /></div>
+          <div class="form-row stars-add-row">
+            <div><label>Название</label><input type="text" id="new-tariff-name" maxlength="64" placeholder="1 месяц" class="w-full" /></div>
+            <div><label>Дней</label><input type="number" id="new-tariff-days" min="1" max="3650" step="1" class="w-full" /></div>
+            <div><label>Цена, ⭐️</label><input type="number" id="new-tariff-price" min="1" max="1000000" step="1" class="w-full" /></div>
           </div>
-          <button class="primary" style="margin-top:10px" data-action="add-stars-tariff">Добавить тариф</button>
-          <div style="font-size:12px;color:var(--text3);margin-top:8px">
+          <button class="primary stars-add-btn" data-action="add-stars-tariff">Добавить тариф</button>
+          <div class="stars-hint stars-hint--tight">
             Цены — на усмотрение оператора, справочно: 350 ₽ по курсу Fragment (~$0.013/★) — около 320 ⭐️. Изменение или удаление тарифа не влияет на уже созданные счета (снапшот).
           </div>
         </div>
@@ -447,106 +448,106 @@
       </div>
       <div class="card">
         <div class="card-title">Сообщение при блокировке устройства</div>
-        <div style="font-size:13px;color:var(--text2);margin-bottom:10px">
+        <div class="settings-hint">
           Показывается пользователю в VPN-клиенте вместо серверов, если устройство заблокировано (лимит или шеринг).
-          Например: <code style="background:var(--bg4);padding:1px 5px;border-radius:4px">@your_support_bot</code> или номер телефона.
+          Например: <code class="settings-inline-code">@your_support_bot</code> или номер телефона.
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input type="text" id="set-block-contact" maxlength="128" placeholder="@support или +7..." style="width:280px" />
+        <div class="settings-row">
+          <input type="text" id="set-block-contact" maxlength="128" placeholder="@support или +7..." class="settings-input-fixed" />
         </div>
       </div>
       <div class="card">
         <div class="card-title">Вид подписки в приложении</div>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+        <p class="settings-hint">
           Вы можете задать шаблон для названия и описания (фейковая нода сверху).<br/>
           Переменные: <code>{spent}</code>, <code>{remaining}</code>, <code>{total}</code>, <code>{days_left}</code>, <code>{expire_date}</code>.
         </p>
         <label>Название подписки (Profile Title)</label>
-        <input type="text" id="set-sub-title" placeholder="MGBoost: {spent} / {total}" style="width:100%;margin-bottom:12px" />
+        <input type="text" id="set-sub-title" placeholder="MGBoost: {spent} / {total}" class="settings-input--spaced" />
         <label>Описание (Инфо-нода сверху)</label>
-        <input type="text" id="set-sub-desc" placeholder="📊 Осталось: {remaining} ({days_left} дн.)" style="width:100%" />
+        <input type="text" id="set-sub-desc" placeholder="📊 Осталось: {remaining} ({days_left} дн.)" class="w-full" />
       </div>
       <div class="card">
         <div class="card-title">Автообновление подписки</div>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+        <p class="settings-hint">
           Интервал (в часах), через который клиент должен обновлять подписку. Переопределяет значение из Marzban (текущее: 12 ч).
           Оставьте пустым — будет использоваться значение Marzban.
         </p>
         <label>Интервал обновления (часов)</label>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
-          <input type="number" id="set-sub-interval" min="1" max="168" placeholder="например: 24" style="width:160px" />
-          <span style="font-size:13px;color:var(--text3)">часов (1–168)</span>
+        <div class="settings-row settings-row--tight">
+          <input type="number" id="set-sub-interval" min="1" max="168" placeholder="например: 24" class="settings-input-fixed-sm" />
+          <span class="muted2">часов (1–168)</span>
         </div>
-        <div id="settings-status" style="margin-top:10px;font-size:13px;color:var(--text3)"></div>
+        <div id="settings-status" class="settings-status"></div>
       </div>
       <div class="card">
         <div class="card-title">Telegram-бот мониторинга</div>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+        <p class="settings-hint">
           Бот читает статусы нод из Marzban и постит обновления в канал. Тихие часы настраиваются в настройках каждой ноды.
         </p>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-          <label style="margin:0">Включить бота</label>
-          <input type="checkbox" id="bot-enabled" style="width:auto" />
+        <div class="settings-toggle-row">
+          <label class="label-inline">Включить бота</label>
+          <input type="checkbox" id="bot-enabled" class="settings-toggle" />
         </div>
         <label>Токен бота</label>
-        <input type="password" id="bot-token" maxlength="128" placeholder="123456:ABCDEF..." style="width:100%;margin-bottom:12px;font-family:monospace" />
-        <div style="font-size:12px;color:var(--text3);margin:-8px 0 12px">Оставьте пустым, чтобы не менять текущее значение.</div>
+        <input type="password" id="bot-token" maxlength="128" placeholder="123456:ABCDEF..." class="settings-input-mono" />
+        <div class="settings-note settings-note--tight">Оставьте пустым, чтобы не менять текущее значение.</div>
         <label>Канал для публикации</label>
-        <input type="text" id="bot-channel" maxlength="64" placeholder="@MGBoost_News" style="width:100%;margin-bottom:14px" />
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-          <label style="margin:0">Использовать прокси (Estonia SOCKS5)</label>
-          <input type="checkbox" id="bot-proxy-enabled" style="width:auto" data-change-action="toggle-bot-proxy" />
+        <input type="text" id="bot-channel" maxlength="64" placeholder="@MGBoost_News" class="settings-input--spaced-lg" />
+        <div class="settings-toggle-row settings-toggle-row--tight">
+          <label class="label-inline">Использовать прокси (Estonia SOCKS5)</label>
+          <input type="checkbox" id="bot-proxy-enabled" class="settings-toggle" data-change-action="toggle-bot-proxy" />
         </div>
-        <div id="bot-proxy-fields" style="display:none">
+        <div id="bot-proxy-fields" class="settings-proxy-fields">
           <div class="form-row">
             <div>
               <label>Хост прокси</label>
-              <input type="text" id="bot-proxy-host" maxlength="128" placeholder="150.241.74.147" style="width:100%" />
+              <input type="text" id="bot-proxy-host" maxlength="128" placeholder="150.241.74.147" class="w-full" />
             </div>
             <div>
               <label>Порт</label>
-              <input type="number" id="bot-proxy-port" min="1" max="65535" value="1080" style="width:100%" />
+              <input type="number" id="bot-proxy-port" min="1" max="65535" value="1080" class="w-full" />
             </div>
           </div>
           <div class="form-row">
             <div>
               <label>Пользователь</label>
-              <input type="text" id="bot-proxy-user" maxlength="64" placeholder="socks" style="width:100%" />
+              <input type="text" id="bot-proxy-user" maxlength="64" placeholder="socks" class="w-full" />
             </div>
             <div>
               <label>Пароль</label>
-              <input type="password" id="bot-proxy-pass" maxlength="64" placeholder="telegram" style="width:100%;font-family:monospace" />
+              <input type="password" id="bot-proxy-pass" maxlength="64" placeholder="telegram" class="settings-input-mono--nomargin" />
             </div>
           </div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <div class="settings-row settings-row--top">
           <button data-action="save-bot-settings">Сохранить настройки бота</button>
           <button data-action="restart-bot">Перезапустить бота</button>
-          <span id="bot-settings-status" style="font-size:13px;color:var(--text3)"></span>
+          <span id="bot-settings-status" class="status-inline"></span>
         </div>
       </div>
       <div class="card">
         <div class="card-title">AI-ассистент поддержки</div>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+        <p class="settings-hint">
           Пользователи пишут боту в ЛС — бот отвечает через OpenRouter API. Нужен ключ с openrouter.ai.
         </p>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-          <label style="margin:0">Включить поддержку</label>
-          <input type="checkbox" id="bot-support-enabled" style="width:auto" />
+        <div class="settings-toggle-row">
+          <label class="label-inline">Включить поддержку</label>
+          <input type="checkbox" id="bot-support-enabled" class="settings-toggle" />
         </div>
         <label>OpenRouter API ключ</label>
-        <input type="password" id="bot-openrouter-key" maxlength="256" placeholder="sk-or-v1-..." style="width:100%;margin-bottom:4px;font-family:monospace" />
-        <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Оставьте пустым, чтобы не менять текущее значение.</div>
+        <input type="password" id="bot-openrouter-key" maxlength="256" placeholder="sk-or-v1-..." class="settings-input-mono--tight" />
+        <div class="settings-note">Оставьте пустым, чтобы не менять текущее значение.</div>
         <label>Модель</label>
-        <input type="text" id="bot-openrouter-model" maxlength="128" placeholder="openai/gpt-4o-mini" style="width:100%;margin-bottom:12px;font-family:monospace" />
+        <input type="text" id="bot-openrouter-model" maxlength="128" placeholder="openai/gpt-4o-mini" class="settings-input-mono" />
         <label>ID администратора (для уведомлений)</label>
-        <input type="text" id="bot-admin-tg-id" maxlength="32" placeholder="7898157769" style="width:200px;margin-bottom:12px" />
+        <input type="text" id="bot-admin-tg-id" maxlength="32" placeholder="7898157769" class="settings-input-fixed-md" />
         <label>База знаний / FAQ (markdown, виден только AI)</label>
-        <textarea id="bot-support-faq" rows="8" style="width:100%;resize:vertical;font-family:monospace;font-size:12px;margin-bottom:4px" placeholder="## Частые проблемы&#10;&#10;**Не подключается**&#10;Попробуй сменить сервер..."></textarea>
-        <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Если пусто — используется встроенный FAQ. Поддерживает markdown.</div>
-        <div style="margin-top:4px">
+        <textarea id="bot-support-faq" rows="8" class="settings-textarea" placeholder="## Частые проблемы&#10;&#10;**Не подключается**&#10;Попробуй сменить сервер..."></textarea>
+        <div class="settings-note">Если пусто — используется встроенный FAQ. Поддерживает markdown.</div>
+        <div class="settings-row--top-tight">
           <button data-action="save-support-settings">Сохранить</button>
-          <span id="support-settings-status" style="margin-left:10px;font-size:13px;color:var(--text3)"></span>
+          <span id="support-settings-status" class="status-inline"></span>
         </div>
       </div>
     </div>
@@ -556,20 +557,20 @@
 
 <!-- Ticket modal -->
 <div class="modal-overlay" id="ticket-modal">
-  <div class="modal" style="max-width:620px">
+  <div class="modal modal--lg">
     <div class="modal-header">
       <span class="modal-title" id="ticket-modal-title">Тикет</span>
       <button class="modal-close" data-action="close-modal" data-target="ticket-modal">×</button>
     </div>
-    <div id="ticket-chat" style="max-height:360px;overflow-y:auto;padding:10px;background:var(--bg3);border-radius:6px;margin-bottom:12px"></div>
+    <div id="ticket-chat" class="ticket-chat"></div>
     <div>
       <label>Ответить</label>
-      <textarea id="ticket-reply-text" rows="3" style="width:100%;resize:vertical;margin-bottom:8px" placeholder="Текст ответа..."></textarea>
+      <textarea id="ticket-reply-text" rows="3" class="ticket-reply-textarea" placeholder="Текст ответа..."></textarea>
     </div>
     <div class="modal-footer">
       <button class="primary" data-action="send-ticket-reply">Отправить</button>
-      <button data-action="close-ticket" style="margin-left:8px">Закрыть тикет</button>
-      <span id="ticket-action-status" style="margin-left:10px;font-size:13px;color:var(--text3)"></span>
+      <button data-action="close-ticket" class="ticket-close-btn">Закрыть тикет</button>
+      <span id="ticket-action-status" class="status-inline"></span>
     </div>
   </div>
 </div>
@@ -608,8 +609,8 @@
       </div>
       <label>Заметка</label>
       <input type="text" id="new-note" placeholder="Необязательно" />
-      <div style="margin-top:12px">
-        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Inbounds</div>
+      <div class="section-block">
+        <div class="section-label">Inbounds</div>
         <div id="new-inbounds"><div class="loading"><span class="spinner"></span></div></div>
       </div>
     </div>
@@ -622,7 +623,7 @@
 
 <!-- Node modal -->
 <div class="modal-overlay" id="node-modal">
-  <div class="modal" style="width:640px">
+  <div class="modal modal--lg">
     <div class="modal-header">
       <span class="modal-title" id="node-modal-title">Нода</span>
       <button class="modal-close" data-action="close-modal" data-target="node-modal">×</button>

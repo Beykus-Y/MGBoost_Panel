@@ -4,7 +4,13 @@
    fallback below ~900px — no icon-only rail, no new nav icons; see
    plan section 19.4). */
 
-#app{display:flex;min-height:100vh}
+/* Hidden by default -- auth.js/main.js set style.display='flex' once
+   the session check resolves (login vs already-authenticated). Was
+   previously an inline style="display:none" attribute on the element;
+   moved here since #app is already shell-owned and JS's own
+   style.display assignments continue to override this unconditionally
+   either way, so the auth flow itself is untouched. */
+#app{display:none;min-height:100vh}
 #main{flex:1;overflow:auto;padding:1.5rem;min-width:0;max-width:1500px;margin:0 auto;width:100%}
 .page{display:none}
 .page.active{display:block}
@@ -17,6 +23,8 @@
 .nav-item:hover{color:var(--text);background:var(--bg3)}
 .nav-item.active{color:#8888ff;background:var(--bg3);border-left-color:var(--accent)}
 .nav-icon{font-size:15px;width:18px;text-align:center}
+.sidebar-spacer{flex:1}
+.nav-item--logout{margin-top:auto}
 .nav-section{padding:16px 1rem 5px;color:var(--text3);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
 /* Redesign plan section 19.3: a quiet, passive signal before the
    operator even enters a legacy/technical screen -- desaturated

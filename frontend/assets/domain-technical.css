@@ -26,7 +26,7 @@
 .section-label--tight{margin-bottom:0}
 .section-block{margin-top:1rem}
 .node-usage-row{display:flex;justify-content:space-between}
-.node-usage-pct{color:var(--text3);font-size:11px}
+.node-usage-pct{color:var(--text2);font-size:11px}
 .small-btn{font-size:11px;padding:3px 10px}
 .devices-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .devices-summary{font-size:12px;color:var(--text2);margin-bottom:8px}
@@ -45,7 +45,7 @@
 .nf-group-header{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);cursor:pointer}
 .nf-group-title{font-size:13px;flex:1}
 .nf-group-node-name{color:var(--text)}
-.nf-group-host{font-family:monospace;font-size:11px;color:var(--text3)}
+.nf-group-host{font-family:monospace;font-size:11px;color:var(--text2)}
 .nf-group-count{font-size:11px;color:var(--text3)}
 .nf-group-body{padding:6px 10px 6px 28px}
 .nf-group-body--collapsed{display:none}
@@ -62,7 +62,7 @@
 .config-row:last-child{border-bottom:none}
 .config-info{flex:1;min-width:0}
 .config-name-text{font-size:14px;font-weight:500}
-.config-uri-text{font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;max-width:100%}
+.config-uri-text{font-size:11px;color:var(--text2);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;max-width:100%}
 .drag-handle{color:var(--text3);cursor:grab;font-size:16px;user-select:none;padding:0 4px;flex-shrink:0}
 .drag-handle:active{cursor:grabbing}
 .per-user-config{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border);min-width:0}
@@ -73,7 +73,7 @@
 .puconfig-empty{font-size:13px;color:var(--text3);padding:0.5rem 0}
 .puconfig-info{flex:1;min-width:0}
 .puconfig-name{font-size:13px;font-weight:500}
-.puconfig-uri{font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.puconfig-uri{font-size:11px;color:var(--text2);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .inbound-extra-card{background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)}
 .inbound-extra-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .inbound-extra-tag{font-weight:500;font-size:14px}

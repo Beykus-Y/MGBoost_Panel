@@ -5,7 +5,12 @@
    list-row, modal, badges, progress...) live in components.css --
    this file is layout specific to this one screen. */
 
-.account-subtitle{font-size:11px;color:var(--text3);margin:4px 0 0 116px}
+.account-subtitle{font-size:11px;color:var(--text2);margin:4px 0 0 116px}
+.back-button{margin-right:12px}
+.filter-caption{min-height:18px;color:var(--text3);font-size:11px;margin:-8px 0 10px}
+/* device_ops.js (Telegram/Ownership tab) toggles this on rows that
+   shouldn't render for the current ownership state. */
+.hidden-when-ordinary{display:none}
 
 /* Wave 0 removed this rule as apparently-dead (a stale audit claimed
    the class wasn't in markup); index.html actually sets

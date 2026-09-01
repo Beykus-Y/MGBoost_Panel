@@ -1,0 +1,32 @@
+/* Settings ("Система" nav section: bot/support/general config forms,
+   settings.js). Wave 9 architecture note: same reasoning as
+   domain-dashboard.css -- Settings is its own distinct, single-item
+   nav section, not a fit for any existing domain file, so it gets a
+   ninth-family file rather than being forced into Technical/Legacy
+   (a visually and semantically distinct nav section) or left
+   inline-styled just because nothing else claimed it. */
+
+.settings-hint{font-size:13px;color:var(--text2);margin-bottom:1rem}
+.settings-inline-code{background:var(--bg4);padding:1px 5px;border-radius:4px}
+.settings-row{display:flex;gap:8px;align-items:center}
+.settings-row--tight{margin-top:4px}
+.settings-row--top{margin-top:12px}
+.settings-row--top-tight{margin-top:4px;display:flex;gap:8px;align-items:center}
+.settings-input-fixed{width:280px}
+.settings-input-fixed-sm{width:160px}
+.settings-input-fixed-md{width:200px}
+.settings-input--spaced{width:100%;margin-bottom:12px}
+.settings-input--spaced-lg{width:100%;margin-bottom:14px}
+.settings-input-mono{width:100%;margin-bottom:12px;font-family:monospace}
+.settings-input-mono--tight{width:100%;margin-bottom:4px;font-family:monospace}
+.settings-input-mono--nomargin{width:100%;font-family:monospace}
+.settings-textarea{width:100%;resize:vertical;font-family:monospace;font-size:12px;margin-bottom:4px}
+.settings-note{font-size:12px;color:var(--text3);margin-bottom:12px}
+.settings-note--tight{margin:-8px 0 12px}
+.settings-status{margin-top:10px;font-size:13px;color:var(--text3)}
+.settings-toggle{width:auto}
+.settings-toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.settings-toggle-row--tight{margin-bottom:10px}
+/* Default hidden -- toggle-bot-proxy shows/hides this via
+   style.display in router.js/settings.js; initial state only. */
+.settings-proxy-fields{display:none}

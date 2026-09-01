@@ -17,6 +17,39 @@
 
 ### Changed — Admin
 
+Admin panel visual/CSS redesign (Waves 0-9, план `docs/ADMIN_CSS_REDESIGN.md`)
+реализован локально 2026-09-01, **не задеплоено/не запушено в этой сессии**:
+единый `frontend/assets/admin.css` (321 строка, два несовместимых цветовых
+языка, дублированные компоненты) заменён на 9 target-стилшитов
+(`tokens.css`/`base.css`/`shell.css`/`components.css`/четыре
+`domain-*.css`/`domain-dashboard.css`/`domain-settings.css`) без build chain,
+через существующий manual `?v=` cache-bust. Временный `legacy.css` (введён в
+Wave 0 для безопасной поэтапной миграции без big-bang rewrite) полностью
+опустошён и удалён в Wave 9 после подтверждения, что каждое ещё
+использовавшееся правило получило корректного owner'а.
+
+Попутно исправлены реальные баги, а не только визуал: `button.danger` был
+определён дважды с конфликтующими цветами; `.account-tabs`/`.grace-progress`/
+`.pay-status`/`.ops-close` не имели вообще никакого CSS-правила;
+`support/tickets.js`, `payments/stars_legacy.js` и `routing.js` строили
+цвета статусов из сырых hex/невалидных модификаторов (`badge err`/`warn`/`ok`
+— таких классов не существует) вместо общей badge-системы; 5 независимых
+`value → badge-color` функций консолидированы в `core.js`
+(`healthBadgeClass`, `nodeImportanceBadgeClass`, `marzbanStatusBadgeClass`,
+`promoStatusBadgeClass`, `redemptionStatusBadgeClass`, `hostClassBadgeClass`).
+Контраст `button.primary` поднят с 4.19:1 до 4.57:1 (WCAG AA); операторски
+значимый текст (ID аккаунтов, config URI, IP нод, суммы, причины ручной
+проверки), ранее рендерившийся на `--text3` (1.95:1), переведён на `--text2`
+(≥4.59:1) точечно — сам токен `--text3` не менялся.
+
+Responsive: card-collapse для списка Accounts, priority-column-hiding для
+Stars-таблиц, full-screen sheet для модалок на ≤560px. DOM/JS изменения
+ограничены тем, что требовалось для потребления новых CSS-классов
+(`data-label` атрибуты, badge-функции, классы вместо inline `style=`/прямых
+`style.display=` присвоений) — backend/API/routing/auth/CSRF/click-behavior
+не затронуты. Полный отчёт и известные оставленные находки (неиспользуемый
+`button.success`, отложенный modal-transition) — в `docs/ADMIN_CSS_REDESIGN.md`.
+
 PH7-16 (Admin v2 / canonical frontend cutover), Waves 3-6, реализованы
 локально 2026-09-01 (commits `3aa1016`..`fefebb4` и последующий remediation,
 ветка `main`, **не задеплоено/не запушено в этой сессии**): легаси Marzban-экраны
