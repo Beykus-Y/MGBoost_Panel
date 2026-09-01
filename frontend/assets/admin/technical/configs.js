@@ -27,7 +27,7 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
         <span class="drag-handle">⠿</span>
         <div class="config-info">
           <div class="config-name-text">${c.name}</div>
-          <div class="config-uri-text">${c.uri}</div>
+          <div class="config-uri-text" title="${c.uri}">${c.uri}</div>
         </div>
         <span class="badge ${c.enabled?'badge-green':'badge-red'} config-toggle-badge" data-action="toggle-config" data-config-index="${i}">${c.enabled?'вкл':'выкл'}</span>
         <button class="danger small" data-action="delete-config" data-config-index="${i}">×</button>
@@ -85,7 +85,7 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
       <div class="per-user-config">
         <div class="puconfig-info">
           <div class="puconfig-name">${c.name}</div>
-          <div class="puconfig-uri">${c.uri}</div>
+          <div class="puconfig-uri" title="${c.uri}">${c.uri}</div>
         </div>
         <button class="danger small" data-action="delete-per-user-config" data-username="${username}" data-config-index="${i}">×</button>
       </div>

@@ -119,11 +119,11 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
           <td>${p.marzban_username}</td>
           <td>${p.tariff_name} (${p.duration_days}д / ${p.stars_price}⭐️)</td>
           <td><span class="badge ${_STARS_STATUS_BADGE[p.status]||'badge-gray'}">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
-          <td>${p.created_by_telegram_id}</td>
-          <td>${p.payer_telegram_id??'—'}</td>
-          <td>${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
-          <td>${p.applied_expire??'—'}</td>
-          <td class="stars-reason-cell">${p.manual_review_reason||''}</td>
+          <td class="col-hide-mobile">${p.created_by_telegram_id}</td>
+          <td class="col-hide-mobile">${p.payer_telegram_id??'—'}</td>
+          <td class="col-hide-mobile">${p.base_expire_observed??'—'} → ${p.target_expire??'—'}</td>
+          <td class="col-hide-mobile">${p.applied_expire??'—'}</td>
+          <td class="stars-reason-cell col-hide-mobile" title="${p.manual_review_reason||''}">${p.manual_review_reason||''}</td>
           <td class="stars-actions-cell">${actions}</td>
         </tr>`;
       })}`);
@@ -161,8 +161,8 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
         if(p.status==='refund_pending'||p.status==='refund_unknown')actions.push(html`<button data-action="stars-orphan-action" data-payment-id="${p.id}" data-payment-action="reconcile-refund">Сверить возврат</button>`);
         return html`<tr>
           <td>#${p.id}</td><td>${p.payer_telegram_id}</td>
-          <td>${p.total_amount} ${p.currency}</td><td>${p.invoice_payload}</td>
-          <td>${p.telegram_payment_charge_id}</td><td>${p.reason}</td>
+          <td>${p.total_amount} ${p.currency}</td><td class="col-hide-mobile">${p.invoice_payload}</td>
+          <td class="col-hide-mobile">${p.telegram_payment_charge_id}</td><td class="col-hide-mobile">${p.reason}</td>
           <td><span class="badge ${_STARS_STATUS_BADGE[p.status]||'badge-gray'}">${_STARS_STATUS_LABELS[p.status]||p.status}</span></td>
           <td class="stars-actions-cell">${actions}</td>
         </tr>`;

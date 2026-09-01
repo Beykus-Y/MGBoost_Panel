@@ -71,8 +71,12 @@
 
   #main{padding:1rem}
   .page-header{align-items:flex-start;flex-direction:column}
+  /* Redesign plan section 11: action bars wrap onto multiple lines at
+     their natural button size instead of being squeezed into equal-
+     width buttons on one row (the old .page-actions button{flex:1}
+     rule) -- flex-wrap is already the base behavior (shell.css above),
+     this just stops fighting it. */
   .page-actions{width:100%}
-  .page-actions button{flex:1}
 }
 
 @media (max-width: 560px){

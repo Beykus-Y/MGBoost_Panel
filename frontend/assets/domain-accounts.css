@@ -44,8 +44,32 @@
    an unstyled plain div. Restyled onto the shared progress component. */
 .grace-progress{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:1.25rem}
 
+/* Accounts list: card-collapse below ~560px instead of forcing the
+   8-column table to scroll (redesign plan section 11/19.7 -- Accounts
+   and Legacy Transitions both get card-collapse, being lists of
+   similar rows). Scoped to rows accounts.js marks with
+   .card-collapse-row/data-label, not to every table on the page. */
 @media (max-width: 560px){
   .device-grid{grid-template-columns:1fr}
   .credential-row{flex-direction:column}
   .account-subtitle{margin-left:0}
+
+  #page-accounts .table-wrap{overflow-x:visible}
+  #page-accounts table{min-width:0}
+  #page-accounts thead{display:none}
+  #page-accounts tbody,#page-accounts tr.card-collapse-row{display:block}
+  #page-accounts tr.card-collapse-row{
+    background:var(--bg2);border:0.5px solid var(--border);border-radius:10px;
+    padding:12px;margin-bottom:8px;
+  }
+  #page-accounts tr.card-collapse-row td{
+    display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+    padding:4px 0;border-bottom:0;white-space:normal;min-width:0;
+  }
+  #page-accounts tr.card-collapse-row td[data-label]::before{
+    content:attr(data-label);color:var(--text3);font-size:11px;flex-shrink:0;
+  }
+  #page-accounts tr.card-collapse-row td.card-collapse-title{
+    display:block;padding-bottom:8px;margin-bottom:4px;border-bottom:0.5px solid var(--border);
+  }
 }

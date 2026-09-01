@@ -27,10 +27,10 @@ export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toa
   function renderAccounts(rows=accounts){
     const tbody=document.getElementById('accounts-tbody');document.getElementById('accounts-count').textContent=`(${rows.length})`;
     if(!rows.length){renderHtml(tbody,html`<tr><td colspan="8" class="empty-state">Аккаунты не найдены</td></tr>`);return;}
-    renderHtml(tbody,html`${rows.map(row=>html`<tr class="clickable" data-action="open-account" data-account-id="${row.id}">
-      <td>${identityMarkup(row)}<div class="cell-sub">${humanLabel(row.account_source)} · псевдонимов: ${row.alias_count}${row.technical_account?' · служебный':''}</div></td>
-      <td>${badge(row.status)}</td><td>${row.subscription?badge(row.subscription.status):badge('NO_SUBSCRIPTION')}<div class="cell-sub">${row.subscription?.display_name||'Нет entitlement'}</div></td>
-      <td>${badge(row.telegram_status)}</td><td><strong>${row.active_devices}</strong><div class="cell-sub">активных слотов</div></td><td><strong>${row.migrated_devices}</strong><div class="cell-sub">реальных устройств</div></td><td>${badge(row.parent_ready?'PARENT_READY':'NOT_READY')}</td><td>${badge(row.migration_action)}</td>
+    renderHtml(tbody,html`${rows.map(row=>html`<tr class="clickable card-collapse-row" data-action="open-account" data-account-id="${row.id}">
+      <td class="card-collapse-title">${identityMarkup(row)}<div class="cell-sub">${humanLabel(row.account_source)} · псевдонимов: ${row.alias_count}${row.technical_account?' · служебный':''}</div></td>
+      <td data-label="Статус">${badge(row.status)}</td><td data-label="Подписка">${row.subscription?badge(row.subscription.status):badge('NO_SUBSCRIPTION')}<div class="cell-sub">${row.subscription?.display_name||'Нет entitlement'}</div></td>
+      <td data-label="Telegram">${badge(row.telegram_status)}</td><td data-label="Слоты"><strong>${row.active_devices}</strong><div class="cell-sub">активных слотов</div></td><td data-label="Реальные устройства"><strong>${row.migrated_devices}</strong><div class="cell-sub">реальных устройств</div></td><td data-label="Готовность">${badge(row.parent_ready?'PARENT_READY':'NOT_READY')}</td><td data-label="Статус / действие">${badge(row.migration_action)}</td>
     </tr>`)}`);
   }
   async function loadAccounts(){

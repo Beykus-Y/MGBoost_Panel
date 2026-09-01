@@ -170,7 +170,12 @@ td:first-child,th:first-child{white-space:normal;min-width:180px}
 
 @media (max-width: 560px){
   .form-row{grid-template-columns:1fr}
-  .modal{width:calc(100vw - 20px);max-width:none;padding:1rem;border-radius:12px}
+  /* Full-screen sheet instead of a centered box with 10px margins
+     (redesign plan section 11: modals go edge-to-edge below ~560px).
+     Anchored to the bottom, only the top corners rounded -- the
+     common mobile-sheet shape, not a literal 100%-height panel. */
+  .modal-overlay,.ops-modal-overlay{align-items:flex-end}
+  .modal,.ops-modal{width:100%;max-width:none;max-height:92vh;padding:1rem;border-radius:16px 16px 0 0}
   .modal-footer{justify-content:stretch}
   .modal-footer button{flex:1 1 auto}
   table{min-width:720px}
@@ -179,4 +184,5 @@ td:first-child,th:first-child{white-space:normal;min-width:180px}
   .kv-grid,.ops-dl{grid-template-columns:1fr}
   .kv-row--copyable{grid-template-columns:1fr}
   .kv-row--copyable .copy-small{justify-self:start}
+  .col-hide-mobile{display:none}
 }

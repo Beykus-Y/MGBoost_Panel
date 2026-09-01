@@ -90,8 +90,8 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
         <td>${statusBadge(u.status)}</td>
         <td>${fmt(u.used_traffic)}${u.data_limit?` / ${fmt(u.data_limit)}`:'  / ∞'}</td>
         <td>${fmtRelDate(u.expire)}</td>
-        <td class="ua-cell">${(u.sub_last_user_agent||'—').split('/')[0]}</td>
-        <td>${userDeviceCounts[u.username]??0}</td>
+        <td class="ua-cell col-hide-mobile" title="${u.sub_last_user_agent||'—'}">${(u.sub_last_user_agent||'—').split('/')[0]}</td>
+        <td class="col-hide-mobile">${userDeviceCounts[u.username]??0}</td>
         <td>${fmtOnline(u.online_at)}</td>
         <td><button data-action="open-user" data-username="${u.username}">···</button></td>
       </tr>
