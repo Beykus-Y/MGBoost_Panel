@@ -41,34 +41,27 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif path == "/sub-admin/assets/admin.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/app/main.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "main.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/app/kernel.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "kernel.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/app/api.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "api.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/app/auth.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "auth.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/accounts.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "accounts.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/core.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "core.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/modals.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "modals.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/payments.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "payments.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/timeline.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "timeline.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/device_ops.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "device_ops.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/expiry_ops.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "expiry_ops.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin/routing.js":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "routing.js").read_bytes(), "text/javascript")
-        elif path == "/sub-admin/assets/admin.css":
-            self._send(200, (ROOT / "frontend" / "assets" / "admin.css").read_bytes(), "text/css")
+        elif path.startswith("/sub-admin/assets/"):
+            # Serve any real file under frontend/assets/ by its actual
+            # relative path instead of a hand-maintained per-file allowlist.
+            # PH7-16 Wave 0B's real-browser pre-deploy check caught that the
+            # old allowlist here had silently missed admin_grant_ops.js
+            # (added in PH7-14) and promo_ops.js (added in PH5-13) -- both
+            # already dynamically import()-ed by accounts.js/admin.js in
+            # production, just never exercised by this fixture because
+            # Playwright wasn't available to actually run these tests until
+            # now. A generic handler can't drift out of sync with the real
+            # module graph the way an enumerated list did.
+            rel = path[len("/sub-admin/assets/"):]
+            asset_path = (ROOT / "frontend" / "assets" / rel).resolve()
+            assets_root = (ROOT / "frontend" / "assets").resolve()
+            if assets_root not in asset_path.parents or not asset_path.is_file():
+                self._send(404, {"error": "not found"})
+                return
+            content_type = "text/javascript" if asset_path.suffix == ".js" else (
+                "text/css" if asset_path.suffix == ".css" else "application/octet-stream"
+            )
+            self._send(200, asset_path.read_bytes(), content_type)
         elif path == "/sub-admin-api/admin/session":
             self._send(200, {"authenticated": True, "username": "admin", "csrf_token": "csrf", "expires_at": 9999999999})
         elif path == "/sub-admin-api/admin/marzban/system":
