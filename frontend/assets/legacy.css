@@ -24,6 +24,26 @@
 .legacy-health-heading{margin-top:1.75rem}
 
 .flush-card{padding:0}
+/* Dashboard (app/router.js loadDashboard) -- not owned by any redesign
+   wave; de-inlined during the Wave 8 consistency pass since it's part
+   of the same fixture/screenshot set the plan calls out. */
+.stat-value--positive{color:var(--green)}
+.dash-node-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)}
+.dash-node-info{flex:1}
+.dash-node-name{font-size:13px}
+.dash-node-addr{font-size:11px;color:var(--text2)}
+.dash-traffic-row{padding:8px 0;border-bottom:0.5px solid var(--border)}
+.dash-traffic-header{display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px}
+.dash-traffic-empty{color:var(--text3);font-size:13px;padding:1rem 0}
+
+/* Routing (admin/routing.js) -- not owned by any redesign wave. Wave 8
+   found its audit-events <ul> had zero CSS at all, rendering with
+   default browser bullets/margins inconsistent with the rest of the
+   dark-themed app. */
+.routing-events{list-style:none;margin:0;padding:0}
+.routing-events li{padding:6px 0;border-bottom:0.5px solid var(--border);font-size:13px}
+.routing-events li:last-child{border-bottom:0}
+
 .technical-row{display:grid;gap:5px;padding:12px 0;border-bottom:.5px solid var(--border)}
 .technical-row:last-child{border-bottom:0}
 .technical-row code,.code-wrap{font-family:monospace;font-size:11px;color:var(--text2);overflow-wrap:anywhere;white-space:normal}

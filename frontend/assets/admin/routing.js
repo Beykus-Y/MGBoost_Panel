@@ -16,13 +16,12 @@ const CLASS_LABELS = {
   STANDARD: 'обычный хост',
 };
 
-export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast }) {
+export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast, hostClassBadgeClass }) {
   let state = null;
   const { confirmFlow } = createModals({ html, renderHtml });
 
   function classBadge(cls) {
-    const css = cls === 'WL_EXACT' ? 'badge err' : cls === 'WL_SUSPECT' ? 'badge warn' : 'badge ok';
-    return html`<span class="${css}">${CLASS_LABELS[cls] || cls}</span>`;
+    return html`<span class="badge ${hostClassBadgeClass(cls)}">${CLASS_LABELS[cls] || cls}</span>`;
   }
 
   function hostRow(host) {
@@ -48,7 +47,7 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast }
 
   function render() {
     const box = document.getElementById('routing-box');
-    if (!state) { renderHtml(box, html`<p style="color:var(--text3)">Загрузка…</p>`); return; }
+    if (!state) { renderHtml(box, html`<p class="muted">Загрузка…</p>`); return; }
     const topo = state.topology || {};
     const rows = (state.hosts || []).map(hostRow);
     const events = (state.events || []).slice(0, 12).map(ev => html`<li>
@@ -61,7 +60,7 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast }
         <div class="card-title">Live hosts → STANDARD membership
           <span class="cell-sub"> profile row_version: ${state.profile_row_version ?? '—'} · топология проверена: ${topo.checked_at ? formatTimestamp(topo.checked_at) : '—'}</span>
         </div>
-        <table class="table">
+        <table>
           <thead><tr><th>Inbound tag</th><th>Классификация</th><th>STANDARD</th><th>Действие</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -70,7 +69,7 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast }
       <div class="card">
         <div class="card-title">Планы → профиль доставки</div>
         <p class="cell-sub">Operational routing, не тариф: замена хостов не требует новой версии тарифа и не требует перепокупки.</p>
-        <ul>${Object.entries(state.plan_delivery || {}).map(([plan, profile]) => html`<li><strong>${plan}</strong> → ${profile}</li>`)}</ul>
+        <ul class="plain-list">${Object.entries(state.plan_delivery || {}).map(([plan, profile]) => html`<li><strong>${plan}</strong> → ${profile}</li>`)}</ul>
       </div>
       <div class="card">
         <div class="card-title">Последние события роутинга (immutable audit)</div>

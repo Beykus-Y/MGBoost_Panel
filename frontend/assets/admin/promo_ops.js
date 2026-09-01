@@ -48,7 +48,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
           <button data-promo-act="refresh">Обновить</button>
         </div>
         <h4>Определения</h4>
-        ${definitions.length?html`<table class="list"><thead><tr>
+        ${definitions.length?html`<table><thead><tr>
             <th>Код</th><th>Эффект</th><th>На польз.</th><th>Статус</th><th></th></tr></thead>
           <tbody>${definitions.map(d=>html`<tr>
             <td><strong>${d.code}</strong></td>
@@ -59,7 +59,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
           </tr>`)}</tbody></table>`
           :html`<div class="empty-state">Промокодов ещё нет</div>`}
         <h4>Последние применения</h4>
-        ${redemptions.length?html`<table class="list"><thead><tr>
+        ${redemptions.length?html`<table><thead><tr>
             <th>Код</th><th>Аккаунт</th><th>Статус</th><th>Кем</th><th>Когда</th></tr></thead>
           <tbody>${redemptions.map(r=>html`<tr>
             <td><strong>${r.promo_code}</strong>${r.trial_class?html`<div class="cell-sub">${r.trial_class}</div>`:html``}</td>
@@ -90,7 +90,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
         title:'Создать промокод',
         body:html`<div class="ops-form">
           <label>Код (A-Z, 0-9, _, 3..64)
-            <input type="text" id="promo-new-code" maxlength="64" style="text-transform:uppercase"/></label>
+            <input type="text" id="promo-new-code" maxlength="64" class="input-uppercase"/></label>
           <label>Эффект
             <select id="promo-new-kind">
               <option value="EXTEND_SUBSCRIPTION">Продление подписки (+N дней)</option>

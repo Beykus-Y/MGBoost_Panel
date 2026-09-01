@@ -48,6 +48,19 @@ export function redemptionStatusBadgeClass(status){
   return 'badge-amber';
 }
 
+// Wave 8 consistency-pass fix: routing.js emitted `badge err`/`badge warn`/
+// `badge ok` -- none of those modifier classes exist anywhere in CSS (only
+// badge-green/red/amber/gray/blue do), so host classification badges on
+// the Routing page rendered with zero color. WL_EXACT is a verified WL
+// host blocked from STANDARD membership (error); WL_SUSPECT is unverified
+// wl-like (warning); STANDARD is the normal, usable classification
+// (success).
+export function hostClassBadgeClass(classification){
+  if(classification==='WL_EXACT')return 'badge-red';
+  if(classification==='WL_SUSPECT')return 'badge-amber';
+  return 'badge-green';
+}
+
 const HUMAN_LABELS=Object.freeze({
   ACTIVE:'Активен',DISABLED:'Отключён',EXPIRED:'Истёк',PENDING:'Ожидает',CLOSED:'Закрыт',
   UNLIMITED:'Безлимит',UNKNOWN_LEGACY:'Legacy-условия',NO_SUBSCRIPTION:'Нет подписки',

@@ -125,10 +125,13 @@ const LEGACY_TRANSITIONS_READY = trackModule('Легаси-переходы','le
     openLegacyTransitionById:readyAccountUi.payments.openLegacyTransitionById,openAccount:readyAccountUi.openAccount});
   return legacyTransitionsUi;
 }));
-const ROUTING_UI_READY = trackModule('Роутинг хостов','routing',import(`../routing.js${_MODULE_VERSION}`).then(module=>{
-  routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
+const ROUTING_UI_READY = trackModule('Роутинг хостов','routing',(async()=>{
+  const routingCore=await import(`../core.js${_MODULE_VERSION}`);
+  const module=await import(`../routing.js${_MODULE_VERSION}`);
+  routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast,
+    hostClassBadgeClass:routingCore.hostClassBadgeClass});
   return routingUi;
-}));
+})());
 const NODES_UI_READY = trackModule('Ноды','nodes',(async()=>{
   const nodesCore=await import(`../core.js${_MODULE_VERSION}`);
   const module=await import(`../operations/nodes.js${_MODULE_VERSION}`);
@@ -286,18 +289,18 @@ async function loadDashboard(){
   if(label)label.textContent=period.label;
   renderHtml(document.getElementById('sys-stats'),html`
     <div class="stat-card"><div class="stat-label">Пользователи</div><div class="stat-value">${sys.total_user}</div><div class="stat-sub">${sys.users_active} активных · ${sys.users_expired} истекших</div></div>
-    <div class="stat-card"><div class="stat-label">Онлайн</div><div class="stat-value" style="color:var(--green)">${sys.online_users}</div><div class="stat-sub">прямо сейчас</div></div>
+    <div class="stat-card"><div class="stat-label">Онлайн</div><div class="stat-value stat-value--positive">${sys.online_users}</div><div class="stat-sub">прямо сейчас</div></div>
     <div class="stat-card"><div class="stat-label">Входящий трафик</div><div class="stat-value">${fmt(sys.incoming_bandwidth)}</div><div class="stat-sub">${fmt(sys.incoming_bandwidth_speed)}/с</div></div>
     <div class="stat-card"><div class="stat-label">Исходящий трафик</div><div class="stat-value">${fmt(sys.outgoing_bandwidth)}</div><div class="stat-sub">${fmt(sys.outgoing_bandwidth_speed)}/с</div></div>
     <div class="stat-card"><div class="stat-label">CPU</div><div class="stat-value">${sys.cpu_usage.toFixed(1)}%</div><div class="stat-sub">${sys.cpu_cores} ядр</div></div>
     <div class="stat-card"><div class="stat-label">RAM</div><div class="stat-value">${mem}%</div><div class="stat-sub">${fmt(sys.mem_used)} / ${fmt(sys.mem_total)}</div></div>
   `);
   renderHtml(document.getElementById('dash-nodes'),html`${nodes.map(n=>html`
-    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
+    <div class="dash-node-row">
       <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
-      <div style="flex:1">
-        <div style="font-size:13px">${n.name}</div>
-        <div style="font-size:11px;color:var(--text2)">${n.address} · xray ${n.xray_version||'?'}</div>
+      <div class="dash-node-info">
+        <div class="dash-node-name">${n.name}</div>
+        <div class="dash-node-addr">${n.address} · xray ${n.xray_version||'?'}</div>
       </div>
       <span class="badge ${n.status==='connected'?'badge-green':'badge-red'}">${n.status==='connected'?'ок':'офф'}</span>
     </div>
@@ -306,14 +309,14 @@ async function loadDashboard(){
   renderHtml(document.getElementById('dash-node-traffic'),usages.length?html`${usages.map(u=>{
     const total=u.uplink+u.downlink;
     const pct=totalTraffic>0?Math.round(total/totalTraffic*100):0;
-    return html`<div class="clickable" style="padding:8px 0;border-bottom:0.5px solid var(--border)" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-        <span style="color:var(--text2)">${u.node_name}</span>
+    return html`<div class="clickable dash-traffic-row" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
+      <div class="dash-traffic-header">
+        <span class="muted2">${u.node_name}</span>
         <span>${fmt(total)}</span>
       </div>
       <div class="traffic-bar"><div class="traffic-fill" style="width:${pct}%"></div></div>
     </div>`;
-  })}`:html`<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет трафика за период</p>`);
+  })}`:html`<p class="dash-traffic-empty">Нет трафика за период</p>`);
 }
 
 let allInbounds={};

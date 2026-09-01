@@ -98,7 +98,7 @@ export function createExpiryOps({html,renderHtml,toast,confirmFlow,formatTimesta
           <button class="danger" data-expiry-op="END_NOW" data-account-id="${detail.account.id}">Завершить сейчас…</button>
         </div>
         <div class="wide ops-actions">
-          <input type="number" id="ops-exp-days" min="1" max="3650" step="1" placeholder="дней" style="max-width:110px"/>
+          <input type="number" id="ops-exp-days" min="1" max="3650" step="1" placeholder="дней" class="input-narrow"/>
           <button data-expiry-op="EXTEND_DAYS" data-custom="1" data-account-id="${detail.account.id}">Продлить на N…</button>
           <button class="danger" data-expiry-op="REDUCE_DAYS" data-custom="1" data-account-id="${detail.account.id}">Сократить на N…</button>
         </div>
