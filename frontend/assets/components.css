@@ -1,0 +1,149 @@
+/* Shared, cross-domain UI components: buttons, form controls, table,
+   badges/dot/notice, tabs, loading, toast, modal (unified visual contract
+   for both modal systems), progress/traffic bars. Consumed by every
+   domain screen -- do not add domain-specific layout here (see
+   domain-*.css once those exist). */
+
+button{cursor:pointer;font-family:inherit;font-size:13px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);border-radius:8px;padding:7px 14px;min-height:34px;white-space:nowrap;transition:background 0.15s,border-color 0.15s}
+button:hover{background:var(--bg4);border-color:var(--border2)}
+button:disabled{opacity:.5;cursor:default;pointer-events:none}
+button.primary{background:var(--accent2);border-color:var(--accent);color:#aaaaff}
+button.primary:hover{background:var(--accent);color:#fff}
+button.danger{background:var(--red2);border-color:#aa3a3a;color:#ffaaaa}
+button.danger:hover{background:#7a1a1a}
+button.success{background:var(--green2);border-color:var(--green3);color:#aaffcc}
+button.small{padding:.28rem .6rem;font-size:.8rem}
+.copy-small{padding:4px 7px;min-height:26px;font-size:10px}
+
+input,select,textarea{background:var(--bg);border:0.5px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;padding:8px 12px;min-height:34px;width:100%;outline:none;transition:border-color 0.15s}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+input:disabled,select:disabled,textarea:disabled{opacity:.5;cursor:default}
+select option{background:var(--bg2)}
+label{font-size:12px;color:var(--text2);display:block;margin-bottom:4px;margin-top:10px}
+label:first-child{margin-top:0}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.search-box{background:var(--bg3);border:0.5px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-size:13px;width:220px;min-width:220px;outline:none}
+.search-box:focus{border-color:var(--accent)}
+.ops-form{display:flex;flex-direction:column;gap:.65rem;margin-top:.5rem}
+.ops-form label{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:var(--text2)}
+.ops-form input,.ops-form select,.ops-form textarea{padding:.45rem .55rem;border:1px solid var(--border);border-radius:8px;font:inherit;background:var(--bg);color:var(--text)}
+.ops-form.grid-two{display:grid;grid-template-columns:1fr 1fr;gap:.65rem}
+.ops-form .wide{grid-column:1/-1}
+.ops-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem}
+.ops-confirm-bar{display:flex;flex-direction:column;gap:.6rem;width:100%}
+.ops-checkline{display:flex;align-items:center;gap:.45rem;font-size:.88rem}
+.ops-submit-row{width:100%;text-align:right}
+.ops-consequences{margin:.4rem 0 .6rem 1.1rem;font-size:.9rem;display:flex;flex-direction:column;gap:.25rem}
+
+/* Table */
+.table-wrap{overflow-x:auto;width:100%;overflow:auto;border-radius:12px;overscroll-behavior-x:contain}
+table{width:100%;border-collapse:collapse;min-width:860px;table-layout:auto}
+th{font-size:11px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:0.05em;padding:8px 12px;text-align:left;border-bottom:0.5px solid var(--border)}
+td{padding:10px 12px;border-bottom:0.5px solid var(--border);color:var(--text);font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bg3)}
+tbody tr{transition:background .12s}
+thead th{position:sticky;top:0;z-index:1;background:var(--bg2)}
+td,th{white-space:nowrap}
+td:first-child,th:first-child{white-space:normal;min-width:180px}
+.clickable{cursor:pointer}
+.cell-sub{font-size:11px;color:var(--text3);margin-top:3px}
+.muted-count{font-size:13px;color:var(--text3)}
+.empty-state,.error-state{padding:1.5rem;text-align:center;color:var(--text3)}
+.error-state{color:var(--red)}
+
+/* Badges / status */
+.badge{display:inline-flex;align-items:center;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;border:0.5px solid}
+.badge-green{background:var(--green2);border-color:var(--green3);color:var(--green)}
+.badge-red{background:var(--red2);border-color:#aa3a3a;color:var(--red)}
+.badge-amber{background:var(--amber2);border-color:#aa7a1a;color:var(--amber)}
+.badge-gray{background:var(--bg4);border-color:var(--border2);color:var(--text2)}
+.badge-blue{background:#1a1a4a;border-color:#3a3aaa;color:#8888ff}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;flex-shrink:0}
+.dot-green{background:var(--green)}
+.dot-red{background:var(--red)}
+.dot-amber{background:var(--amber)}
+.dot-gray{background:var(--text3)}
+
+/* Notices/alerts */
+.notice{background:var(--bg3);border:0.5px solid var(--border2);border-radius:10px;padding:10px 12px;color:var(--text2);font-size:12px;margin-bottom:14px}
+.notice-amber{background:var(--amber2);border-color:#7a5a18;color:#ffd18a}
+.notice-success{background:var(--green2);border-color:var(--green3);color:#b8ffd0;margin-top:12px}
+.notice-danger{background:var(--red2);border-color:#aa3a3a;color:#ffaaaa}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;margin-bottom:1.25rem;border-bottom:0.5px solid var(--border);padding-bottom:0}
+.tab{padding:8px 14px;font-size:13px;color:var(--text2);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:#8888ff;border-bottom-color:var(--accent)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* Loading */
+.loading{color:var(--text3);font-size:13px;padding:2rem;text-align:center}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Toast */
+#toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--bg3);border:0.5px solid var(--border2);border-radius:10px;padding:10px 16px;font-size:13px;color:var(--text);z-index:2000;transform:translateY(20px);opacity:0;transition:all 0.2s;pointer-events:none}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.ok{border-color:var(--green3);color:var(--green)}
+#toast.err{border-color:#aa3a3a;color:var(--red)}
+
+/* Modal -- unified visual contract for both the static `.modal-overlay`
+   system and the dynamically-created `.ops-modal-overlay` system
+   (modals.js). Their JS lifecycle stays separate (see plan section 7 /
+   corrective pass item 3): open/close still toggles `display` via the
+   `.open` class exactly as before, unchanged. Only the shared surface
+   styling (background, radius, shadow, sizing) is unified here.
+   NOTE: adding an open/close transition (motion plan) requires the
+   overlay to stay in the render tree while animating out, which needs a
+   JS-side delay before removal/hide -- tried a CSS-only visibility-based
+   approach here first and it broke Playwright's visibility detection in
+   test_admin_browser_e2e.py (innerText requires a "Visible" actionable
+   element, which a `visibility:hidden`-by-default-but-always-`display:flex`
+   overlay does not reliably satisfy at read time). Reverted to the
+   original display:none/flex toggle; the motion addition is deferred to
+   a follow-up wave that also touches modals.js/kernel.js's close path. */
+.modal-overlay,.ops-modal-overlay{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,0.7);
+  display:none;align-items:center;justify-content:center;
+  z-index:1000;
+}
+.modal-overlay.open,.ops-modal-overlay.open{display:flex}
+.ops-modal-overlay{z-index:1100}
+.modal,.ops-modal{
+  background:var(--bg2);border:0.5px solid var(--border);border-radius:14px;
+  padding:1.5rem;max-width:95vw;max-height:90vh;overflow-y:auto;
+  box-shadow:0 24px 90px rgba(0,0,0,.55);
+}
+.modal{width:480px}
+.ops-modal{width:640px;max-height:88vh;overflow:auto}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem}
+.modal-title{font-size:16px;font-weight:500}
+.modal-close{background:none;border:none;color:var(--text2);font-size:20px;cursor:pointer;padding:0;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:1.25rem;padding-top:1rem;border-top:0.5px solid var(--border)}
+
+/* Progress / traffic bars */
+.progress-track{height:8px;background:var(--bg4);border:0.5px solid var(--border);border-radius:999px;overflow:hidden;margin:14px 0 7px}
+.progress-track span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));border-radius:inherit}
+.large-progress{height:11px;margin:0 0 8px}
+.progress-legend{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--text2);font-size:11px}
+.traffic-bar{height:4px;background:var(--bg4);border-radius:2px;overflow:hidden;margin-top:6px}
+.traffic-fill{height:100%;background:var(--accent);border-radius:2px;transition:width 0.3s}
+
+@media (max-width: 900px){
+  .search-box{width:100%}
+}
+
+@media (max-width: 560px){
+  .form-row{grid-template-columns:1fr}
+  .modal{width:calc(100vw - 20px);max-width:none;padding:1rem;border-radius:12px}
+  .modal-footer{justify-content:stretch}
+  .modal-footer button{flex:1 1 auto}
+  table{min-width:720px}
+  #toast{left:.75rem;right:.75rem;bottom:.75rem;text-align:center}
+  .ops-form.grid-two{grid-template-columns:1fr}
+}

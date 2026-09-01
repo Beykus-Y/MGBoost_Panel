@@ -93,11 +93,14 @@ function withModule(ready,label,pageName,callback){
     return callback(ui);
   });
 }
-const MARZBAN_USERS_UI_READY = trackModule('Пользователи Marzban','users',import(`../technical/marzban_users.js${_MODULE_VERSION}`).then(module=>{
+const MARZBAN_USERS_UI_READY = trackModule('Пользователи Marzban','users',(async()=>{
+  const marzbanCore=await import(`../core.js${_MODULE_VERSION}`);
+  const module=await import(`../technical/marzban_users.js${_MODULE_VERSION}`);
   marzbanUsersUi=module.createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxyApi,promptReason,
-    getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters});
+    getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters,
+    marzbanStatusBadgeClass:marzbanCore.marzbanStatusBadgeClass});
   return marzbanUsersUi;
-}));
+})());
 const TICKETS_UI_READY = trackModule('Тикеты','tickets',import(`../support/tickets.js${_MODULE_VERSION}`).then(module=>{
   ticketsUi=module.createTicketsUi({html,renderHtml,closeModal,proxyApi});
   return ticketsUi;
@@ -126,15 +129,19 @@ const ROUTING_UI_READY = trackModule('Роутинг хостов','routing',imp
   routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
   return routingUi;
 }));
-const NODES_UI_READY = trackModule('Ноды','nodes',import(`../operations/nodes.js${_MODULE_VERSION}`).then(module=>{
-  nodesUi=module.createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers});
+const NODES_UI_READY = trackModule('Ноды','nodes',(async()=>{
+  const nodesCore=await import(`../core.js${_MODULE_VERSION}`);
+  const module=await import(`../operations/nodes.js${_MODULE_VERSION}`);
+  nodesUi=module.createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers,
+    nodeImportanceBadgeClass:nodesCore.nodeImportanceBadgeClass});
   return nodesUi;
-}));
+})());
 const OPS_HEALTH_READY = trackModule('Здоровье','ops-health',(async()=>{
   const opsCore=await import(`../core.js${_MODULE_VERSION}`);
   const module=await import(`../ops_health.js${_MODULE_VERSION}`);
   opsHealthUi=module.createOpsHealth({html,renderHtml,toast,getJson,
-    formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration});
+    formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration,
+    healthBadgeClass:opsCore.healthBadgeClass});
   return opsHealthUi;
 })());
 let configsUi=null;
@@ -154,7 +161,8 @@ const PROMO_OPS_READY = trackModule('Промокоды','accounts',(async()=>{
   const module=await import(`../promo_ops.js${_MODULE_VERSION}`);
   const {openModal,confirmFlow}=createModals({html,renderHtml});
   promoOps=module.createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
-    formatTimestamp:promoCore.formatTimestamp,humanLabel:promoCore.humanLabel,adminFetch});
+    formatTimestamp:promoCore.formatTimestamp,humanLabel:promoCore.humanLabel,adminFetch,
+    promoStatusBadgeClass:promoCore.promoStatusBadgeClass,redemptionStatusBadgeClass:promoCore.redemptionStatusBadgeClass});
   return promoOps;
 })());
 window.__PROMO_OPS_READY=PROMO_OPS_READY;

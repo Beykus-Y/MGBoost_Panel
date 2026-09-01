@@ -10,14 +10,14 @@
 // here (the exact class of drift risk PH7-16 Wave 1 closed for getJson),
 // admin.js keeps owning `allNodes`/`allUsers` and passes accessor
 // functions in -- one shared cache, explicit access, no hidden global.
-export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers}){
+export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers,nodeImportanceBadgeClass}){
   let nodeSettings={};
 
   function nodeKey(id){return id===null||id===undefined||id===''?'null':String(id)}
   function sameNodeId(a,b){return (a===null&&b===null)||String(a)===String(b);}
   function getNodeSetting(id){return nodeSettings[nodeKey(id)]||{currency:'USD',importance:'normal',can_remove:true}}
   function importanceLabel(v){return{normal:'обычная',core:'важная',backup:'backup',test:'test',deprecated:'к выводу'}[v]||'обычная'}
-  function importanceClass(v){return{core:'badge-red',backup:'badge-blue',test:'badge-gray',deprecated:'badge-amber',normal:'badge-green'}[v]||'badge-green'}
+  const importanceClass=nodeImportanceBadgeClass;
   function trafficCostLabel(setting,totalBytes){
     const price=Number(setting.traffic_price_per_tb);
     if(!Number.isFinite(price)||price<=0)return'—';

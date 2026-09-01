@@ -8,15 +8,15 @@
 // a healthy value. This is fleet-level health, not per-account state --
 // deliberately not folded into the Account workspace's Subscription tab
 // (see PH7-16 plan §6/§14 Gate D).
-export function createOpsHealth({html,renderHtml,toast,getJson,formatTimestamp,formatDuration}){
-  function statusBadge(ok){return html`<span class="badge ${ok?'badge-green':'badge-red'}">${ok?'OK':'DEGRADED'}</span>`;}
+export function createOpsHealth({html,renderHtml,toast,getJson,formatTimestamp,formatDuration,healthBadgeClass}){
+  function statusBadge(ok){return html`<span class="badge ${healthBadgeClass(ok)}">${ok?'OK':'DEGRADED'}</span>`;}
   function unknownNotice(stub){return html`<div class="notice notice-amber">Сигнал недоступен (${stub?.error_class||'не инструментировано'}) — данные не показываются, чтобы не выдать отсутствие информации за здоровое состояние.</div>`;}
 
   function collectorFreshnessBlock(sources,data){
     if(sources.wl_reconciliation_backlog!=='OK')return unknownNotice(data);
     const f=data;
     return html`<dl class="ops-dl">
-      <dt>Свежесть</dt><dd>${f.fresh?html`<span class="badge badge-green">свежо</span>`:html`<span class="badge badge-red">устарело</span>`} · возраст ${f.age_seconds===null?'—':formatDuration(f.age_seconds)} (порог ${formatDuration(f.max_age_seconds)})</dd>
+      <dt>Свежесть</dt><dd><span class="badge ${healthBadgeClass(f.fresh)}">${f.fresh?'свежо':'устарело'}</span> · возраст ${f.age_seconds===null?'—':formatDuration(f.age_seconds)} (порог ${formatDuration(f.max_age_seconds)})</dd>
       <dt>Последний успешный запуск</dt><dd>${formatTimestamp(f.last_ok_run_at)}</dd>
       <dt>Исход последнего запуска</dt><dd>${f.last_run_outcome||'—'}${f.last_run_error_class?` · ${f.last_run_error_class}`:''}</dd>
     </dl>`;
@@ -44,7 +44,7 @@ export function createOpsHealth({html,renderHtml,toast,getJson,formatTimestamp,f
   function workerHealthBlock(sources,data){
     if(sources.wl_reconciliation_backlog!=='OK')return unknownNotice(data);
     return html`<dl class="ops-dl">
-      <dt>Планировщик видел цикл</dt><dd>${data.scheduler_seen?html`<span class="badge badge-green">да</span>`:html`<span class="badge badge-red">нет</span>`}</dd>
+      <dt>Планировщик видел цикл</dt><dd><span class="badge ${healthBadgeClass(data.scheduler_seen)}">${data.scheduler_seen?'да':'нет'}</span></dd>
       <dt>Последний цикл завершён</dt><dd>${formatTimestamp(data.last_cycle_finished_at)}</dd>
       <dt>Исход</dt><dd>${data.last_cycle_outcome||'—'}</dd>
     </dl>`;

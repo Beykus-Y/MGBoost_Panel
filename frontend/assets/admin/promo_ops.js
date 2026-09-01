@@ -6,7 +6,8 @@
 // crypto.randomUUID() idempotency keys, server-side validation only.
 
 export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
-                                formatTimestamp,humanLabel,adminFetch}){
+                                formatTimestamp,humanLabel,adminFetch,
+                                promoStatusBadgeClass,redemptionStatusBadgeClass}){
 
   function effectTitle(definition){
     if(definition.effect_kind==='TRIAL_GRANT')return `Триал · класс ${definition.trial_class}`;
@@ -53,7 +54,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
             <td><strong>${d.code}</strong></td>
             <td>${effectTitle(d)} ${effectDetails(d)}</td>
             <td>${d.per_user_limit}</td>
-            <td><span class="badge ${d.status==='ACTIVE'?'ok':'muted'}">${d.status}</span></td>
+            <td><span class="badge ${promoStatusBadgeClass(d.status)}">${d.status}</span></td>
             <td>${d.status==='ACTIVE'?html`<button data-promo-act="disable" data-code="${d.code}">Отключить</button>`:html``}</td>
           </tr>`)}</tbody></table>`
           :html`<div class="empty-state">Промокодов ещё нет</div>`}
@@ -63,7 +64,7 @@ export function createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
           <tbody>${redemptions.map(r=>html`<tr>
             <td><strong>${r.promo_code}</strong>${r.trial_class?html`<div class="cell-sub">${r.trial_class}</div>`:html``}</td>
             <td>#${r.account_id??'—'}</td>
-            <td><span class="badge ${r.status==='REDEEMED'?'ok':(r.status==='CANCELLED'?'muted':'warn')}">${r.status}</span></td>
+            <td><span class="badge ${redemptionStatusBadgeClass(r.status)}">${r.status}</span></td>
             <td><div class="cell-sub">${r.actor_type}</div></td>
             <td>${formatTimestamp(r.created_at)}</td>
           </tr>`)}</tbody></table>`

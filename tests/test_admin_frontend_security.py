@@ -279,7 +279,8 @@ const marzbanUsers=sandbox.createMarzbanUsersUi({{
   html:sandbox.html,renderHtml:(_element,markup)=>{{captured=markup.value;}},toast(){{}},closeModal(){{}},
   api:async()=>({{ok:false}}),proxyApi:async()=>({{ok:false}}),promptReason:()=>null,
   getAllUsers:()=>[],setAllUsers(){{}},getAllNodes:()=>[],getAllInbounds:()=>({{}}),setAllInbounds(){{}},
-  getNodeFilters:()=>({{}}),setNodeFilters(){{}}
+  getNodeFilters:()=>({{}}),setNodeFilters(){{}},
+  marzbanStatusBadgeClass:s=>({{active:'badge-green',disabled:'badge-red',expired:'badge-red',limited:'badge-amber',on_hold:'badge-gray'}}[s]||'badge-gray')
 }});
 marzbanUsers.renderUsers([{{
   username:{json.dumps(payload)}, note:{json.dumps(payload)}, sub_last_user_agent:{json.dumps(payload)},

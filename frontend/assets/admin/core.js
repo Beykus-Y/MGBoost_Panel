@@ -18,6 +18,36 @@ export function badgeClass(value){
   return 'badge-gray';
 }
 
+// CSS redesign Wave 2: single source of truth for every value->badge-color
+// decision in the app. Each domain previously carried its own local
+// badge/status-color function (ops_health.js, technical/marzban_users.js,
+// operations/nodes.js, promo_ops.js) -- some of them emitting classes
+// (`ok`/`muted`/`warn`) that don't exist in CSS at all. These replace those
+// local functions; callers keep their own label text where it's
+// domain-specific (e.g. Marzban's Russian status labels).
+
+export function healthBadgeClass(ok){
+  return ok?'badge-green':'badge-red';
+}
+
+export function nodeImportanceBadgeClass(value){
+  return {core:'badge-red',backup:'badge-blue',test:'badge-gray',deprecated:'badge-amber',normal:'badge-green'}[value]||'badge-green';
+}
+
+export function marzbanStatusBadgeClass(value){
+  return {active:'badge-green',disabled:'badge-red',expired:'badge-red',limited:'badge-amber',on_hold:'badge-gray'}[value]||'badge-gray';
+}
+
+export function promoStatusBadgeClass(status){
+  return status==='ACTIVE'?'badge-green':'badge-gray';
+}
+
+export function redemptionStatusBadgeClass(status){
+  if(status==='REDEEMED')return 'badge-green';
+  if(status==='CANCELLED')return 'badge-gray';
+  return 'badge-amber';
+}
+
 const HUMAN_LABELS=Object.freeze({
   ACTIVE:'Активен',DISABLED:'Отключён',EXPIRED:'Истёк',PENDING:'Ожидает',CLOSED:'Закрыт',
   UNLIMITED:'Безлимит',UNKNOWN_LEGACY:'Legacy-условия',NO_SUBSCRIPTION:'Нет подписки',

@@ -17,7 +17,7 @@
 // nodeFilters is shared only with router.js's own bootstrap() (initial
 // fetch); userDeviceCounts is private to this screen.
 export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxyApi,promptReason,
-  getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters}){
+  getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters,marzbanStatusBadgeClass}){
   let userDeviceCounts={};
 
   function parseUTC(v){
@@ -52,9 +52,8 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
     return`${Math.floor(diff/86400)}д назад`;
   }
   function statusBadge(s){
-    const m={active:'badge-green',disabled:'badge-red',expired:'badge-red',limited:'badge-amber',on_hold:'badge-gray'};
     const l={active:'активен',disabled:'выкл',expired:'истёк',limited:'лимит',on_hold:'на паузе'};
-    return html`<span class="badge ${m[s]||'badge-gray'}">${l[s]||s}</span>`;
+    return html`<span class="badge ${marzbanStatusBadgeClass(s)}">${l[s]||s}</span>`;
   }
 
   async function loadUsers(){
