@@ -129,7 +129,7 @@ def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     assert "localStorage.setItem" not in combined
     assert "Authorization" not in combined
     assert "data-action" in combined
-    assert "20260902-adminv2-visual-redesign" in html_source
+    assert "20260902-adminv2-recompose" in html_source
 
     actions = set(re.findall(r'data-action="([a-z0-9-]+)"', combined))
     actions.update({"enable-user", "disable-user"})

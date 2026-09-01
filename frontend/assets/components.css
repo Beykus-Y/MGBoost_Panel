@@ -156,6 +156,7 @@ tbody tr.clickable{cursor:pointer}
 thead th{position:sticky;top:0;z-index:1}
 td,th{white-space:nowrap}
 td:first-child,th:first-child{white-space:normal;min-width:180px}
+td .cell-sub{white-space:normal}
 .clickable{cursor:pointer}
 .cell-sub{font:var(--text-meta);color:var(--text-3);margin-top:3px;font-weight:400}
 .cell-sub--spaced{margin-bottom:14px}

@@ -4,16 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
-<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-visual-redesign">
-<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-visual-redesign">
+<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-recompose">
+<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-recompose">
 </head>
 <body>
 
@@ -109,20 +109,24 @@
           <button data-action="load-dashboard">Обновить</button>
         </div>
       </div>
-      <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка состояния аккаунтов...</div></div>
-      <div class="section-heading legacy-health-heading"><div><span class="eyebrow">Marzban / Ноды</span><h2>Инфраструктура</h2></div></div>
-      <div class="stats-grid" id="sys-stats">
-        <div class="loading"><span class="spinner"></span>Загрузка...</div>
-      </div>
-      <div class="dash-two-col">
-        <div class="card">
-          <div class="card-title">Ноды</div>
-          <div id="dash-nodes"><div class="loading"><span class="spinner"></span></div></div>
+      <div class="dash-layout">
+        <div class="dash-main">
+          <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка состояния аккаунтов...</div></div>
         </div>
-        <div class="card">
-          <div class="card-title">Трафик по нодам <span id="traffic-period-label" class="muted"></span></div>
-          <div id="dash-node-traffic"><div class="loading"><span class="spinner"></span></div></div>
-        </div>
+        <aside class="dash-rail">
+          <div class="dash-rail-heading"><span class="eyebrow">Marzban</span><h3>Инфраструктура</h3></div>
+          <div class="stats-grid stats-grid--rail" id="sys-stats">
+            <div class="loading"><span class="spinner"></span>Загрузка...</div>
+          </div>
+          <div class="card rail-card">
+            <div class="card-title">Ноды</div>
+            <div id="dash-nodes"><div class="loading"><span class="spinner"></span></div></div>
+          </div>
+          <div class="card rail-card">
+            <div class="card-title">Трафик по нодам <span id="traffic-period-label" class="muted"></span></div>
+            <div id="dash-node-traffic"><div class="loading"><span class="spinner"></span></div></div>
+          </div>
+        </aside>
       </div>
     </div>
 
@@ -130,7 +134,18 @@
     <div class="page" id="page-accounts">
       <div class="page-header"><span class="page-title">Аккаунты <span id="accounts-count" class="muted-count"></span></span><div class="page-actions"><input class="search-box" id="account-search" type="text" placeholder="Имя, note, alias или public ID"/><label class="inline-toggle"><input id="show-technical-accounts" type="checkbox"/> Показывать служебные аккаунты</label><button class="primary" data-action="open-create-account">+ Создать аккаунт</button><button data-action="open-promo-manager">Промокоды…</button><button data-action="show-page" data-page="accounts">Обновить</button></div></div>
       <div id="accounts-metadata-warning"></div><div id="technical-hidden-count" class="filter-caption"></div>
-      <div class="card flush-card"><div class="table-wrap"><table><thead><tr><th>Клиент</th><th>Статус</th><th>Подписка</th><th>Telegram</th><th>Слоты</th><th>Реальные устройства</th><th>Готовность</th><th>Статус / действие</th></tr></thead><tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+      <div class="segment-row" id="accounts-segments"></div>
+      <div class="card flush-card"><div class="table-wrap"><table>
+        <thead>
+          <tr class="thead-group-row">
+            <th></th>
+            <th colspan="3">Состояние</th>
+            <th colspan="2">Устройства</th>
+            <th colspan="2">Переход</th>
+          </tr>
+          <tr><th>Клиент</th><th>Статус</th><th>Подписка</th><th>Telegram</th><th>Слоты</th><th>Реальные устройства</th><th>Готовность</th><th>Статус / действие</th></tr>
+        </thead>
+        <tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
     </div>
 
     <!-- ACCOUNT DETAIL -->
@@ -638,6 +653,6 @@
 
 <div id="toast"></div>
 
-<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-visual-redesign"></script>
+<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-recompose"></script>
 </body>
 </html>

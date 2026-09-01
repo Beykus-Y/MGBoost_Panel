@@ -11,7 +11,7 @@ const {createExpiryOps} = await import(`./expiry_ops.js${new URL(import.meta.url
 const {createAdminGrantOps} = await import(`./admin_grant_ops.js${new URL(import.meta.url).search}`);
 
 export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast}){
-  let accounts=[],detail=null,showTechnical=false,migrationShowTechnical=false;
+  let accounts=[],detail=null,showTechnical=false,migrationShowTechnical=false,activeSegment='all';
   const {openModal,confirmFlow}=createModals({html,renderHtml});
   const badge=value=>html`<span class="badge ${badgeClass(value)}">${humanLabel(value)}</span>`;
   const opsCtx=()=>({adminFetch,account:detail?.account,accountId:detail?.account?.id,reload:()=>openAccount(detail.account.id,currentTab)});
@@ -37,8 +37,26 @@ export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toa
     const tbody=document.getElementById('accounts-tbody');
     try{const data=await getJson(`/admin/accounts${showTechnical?'?include_technical=1':''}`);accounts=data.accounts||[];document.getElementById('show-technical-accounts').checked=showTechnical;renderHtml(document.getElementById('accounts-metadata-warning'),metadataWarning(data.presentation_metadata_available));document.getElementById('technical-hidden-count').textContent=!showTechnical&&data.technical_hidden_count?`Скрыто служебных: ${data.technical_hidden_count}`:'';filterAccounts();}
     catch(error){renderHtml(tbody,html`<tr><td colspan="8" class="error-state">Не удалось загрузить аккаунты</td></tr>`);throw error;}
+    renderSegments();
   }
-  function filterAccounts(){const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();renderAccounts(accounts.filter(row=>!query||[row.display_name,row.display_note,row.primary_alias,row.public_id,String(row.id),...(row.aliases||[])].some(value=>String(value||'').toLowerCase().includes(query))));}
+  const SEGMENTS=[
+    {id:'all',label:'Все',test:()=>true},
+    {id:'attention',label:'Требует внимания',warn:true,test:row=>row.migration_action&&!['MIGRATION_NORMAL','WAITING_FIRST_DEVICE'].includes(row.migration_action)},
+    {id:'not-ready',label:'Не готовы',warn:true,test:row=>!row.parent_ready},
+    {id:'telegram',label:'Telegram не привязан',test:row=>row.telegram_status!=='BOUND'},
+  ];
+  function segmentAccounts(rows,segmentId){const seg=SEGMENTS.find(s=>s.id===segmentId)||SEGMENTS[0];return rows.filter(seg.test);}
+  function renderSegments(){
+    const box=document.getElementById('accounts-segments');
+    if(!box)return;
+    renderHtml(box,html`${SEGMENTS.map(seg=>{
+      const count=segmentAccounts(accounts,seg.id).length;
+      const active=activeSegment===seg.id;
+      return html`<span class="segment-chip${active?' active':''}${seg.warn?' segment-chip--warn':''}" data-action="account-segment" data-segment-id="${seg.id}">${seg.label}<span class="segment-count">${count}</span></span>`;
+    })}`);
+  }
+  function setSegment(id){activeSegment=id;renderSegments();filterAccounts();}
+  function filterAccounts(){const query=(document.getElementById('account-search')?.value||'').trim().toLowerCase();const bySegment=segmentAccounts(accounts,activeSegment);renderAccounts(bySegment.filter(row=>!query||[row.display_name,row.display_note,row.primary_alias,row.public_id,String(row.id),...(row.aliases||[])].some(value=>String(value||'').toLowerCase().includes(query))));}
 
   function entitlementValue(sub){if(!sub)return 'Нет подписки';if(sub.effective?.device_limit_mode==='UNLIMITED'||sub.status==='UNLIMITED')return 'Безлимит';return sub.display_name||humanLabel(sub.status);}
 
@@ -62,8 +80,12 @@ export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toa
 
   function overviewTab(){const account=detail.account,sub=detail.subscription;return html`<div class="kv-grid"><div class="detail-item"><div class="detail-label">Аккаунт</div><div class="detail-value">#${account.id}</div></div><div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${badge(account.status)}</div></div><div class="detail-item"><div class="detail-label">Источник</div><div class="detail-value">${humanLabel(account.account_source)}</div></div><div class="detail-item"><div class="detail-label">Создан</div><div class="detail-value">${formatTimestamp(account.created_at)}</div></div></div>
     <div class="card"><div class="card-title">Подписка / право доступа</div><div class="large-readable-value">${entitlementValue(sub)}</div></div>
-    ${entitlementCard()}
-    <div class="card spaced-card"><div class="card-title">Legacy aliases</div>${detail.aliases.length?detail.aliases.map(alias=>html`<div class="list-row"><div><strong>${alias.legacy_username}</strong>${alias.note?html`<div class="alias-note">${alias.note}</div>`:''}<div class="cell-sub">${humanLabel(alias.alias_role)} · ${humanLabel(alias.ownership_provenance)}</div></div>${badge(alias.legacy_status)}</div>`):html`<div class="empty-state">Aliases отсутствуют</div>`}</div>`;}
+    <div class="overview-layout">
+      <div class="overview-main">${entitlementCard()}</div>
+      <aside class="overview-rail">
+        <div class="card rail-card"><div class="card-title">Legacy aliases</div>${detail.aliases.length?detail.aliases.map(alias=>html`<div class="list-row"><div><strong>${alias.legacy_username}</strong>${alias.note?html`<div class="alias-note">${alias.note}</div>`:''}<div class="cell-sub">${humanLabel(alias.alias_role)} · ${humanLabel(alias.ownership_provenance)}</div></div>${badge(alias.legacy_status)}</div>`):html`<div class="empty-state">Aliases отсутствуют</div>`}</div>
+      </aside>
+    </div>`;}
   function deviceLimitText(sub){if(!sub)return '—';if(sub.effective?.device_limit_mode==='UNLIMITED')return 'Без ограничений';const limit=sub.effective?.device_limit;return Number.isFinite(Number(limit))?String(limit):'—';}
   function subscriptionTab(){const sub=detail.subscription,credential=detail.credential;return html`<div class="kv-grid"><div class="detail-item"><div class="detail-label">Подписка</div><div class="detail-value">${sub?badge(sub.status):'Нет'}</div></div><div class="detail-item"><div class="detail-label">Тариф</div><div class="detail-value">${sub?.display_name||'—'}</div></div><div class="detail-item"><div class="detail-label">Действует до</div><div class="detail-value">${sub?.current_expiry?formatTimestamp(sub.current_expiry):'Без ограничения срока'}</div></div><div class="detail-item"><div class="detail-label">Лимит устройств</div><div class="detail-value">${deviceLimitText(sub)}</div></div></div>
     ${expiryOps.expiryCard(detail)}
@@ -146,7 +168,7 @@ export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toa
   // the router's (admin/app/router.js, since Wave 6) one click listener
   // calls as its default/unmatched-action fallback -- same pattern
   // already used for routingUi.handleRoutingClick.
-  function handleAccountClick(element,event){let work;if(element.dataset.action==='open-account'){work=openAccount(Number(element.dataset.accountId),element.dataset.openTab);}if(element.dataset.action==='account-tab')showAccountTab(element.dataset.accountTab);if(element.dataset.action==='issue-account-credential')work=issueCredential(Number(element.dataset.accountId));if(element.dataset.action==='copy-issued-credential')work=navigator.clipboard.writeText(document.getElementById('issued-credential-url').value).then(()=>toast('Скопировано'));if(element.dataset.action==='copy-technical'){const node=document.getElementById(element.dataset.copyTarget);if(node)work=navigator.clipboard.writeText(node.textContent).then(()=>toast('Скопировано'));}if(element.dataset.action==='new-manual-payment'&&detail)work=payments.openNewPayment(opsCtx());if(element.dataset.action==='legacy-commercial-transition'&&detail)work=payments.openLegacyTransition(opsCtx());if(element.dataset.action==='open-manual-payment'&&detail)work=payments.openRecordModal({id:Number(element.dataset.paymentId)},opsCtx(),false);if(element.dataset.action==='tg-rebind'&&detail)work=startOwnershipRebind(Number(element.dataset.accountId));if(element.dataset.action==='open-create-account')work=adminGrantOps.openCreateAccountDialog({adminFetch,openAccount,reload:loadAccounts});if(element.dataset.action==='open-promo-manager')work=window.__PROMO_OPS_READY.then(ops=>ops.openManager());if(element.dataset.action==='open-admin-grant'&&detail)work=adminGrantOps.openGrantDialog(opsCtx());const expiryButton=event.target.closest('[data-expiry-op]');if(expiryButton&&detail&&expiryButton.dataset.accountId===String(detail.account.id)){work=expiryOps.handleExpiryClick(expiryButton,opsCtx());}if(work)Promise.resolve(work).catch(error=>{console.error(error);toast(error.message||'Операция не выполнена','err');});}
+  function handleAccountClick(element,event){let work;if(element.dataset.action==='account-segment')setSegment(element.dataset.segmentId);if(element.dataset.action==='open-account'){work=openAccount(Number(element.dataset.accountId),element.dataset.openTab);}if(element.dataset.action==='account-tab')showAccountTab(element.dataset.accountTab);if(element.dataset.action==='issue-account-credential')work=issueCredential(Number(element.dataset.accountId));if(element.dataset.action==='copy-issued-credential')work=navigator.clipboard.writeText(document.getElementById('issued-credential-url').value).then(()=>toast('Скопировано'));if(element.dataset.action==='copy-technical'){const node=document.getElementById(element.dataset.copyTarget);if(node)work=navigator.clipboard.writeText(node.textContent).then(()=>toast('Скопировано'));}if(element.dataset.action==='new-manual-payment'&&detail)work=payments.openNewPayment(opsCtx());if(element.dataset.action==='legacy-commercial-transition'&&detail)work=payments.openLegacyTransition(opsCtx());if(element.dataset.action==='open-manual-payment'&&detail)work=payments.openRecordModal({id:Number(element.dataset.paymentId)},opsCtx(),false);if(element.dataset.action==='tg-rebind'&&detail)work=startOwnershipRebind(Number(element.dataset.accountId));if(element.dataset.action==='open-create-account')work=adminGrantOps.openCreateAccountDialog({adminFetch,openAccount,reload:loadAccounts});if(element.dataset.action==='open-promo-manager')work=window.__PROMO_OPS_READY.then(ops=>ops.openManager());if(element.dataset.action==='open-admin-grant'&&detail)work=adminGrantOps.openGrantDialog(opsCtx());const expiryButton=event.target.closest('[data-expiry-op]');if(expiryButton&&detail&&expiryButton.dataset.accountId===String(detail.account.id)){work=expiryOps.handleExpiryClick(expiryButton,opsCtx());}if(work)Promise.resolve(work).catch(error=>{console.error(error);toast(error.message||'Операция не выполнена','err');});}
   document.addEventListener('input',event=>{if(event.target.id==='account-search')filterAccounts();});
   document.addEventListener('change',event=>{if(event.target.id==='show-technical-accounts'){showTechnical=event.target.checked;loadAccounts().catch(()=>toast('Не удалось обновить список','err'));}if(event.target.id==='show-technical-migration'){migrationShowTechnical=event.target.checked;loadMigration().catch(()=>toast('Не удалось обновить отчёт','err'));}});
   // PH7-16 Wave 3: `payments` is exposed so router.js can wire the

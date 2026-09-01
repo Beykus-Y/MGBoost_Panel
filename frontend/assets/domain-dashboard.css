@@ -1,44 +1,63 @@
 /* Dashboard (app/router.js loadDashboard: sys-stats/dash-nodes/
    dash-node-traffic). Wave 9 architecture note: Dashboard is a
    top-level IA item like Accounts/Migration, not grouped under any of
-   the five nav sections (Поддержка/Операции/Платежи/Система/
-   Технический-Легаси) the other domain-*.css files map to -- forcing
-   its exclusive rules into one of those would misrepresent ownership.
-   This is the minimal correction: a ninth target file for the one
-   remaining top-level screen with real exclusive CSS, following the
-   same one-file-per-screen pattern as the rest. Rules Dashboard only
-   *shares* with other screens (stat-card, section-heading, etc.) live
-   in components.css instead -- see that file's "Stat / metric tiles"
-   section. */
+   the five nav sections the other domain-*.css files map to. Rules
+   Dashboard only *shares* with other screens (stat-card, section-
+   heading, etc.) live in components.css instead.
 
-.legacy-health-heading{margin-top:2rem}
+   Admin V2 visual redesign, composition note: the page is no longer a
+   single stacked column (queues -> campaign -> health -> expiring ->
+   infra-stats -> nodes -> traffic, all full width, one after another).
+   It's now a main+rail split: `.dash-main` carries the operator's
+   actual work queue (what needs a decision), `.dash-rail` is a
+   persistent narrower column for routine infrastructure health that's
+   worth glancing at but never the reason someone opens this page. */
+
+.dash-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
+.dash-main{min-width:0}
+.dash-rail{
+  display:flex;flex-direction:column;gap:14px;
+  position:sticky;top:28px;
+}
+.dash-rail-heading{padding-bottom:2px}
+.dash-rail-heading h3{font:var(--text-body-strong);font-size:13px;color:var(--text-1);margin-top:2px}
+.rail-card{padding:1rem 1.1rem}
+.rail-card .card-title{margin-bottom:.7rem}
+
 .traffic-period-select{width:150px}
 /* Default hidden -- app/router.js's onTrafficPeriodChange toggles
    style.display directly based on whether "custom" period is
    selected; this is just the initial state, same override-safe
    pattern as #app in shell.css. */
 .traffic-date-input{width:190px;display:none}
-.dash-two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .stat-value--positive{color:var(--success)}
-.dash-node-row{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border-hair)}
+.dash-node-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-hair)}
 .dash-node-row:last-child{border-bottom:0}
-.dash-node-info{flex:1}
-.dash-node-name{font:var(--text-body-strong)}
-.dash-node-addr{font-family:var(--font-mono);font-size:11px;color:var(--text-3)}
-.dash-traffic-row{padding:9px 0;border-bottom:1px solid var(--border-hair)}
+.dash-node-info{flex:1;min-width:0}
+.dash-node-name{font:var(--text-body-strong);font-size:12.5px}
+.dash-node-addr{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
+.dash-traffic-row{padding:8px 0;border-bottom:1px solid var(--border-hair)}
 .dash-traffic-row:last-child{border-bottom:0}
-.dash-traffic-header{display:flex;justify-content:space-between;font:var(--text-meta);margin-bottom:5px}
-.dash-traffic-empty{color:var(--text-3);font-size:13px;padding:1rem 0}
+.dash-traffic-header{display:flex;justify-content:space-between;font:var(--text-meta);font-size:11.5px;margin-bottom:5px}
+.dash-traffic-empty{color:var(--text-3);font-size:12px;padding:.5rem 0}
 
-/* Operator-facing priority framing: the queues/health section people must
-   act on gets slightly more visual weight than routine infrastructure
-   stats below it -- built with spacing/emphasis, not a loud color wash. */
-#account-dashboard{margin-bottom:0}
+/* Rail stat tiles: single narrow column of compact rows instead of the
+   auto-fit grid used everywhere else -- this is the rail, not a
+   section that owns its own row. */
+.stats-grid--rail{grid-template-columns:1fr;gap:8px;margin-bottom:0}
+.stats-grid--rail .stat-card{padding:.7rem .85rem}
+.stats-grid--rail .stat-value{font-size:19px}
+.stats-grid--rail:hover .stat-card{transform:none}
 
-@media (max-width: 900px){
-  /* Targets the dashboard's inline-styled two-column grid by sibling
-     position -- brittle (breaks silently if markup order changes) but
-     inherited as-is from the pre-redesign file; revisit if the
-     Dashboard markup is ever restructured. */
-  #page-dashboard>.page-header+div+div{grid-template-columns:1fr!important}
+@media (max-width: 1100px){
+  .dash-layout{grid-template-columns:1fr}
+  .dash-rail{position:static;flex-direction:row;flex-wrap:wrap;gap:12px}
+  .dash-rail-heading{width:100%}
+  .stats-grid--rail{flex:1 1 260px;grid-template-columns:repeat(2,1fr)}
+  .rail-card{flex:1 1 260px}
+}
+
+@media (max-width: 560px){
+  .dash-rail{flex-direction:column}
+  .stats-grid--rail{grid-template-columns:1fr}
 }

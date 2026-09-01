@@ -35,7 +35,7 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast, 
       <td><strong>${host.inbound_tag}</strong></td>
       <td>${classBadge(host.classification)}</td>
       <td>${host.in_standard ? html`<span class="badge badge-green">в STANDARD</span>` : html`<span class="badge badge-gray">нет</span>`}</td>
-      <td>
+      <td class="routing-action-cell">
         ${blocked ? html`<button disabled title="${reason}">Недоступно</button>
           <div class="cell-sub">${reason}</div>`
           : host.in_standard
@@ -56,24 +56,28 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast, 
     </li>`);
     renderHtml(box, html`
       ${topo.ok === false ? html`<div class="notice notice-amber">Топология сейчас нездорова (${topo.error_class || 'mismatch'}) — мутации роутинга заблокированы fail-closed. Обновите страницу позже.</div>` : ''}
-      <div class="card">
-        <div class="card-title">Live hosts → STANDARD membership
-          <span class="cell-sub"> profile row_version: ${state.profile_row_version ?? '—'} · топология проверена: ${topo.checked_at ? formatTimestamp(topo.checked_at) : '—'}</span>
+      <div class="routing-layout">
+        <div class="card routing-main">
+          <div class="card-title">Live hosts → STANDARD membership
+            <span class="cell-sub"> profile row_version: ${state.profile_row_version ?? '—'} · топология проверена: ${topo.checked_at ? formatTimestamp(topo.checked_at) : '—'}</span>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Inbound tag</th><th>Классификация</th><th>STANDARD</th><th>Действие</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table></div>
+          ${!topo.ok ? html`<p class="cell-sub">Состав hosts показан по последним данным; для мутаций требуется свежая успешная проверка топологии.</p>` : ''}
         </div>
-        <table>
-          <thead><tr><th>Inbound tag</th><th>Классификация</th><th>STANDARD</th><th>Действие</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-        ${!topo.ok ? html`<p class="cell-sub">Состав hosts показан по последним данным; для мутаций требуется свежая успешная проверка топологии.</p>` : ''}
-      </div>
-      <div class="card">
-        <div class="card-title">Планы → профиль доставки</div>
-        <p class="cell-sub">Operational routing, не тариф: замена хостов не требует новой версии тарифа и не требует перепокупки.</p>
-        <ul class="plain-list">${Object.entries(state.plan_delivery || {}).map(([plan, profile]) => html`<li><strong>${plan}</strong> → ${profile}</li>`)}</ul>
-      </div>
-      <div class="card">
-        <div class="card-title">Последние события роутинга (immutable audit)</div>
-        <ul class="routing-events">${events}</ul>
+        <aside class="routing-rail">
+          <div class="card rail-card">
+            <div class="card-title">Планы → профиль доставки</div>
+            <p class="cell-sub">Operational routing, не тариф: замена хостов не требует новой версии тарифа и не требует перепокупки.</p>
+            <ul class="plain-list">${Object.entries(state.plan_delivery || {}).map(([plan, profile]) => html`<li><strong>${plan}</strong> → ${profile}</li>`)}</ul>
+          </div>
+          <div class="card rail-card">
+            <div class="card-title">Последние события (immutable audit)</div>
+            <ul class="routing-events">${events}</ul>
+          </div>
+        </aside>
       </div>`);
   }
 
