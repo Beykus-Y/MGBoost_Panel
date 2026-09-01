@@ -13,7 +13,74 @@ from src.routes.panel import handle_panel
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN_JS = ROOT / "frontend" / "assets" / "admin.js"
 ADMIN_MODULES = ROOT / "frontend" / "assets" / "admin"
+ADMIN_APP = ROOT / "frontend" / "assets" / "admin" / "app"
 ADMIN_HTML = ROOT / "frontend" / "index.html"
+
+# PH7-16 Wave 0A moved the shared kernel/api/auth primitives out of the
+# admin.js monolith into these files; Wave 0B converted them (and admin.js
+# itself, dynamically import()-ed by admin/app/main.js) into real ES
+# modules with explicit import/export. Tests below load them in the same
+# dependency order the real page does (kernel -> api -> auth -> admin.js).
+ADMIN_SHELL_FILES = [ADMIN_APP / "kernel.js", ADMIN_APP / "api.js", ADMIN_APP / "auth.js"]
+
+
+def _admin_shell_source():
+    return "\n".join(path.read_text(encoding="utf-8") for path in ADMIN_SHELL_FILES)
+
+
+def _strip_module_syntax(source):
+    """Turn ES module import/export/top-level-await syntax into plain
+    script syntax.
+
+    Only used for the Node `vm.runInContext` sandbox below, which executes
+    plain scripts, not linked ES modules (and does not support top-level
+    `await` outside an async wrapper). This does not touch any actual
+    logic:
+    - every static `import {...} from './x.js';` line is dropped (its
+      targets are already inlined earlier, in dependency order, by the
+      caller);
+    - every `const {...} = await import(...)` / bare `await import(...)`
+      statement (PH7-16 Wave 0B's versioned-dynamic-import pattern for
+      kernel.js/api.js/auth.js) is dropped the same way, for the same
+      reason -- the names it would have destructured are already defined
+      by the earlier-inlined source;
+    - a leading `export ` on a declaration is stripped (the declaration
+      itself, e.g. `async function bootstrap(){...}`, is unchanged).
+
+    Caller contract: run this ONLY after any block-specific regex
+    substitution that still needs to match the original, un-stripped
+    `await import(...)` text (e.g. the ACCOUNT_UI_READY/PROMO_OPS_READY
+    stubbing below) -- this function is not selective about *which*
+    await-import statement it drops.
+    """
+    source = re.sub(r"^import\s+.*?;\s*$", "", source, flags=re.MULTILINE)
+    # `import.meta` is only valid syntax inside a real module goal --
+    # `_MODULE_VERSION` is unused once the await-import lines that
+    # consumed it are stripped below, so an empty-string stand-in is fine.
+    # `var` (not `const`) because admin.js's own `_MODULE_VERSION` stand-in
+    # (substituted separately, above, before this function ever runs) is
+    # also declared at the same concatenated top level -- `const`/`const`
+    # would collide as a duplicate declaration once both files' sources
+    # are joined into one script.
+    source = re.sub(
+        r"const _MODULE_VERSION = new URL\(import\.meta\.url\)\.search;",
+        "var _MODULE_VERSION='';",
+        source,
+    )
+    source = re.sub(
+        r"(?:const|let)\s*\{[^}]*\}\s*=\s*await\s+import\(.*?\);",
+        "",
+        source,
+        flags=re.DOTALL,
+    )
+    source = re.sub(r"^\s*await\s+import\(.*?\);\s*$", "", source, flags=re.MULTILINE)
+    source = re.sub(
+        r"^export\s+(?=(?:async\s+function|function|class|const|let)\b)",
+        "",
+        source,
+        flags=re.MULTILINE,
+    )
+    return source
 
 
 class FakeHandler:
@@ -39,14 +106,18 @@ class FakeHandler:
 def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     html_source = ADMIN_HTML.read_text(encoding="utf-8")
     js_source = ADMIN_JS.read_text(encoding="utf-8")
+    shell_source = _admin_shell_source()
     module_source = "\n".join(path.read_text(encoding="utf-8") for path in ADMIN_MODULES.glob("*.js"))
-    combined = html_source + "\n" + js_source + "\n" + module_source
+    combined = html_source + "\n" + shell_source + "\n" + js_source + "\n" + module_source
 
     assert not re.search(r"\son[a-z]+\s*=", combined, re.IGNORECASE)
-    assert js_source.count(".innerHTML=") == 1
-    assert "template.innerHTML=markup.value" in js_source
-    assert "localStorage.setItem" not in js_source
-    assert "Authorization" not in js_source
+    # renderHtml's single legitimate `.innerHTML=` sink now lives in
+    # kernel.js (PH7-16 Wave 0A); admin.js itself must not reintroduce one.
+    assert js_source.count(".innerHTML=") == 0
+    assert shell_source.count(".innerHTML=") == 1
+    assert "template.innerHTML=markup.value" in shell_source
+    assert "localStorage.setItem" not in combined
+    assert "Authorization" not in combined
     assert "data-action" in combined
     assert "20260826-wave-a" in html_source
 
@@ -101,9 +172,37 @@ def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for admin JS security test")
 def test_malicious_admin_api_values_are_escaped_by_real_render_path():
+    # PH7-16 Wave 0B: kernel.js/api.js/auth.js/admin.js are all real ES
+    # modules now (admin.js is dynamically import()-ed by admin/app/main.js
+    # -- see index.html). `vm.runInContext` below runs a plain script, not
+    # linked ES modules and without top-level await, so: (1) first replace
+    # the accounts.js/routing.js/promo_ops.js dynamic-import blocks with
+    # stubs while their exact original text still matches these regexes,
+    # (2) only then run _strip_module_syntax to drop every remaining
+    # import/export/await-import wrapper -- doing it in the other order
+    # would let the generic await-import stripper mangle these blocks
+    # before the stubbing regexes below get a chance to match them. The
+    # escaping/rendering logic under test is untouched either way.
     js_source = ADMIN_JS.read_text(encoding="utf-8")
     js_source = re.sub(
-        r"const _MODULE_VERSION = new URL\(document\.currentScript\.src, location\.href\)\.search;\n"
+        # `import.meta.url` is only valid syntax inside a real module goal
+        # -- vm.runInContext parses as a plain script -- so this reference
+        # and the three PH7-16 Wave 0B kernel/api/auth dynamic-import lines
+        # that consume it must go too. Their destructured names (html,
+        # renderHtml, toast, closeModal, api, proxyApi, adminFetch,
+        # doLogin, doLogout) are already provided by the concatenated
+        # shell source that precedes admin.js's source below -- this must
+        # NOT eat the following `let allUsers = [];` etc. block, hence the
+        # precise (non-greedy-free) match instead of spanning to
+        # ACCOUNT_UI_READY.
+        r"const _MODULE_VERSION = new URL\(import\.meta\.url\)\.search;\n"
+        r"const \{html,renderHtml,toast,closeModal\} = await import\(`\./admin/app/kernel\.js\$\{_MODULE_VERSION\}`\);\n"
+        r"const \{api,proxyApi,adminFetch\} = await import\(`\./admin/app/api\.js\$\{_MODULE_VERSION\}`\);\n"
+        r"const \{doLogin,doLogout\} = await import\(`\./admin/app/auth\.js\$\{_MODULE_VERSION\}`\);\n",
+        "var _MODULE_VERSION='';\n",
+        js_source,
+    )
+    js_source = re.sub(
         r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
         "const ACCOUNT_UI_READY=Promise.resolve(null);",
@@ -116,6 +215,7 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
         flags=re.DOTALL,
     )
+    js_source = _strip_module_syntax(_admin_shell_source()) + "\n" + _strip_module_syntax(js_source)
     payload = "<img src=x onerror=globalThis.__xss=1>'\\\"&"
     script = f"""
 const vm=require('vm');

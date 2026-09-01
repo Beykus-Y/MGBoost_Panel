@@ -43,6 +43,14 @@ class AdminFixtureHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/sub-admin/assets/admin.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/app/main.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "main.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/app/kernel.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "kernel.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/app/api.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "api.js").read_bytes(), "text/javascript")
+        elif path == "/sub-admin/assets/admin/app/auth.js":
+            self._send(200, (ROOT / "frontend" / "assets" / "admin" / "app" / "auth.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin/accounts.js":
             self._send(200, (ROOT / "frontend" / "assets" / "admin" / "accounts.js").read_bytes(), "text/javascript")
         elif path == "/sub-admin/assets/admin/core.js":

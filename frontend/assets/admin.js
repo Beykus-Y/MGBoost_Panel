@@ -1,8 +1,31 @@
-const PROXY_API = '/sub-admin-api';
-let CSRF_TOKEN = '';
-// Legacy builds stored the Marzban JWT here.  Remove it before any request;
-// authentication now uses only an HttpOnly server-side session cookie.
-localStorage.removeItem('mz_token');
+// PH7-16 Wave 0B: this file is loaded as an ES module, dynamically
+// import()-ed by admin/app/main.js (not a classic <script> tag anymore --
+// see index.html). Everything it needs from the extracted shell pieces
+// (Wave 0A) is now an explicit import instead of a bare-name reference
+// into a shared classic-script global scope. `bootstrap` is exported so
+// main.js can register it as the post-login/session-restore callback
+// (auth.js exposes onAuthenticated() for exactly that, to avoid an
+// auth.js <-> admin.js import cycle).
+//
+// kernel.js/api.js/auth.js are loaded via versioned dynamic import(), same
+// as the admin/*.js canonical modules below and for the same reason: a
+// static `import ... from './admin/app/kernel.js'` specifier would not
+// inherit this file's own `?v=` query, and the server sends a real
+// `Cache-Control: public, max-age=3600` for JS assets -- without
+// propagating the version explicitly, a stale-cached kernel/api/auth
+// could silently pair with a freshly-deployed admin.js after a release.
+// `import.meta.url` reflects the exact versioned specifier main.js used
+// to import this module, so re-deriving `_MODULE_VERSION` from it here
+// and reusing it for every dynamic import below (shell pieces and the
+// canonical admin/*.js modules alike) keeps the whole graph on one
+// deploy's URLs -- and, since the browser's module registry is keyed by
+// resolved URL, every one of these dynamic imports converges on the exact
+// same singleton kernel/api/auth instances main.js itself is using.
+const _MODULE_VERSION = new URL(import.meta.url).search;
+const {html,renderHtml,toast,closeModal} = await import(`./admin/app/kernel.js${_MODULE_VERSION}`);
+const {api,proxyApi,adminFetch} = await import(`./admin/app/api.js${_MODULE_VERSION}`);
+const {doLogin,doLogout} = await import(`./admin/app/auth.js${_MODULE_VERSION}`);
+
 let allUsers = [];
 let allNodes = [];
 let nodeFilters = {};
@@ -13,12 +36,6 @@ let userDeviceCounts = {};
 let inboundClientExtras = {};
 let accountUi = null;
 let routingUi = null;
-// Same-origin ES module imports are not covered by the versioned `?v=`
-// query on this script's own <script src>; propagate it explicitly so a
-// stale-cached ./admin/*.js can never mix with a fresh one after a deploy.
-// (This file is a classic script, not type="module", so import.meta is not
-// available here -- document.currentScript is the correct source instead.)
-const _MODULE_VERSION = new URL(document.currentScript.src, location.href).search;
 const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,html,renderHtml,showPage,toast});
   return accountUi;
@@ -47,32 +64,6 @@ const TRAFFIC_PERIODS = {
   '7d': { label: 'за неделю', ms: 7 * 24 * 60 * 60 * 1000 },
   '30d': { label: 'за месяц', ms: 30 * 24 * 60 * 60 * 1000 },
 };
-
-class SafeMarkup{
-  constructor(value){this.value=value}
-}
-function esc(s){
-  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-function html(strings,...values){
-  let value='';
-  strings.forEach((part,index)=>{
-    value+=part;
-    if(index<values.length)value+=safeMarkupValue(values[index]);
-  });
-  return new SafeMarkup(value);
-}
-function safeMarkupValue(value){
-  if(value instanceof SafeMarkup)return value.value;
-  if(Array.isArray(value))return value.map(safeMarkupValue).join('');
-  return esc(value);
-}
-function renderHtml(element,markup){
-  if(!(markup instanceof SafeMarkup))throw new TypeError('SafeMarkup required');
-  const template=document.createElement('template');
-  template.innerHTML=markup.value;
-  element.replaceChildren(template.content.cloneNode(true));
-}
 
 function fmt(bytes){
   if(bytes===null||bytes===undefined)return'—';
@@ -178,27 +169,6 @@ function statusBadge(s){
   const l={active:'активен',disabled:'выкл',expired:'истёк',limited:'лимит',on_hold:'на паузе'};
   return html`<span class="badge ${m[s]||'badge-gray'}">${l[s]||s}</span>`;
 }
-function toast(msg,type='ok'){
-  const t=document.getElementById('toast');
-  t.textContent=msg;t.className='show '+(type==='ok'?'ok':'err');
-  clearTimeout(t._t);t._t=setTimeout(()=>t.className='',2500);
-}
-
-async function api(path,opts={}){
-  return adminFetch('/admin/marzban'+path,opts);
-}
-async function proxyApi(path,opts={}){
-  return adminFetch(path,opts);
-}
-async function adminFetch(path,opts={}){
-  const method=(opts.method||'GET').toUpperCase();
-  const headers={'Content-Type':'application/json',...(opts.headers||{})};
-  if(!['GET','HEAD','OPTIONS'].includes(method)&&CSRF_TOKEN)headers['X-CSRF-Token']=CSRF_TOKEN;
-  const r=await fetch(PROXY_API+path,{...opts,method,credentials:'same-origin',headers});
-  if(r.status===401){showLoggedOut();throw new Error('unauth')}
-  return r;
-}
-
 function toApiDate(ms){
   return new Date(ms).toISOString().slice(0,19);
 }
@@ -245,50 +215,6 @@ function onTrafficPeriodChange(){
   });
   loadDashboard();
 }
-
-// AUTH
-async function doLogin(){
-  const u=document.getElementById('login-user').value.trim();
-  const p=document.getElementById('login-pass').value;
-  const e=document.getElementById('login-err');
-  e.style.display='none';
-  try{
-    const r=await fetch(PROXY_API+'/admin/session/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-MGBoost-Admin-Login':'1'},body:JSON.stringify({username:u,password:p})});
-    const d=await r.json();
-    if(!r.ok||!d.authenticated||!d.csrf_token)throw new Error();
-    CSRF_TOKEN=d.csrf_token;
-    document.getElementById('login-pass').value='';
-    document.getElementById('sidebar-admin').textContent=d.username;
-    document.getElementById('login-page').style.display='none';
-    document.getElementById('app').style.display='flex';
-    bootstrap();
-  }catch{e.style.display='block'}
-}
-function showLoggedOut(){
-  CSRF_TOKEN='';
-  document.getElementById('app').style.display='none';
-  document.getElementById('login-page').style.display='flex';
-}
-async function doLogout(){
-  try{
-    await adminFetch('/admin/session/logout',{method:'POST'});
-  }catch{}
-  showLoggedOut();
-}
-async function restoreAdminSession(){
-  try{
-    const r=await fetch(PROXY_API+'/admin/session',{credentials:'same-origin',headers:{Accept:'application/json'}});
-    if(!r.ok)throw new Error();
-    const d=await r.json();
-    if(!d.authenticated||!d.csrf_token)throw new Error();
-    CSRF_TOKEN=d.csrf_token;
-    document.getElementById('sidebar-admin').textContent=d.username;
-    document.getElementById('login-page').style.display='none';
-    document.getElementById('app').style.display='flex';
-    bootstrap();
-  }catch{showLoggedOut()}
-}
-document.getElementById('login-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 
 // NAV
 function showPage(name){
@@ -1185,11 +1111,8 @@ async function saveInboundExtras(){
   await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({inbound_client_extras:inboundClientExtras})});
 }
 
-function closeModal(id){document.getElementById(id).classList.remove('open')}
-document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open')}));
-
 let allInbounds={};
-async function bootstrap(){
+export async function bootstrap(){
   await ACCOUNT_UI_READY;
   loadDashboard();
   loadAccountsSafely();
@@ -1735,5 +1658,7 @@ document.addEventListener('drop',event=>{
 });
 document.addEventListener('dragend',dragEnd);
 
-// INIT
-restoreAdminSession();
+// PH7-16 Wave 0B: the app-init trigger (restoreAdminSession()) moved to
+// admin/app/main.js -- the composition root now calls it explicitly after
+// dynamically import()-ing this module and registering `bootstrap` as
+// auth.js's post-authentication callback (see main.js).
