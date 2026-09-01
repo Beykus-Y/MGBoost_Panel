@@ -35,6 +35,33 @@ label:first-child{margin-top:0}
 .ops-submit-row{width:100%;text-align:right}
 .ops-consequences{margin:.4rem 0 .6rem 1.1rem;font-size:.9rem;display:flex;flex-direction:column;gap:.25rem}
 
+/* Key/value primitives -- shared across Account workspace, Operations
+   and Technical/Legacy screens. `.detail-grid` is kept as an alias of
+   `.kv-grid` (identical rule) because ops_health.js still renders it
+   directly; drop the alias once every consumer has moved to `.kv-grid`
+   (tracked per-wave, see plan section 15). `.kv-grid--copyable` /
+   `.kv-row--copyable` replace the old `.technical-fields`/
+   `.technical-field` names (single consumer, renamed outright). */
+.detail-grid,.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.detail-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
+.detail-label{font-size:11px;color:var(--text2);margin-bottom:2px}
+.detail-value{font-size:13px;font-weight:500}
+.kv-grid--copyable{display:grid;gap:1px;margin-top:10px;border:.5px solid var(--border);border-radius:8px;overflow:hidden}
+.kv-row--copyable{display:grid;grid-template-columns:minmax(145px,190px) minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--bg3);padding:8px 10px}
+.kv-row--copyable>span{color:var(--text2);font-size:11px}
+.kv-row--copyable code{overflow-wrap:anywhere;white-space:normal;color:var(--text);font-size:11px}
+.detail-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:9px;font-size:12px;color:var(--text2)}
+.detail-line strong{color:var(--text);font-family:monospace;font-size:11px}
+.list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:.5px solid var(--border)}
+.list-row:last-child{border-bottom:0}
+.ops-dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:.3rem .9rem;margin:.5rem 0}
+.ops-dl dt{color:var(--text3);font-size:.82rem}
+.ops-dl dd{margin:0;font-size:.92rem;color:var(--text)}
+.compact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+.compact-row{display:flex;justify-content:space-between;text-align:left;background:var(--bg2)}
+.compact-row small{display:block;color:var(--text3);font-weight:400;margin-top:2px}
+.spaced-card{margin-top:14px}
+
 /* Table */
 .table-wrap{overflow-x:auto;width:100%;overflow:auto;border-radius:12px;overscroll-behavior-x:contain}
 table{width:100%;border-collapse:collapse;min-width:860px;table-layout:auto}
@@ -146,4 +173,7 @@ td:first-child,th:first-child{white-space:normal;min-width:180px}
   table{min-width:720px}
   #toast{left:.75rem;right:.75rem;bottom:.75rem;text-align:center}
   .ops-form.grid-two{grid-template-columns:1fr}
+  .detail-grid,.kv-grid,.ops-dl{grid-template-columns:1fr}
+  .kv-row--copyable{grid-template-columns:1fr}
+  .kv-row--copyable .copy-small{justify-self:start}
 }

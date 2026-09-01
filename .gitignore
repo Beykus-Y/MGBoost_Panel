@@ -19,3 +19,6 @@ data/
 .idea/
 .vscode/
 *.swp
+
+# Local scratch (used when /tmp tmpfs quota is exhausted)
+.local-tmp/

@@ -24,41 +24,13 @@
 .legacy-health-heading{margin-top:1.75rem}
 
 .flush-card{padding:0}
-.list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:.5px solid var(--border)}
-.list-row:last-child{border-bottom:0}
-.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
-.device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
-.device-card .notice{margin:12px 0 0}
-.detail-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:9px;font-size:12px;color:var(--text2)}
-.detail-line strong{color:var(--text);font-family:monospace;font-size:11px}
 .technical-row{display:grid;gap:5px;padding:12px 0;border-bottom:.5px solid var(--border)}
 .technical-row:last-child{border-bottom:0}
 .technical-row code,.code-wrap{font-family:monospace;font-size:11px;color:var(--text2);overflow-wrap:anywhere;white-space:normal}
 .back-button{margin-right:12px}
-.credential-row{display:flex;gap:8px;margin-top:10px}
-.credential-row input{font-family:monospace}
-.expiry-buckets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
-.expiry-buckets span{background:var(--bg3);border:.5px solid var(--border);border-radius:999px;padding:5px 10px;font-size:12px;color:var(--text2)}
-.compact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
-.compact-row{display:flex;justify-content:space-between;text-align:left;background:var(--bg2)}
-.compact-row small{display:block;color:var(--text3);font-weight:400;margin-top:2px}
 .inline-toggle{display:flex;align-items:center;gap:7px;margin:0;color:var(--text2);white-space:nowrap}
 .inline-toggle input{width:auto;min-height:auto;accent-color:var(--accent)}
 .filter-caption{min-height:18px;color:var(--text3);font-size:11px;margin:-8px 0 10px}
-.account-subtitle{font-size:11px;color:var(--text3);margin:4px 0 0 116px}
-.large-readable-value{font-size:20px;font-weight:600}
-.spaced-card{margin-top:14px}
-.alias-note{font-size:13px;color:var(--text2);margin-top:3px}
-.bootstrap-title{font-size:12px;color:var(--amber);margin-top:3px}
-.secondary-field{opacity:.72}
-.secondary-field code{overflow-wrap:anywhere;text-align:right}
-.technical-generation{border-bottom:.5px solid var(--border);padding:10px 0}
-.technical-generation:last-child{border-bottom:0}
-.technical-generation summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
-.technical-fields{display:grid;gap:1px;margin-top:10px;border:.5px solid var(--border);border-radius:8px;overflow:hidden}
-.technical-field{display:grid;grid-template-columns:minmax(145px,190px) minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--bg3);padding:8px 10px}
-.technical-field>span{color:var(--text2);font-size:11px}
-.technical-field code{overflow-wrap:anywhere;white-space:normal;color:var(--text);font-size:11px}
 
 /* Node cards */
 .nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:1.5rem}
@@ -84,9 +56,6 @@
 
 /* User detail */
 .user-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1rem}
-.detail-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
-.detail-label{font-size:11px;color:var(--text2);margin-bottom:2px}
-.detail-value{font-size:13px;font-weight:500}
 
 /* Per-user configs */
 .per-user-config{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border)}
@@ -109,14 +78,9 @@
 
 @media (max-width: 560px){
   body{font-size:13px}
-  .stats-grid,.nodes-grid,.user-detail-grid,.detail-grid,.device-grid{grid-template-columns:1fr}
+  .stats-grid,.nodes-grid,.user-detail-grid{grid-template-columns:1fr}
   .section-heading{align-items:flex-start;flex-direction:column}
-  .credential-row{flex-direction:column}
-  .account-subtitle{margin-left:0}
-  .technical-field{grid-template-columns:1fr}
-  .technical-field .copy-small{justify-self:start}
   .card{padding:1rem;border-radius:10px}
-  .ops-dl{grid-template-columns:1fr}
   .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
   .timeline-item{grid-template-columns:auto 1fr}
   .timeline-time{grid-column:1/2}
@@ -125,13 +89,10 @@
 }
 
 /* ===== Operational admin domain rules (Wave B / PH7-10) ===================
-   Not-yet-migrated to a domain-*.css file (Waves 3-6). Colors were already
+   Not-yet-migrated to a domain-*.css file (Waves 4-6). Colors were already
    remapped onto real dark tokens in Wave 0 -- what's left here is layout
-   only: definition lists, product picker, queue/timeline widgets. */
+   only: product picker, queue/timeline widgets. */
 
-.ops-dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:.3rem .9rem;margin:.5rem 0}
-.ops-dl dt{color:var(--text3);font-size:.82rem}
-.ops-dl dd{margin:0;font-size:.92rem;color:var(--text)}
 .product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.75rem 0}
 .product-card{display:flex;flex-direction:column;gap:.15rem;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3);color:var(--text);cursor:pointer;text-align:left}
 .product-card:hover{border-color:var(--border2)}
@@ -139,7 +100,6 @@
 .product-card small,.product-card span{color:var(--text2)}
 .ops-preview h4{margin:.2rem 0 .4rem}
 .device-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem}
-.slot-note summary{cursor:pointer;color:var(--text2);font-size:.8rem;margin-top:.35rem}
 .queue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.8rem}
 .queue-block{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:.85rem}
 .queue-block h4{margin:0 0 .5rem;font-size:.95rem}

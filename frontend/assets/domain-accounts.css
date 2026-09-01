@@ -1,0 +1,51 @@
+/* Account workspace: identity header context, tab-scroll behavior,
+   device cards, credential/expiry/technical blocks, grace period.
+   Owned by accounts.js / device_ops.js render output. Shared
+   components the workspace also happens to render (kv-grid, ops-dl,
+   list-row, modal, badges, progress...) live in components.css --
+   this file is layout specific to this one screen. */
+
+.account-subtitle{font-size:11px;color:var(--text3);margin:4px 0 0 116px}
+
+/* Wave 0 removed this rule as apparently-dead (a stale audit claimed
+   the class wasn't in markup); index.html actually sets
+   class="tabs account-tabs" on #account-tabs, so the removal was a
+   regression -- restored here, plus the edge-fade affordance the
+   redesign plan calls for since 8 tabs won't fit at narrow widths. */
+.account-tabs{
+  overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;
+  -webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 24px),transparent 100%);
+  mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 24px),transparent 100%);
+}
+
+.device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.device-card .notice{margin:12px 0 0}
+
+.credential-row{display:flex;gap:8px;margin-top:10px}
+.credential-row input{font-family:monospace}
+
+.expiry-buckets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.expiry-buckets span{background:var(--bg3);border:.5px solid var(--border);border-radius:999px;padding:5px 10px;font-size:12px;color:var(--text2)}
+
+.large-readable-value{font-size:20px;font-weight:600}
+.alias-note{font-size:13px;color:var(--text2);margin-top:3px}
+.bootstrap-title{font-size:12px;color:var(--amber);margin-top:3px}
+.secondary-field{opacity:.72}
+.secondary-field code{overflow-wrap:anywhere;text-align:right}
+
+.technical-generation{border-bottom:.5px solid var(--border);padding:10px 0}
+.technical-generation:last-child{border-bottom:0}
+.technical-generation summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
+
+.slot-note summary{cursor:pointer;color:var(--text2);font-size:.8rem;margin-top:.35rem}
+
+/* Grace-period progress card (Migration tab) -- previously rendered with
+   zero CSS at all (`.grace-progress` had no matching rule anywhere),
+   an unstyled plain div. Restyled onto the shared progress component. */
+.grace-progress{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:1.25rem}
+
+@media (max-width: 560px){
+  .device-grid{grid-template-columns:1fr}
+  .credential-row{flex-direction:column}
+  .account-subtitle{margin-left:0}
+}
