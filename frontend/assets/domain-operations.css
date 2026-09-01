@@ -1,0 +1,47 @@
+/* Operations: node fleet cards + settings modal (operations/nodes.js),
+   health snapshot and legacy-transitions queue layout. This file
+   replaces operations/nodes.js's previous heavy reliance on inline
+   `style="..."` attributes (the least "componentized" file in the
+   admin panel per the redesign audit) with named, scoped classes. */
+
+.nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:1.5rem}
+.node-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:1rem;transition:transform .15s,border-color .15s,background .15s}
+.node-card:hover{transform:translateY(-1px);border-color:var(--border2)}
+.node-name{font-size:14px;font-weight:500;margin-bottom:4px}
+.node-addr{font-size:11px;color:var(--text2);margin-bottom:8px;font-family:monospace}
+.node-stats{display:flex;gap:12px;font-size:12px;color:var(--text2)}
+.node-card-header{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.node-card-header .node-name{flex:1}
+.node-icon-btn{padding:2px 8px;font-size:12px}
+.node-badges{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.node-stats .muted{color:var(--text3)}
+.node-billing-block{margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
+.node-billing-row{display:flex;justify-content:space-between;gap:8px}
+.node-billing-row b{color:var(--text)}
+.node-billing-note{margin-top:4px;color:var(--text3)}
+.node-card-footer-btn{width:100%;margin-top:10px}
+.node-traffic-name{font-weight:500}
+.node-traffic-sub{font-size:11px;color:var(--text3)}
+.text-right{text-align:right}
+.node-modal-intro{font-size:13px;color:var(--text2);margin-bottom:1rem}
+.node-input-spaced{margin-bottom:12px}
+.node-field-hint{font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px}
+.node-id-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem}
+.node-quiet-hours-section{margin-top:1rem}
+.node-section-label{font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px}
+.node-section-hint{font-size:12px;color:var(--text2);margin-bottom:8px}
+.quiet-hour-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.quiet-hour-input{width:100px}
+.quiet-hour-sep{font-size:12px;color:var(--text2)}
+
+/* Legacy Transitions queue (legacy_transitions.js): card-collapse below
+   ~560px instead of forcing a wide table to scroll -- per redesign plan
+   section 11/19.7 ("Accounts / Legacy Transitions: card-collapse
+   допустим"). The desktop view stays the existing `.list-row` list. */
+@media (max-width: 560px){
+  .legacy-transitions-list .list-row{
+    flex-direction:column;align-items:flex-start;gap:6px;
+    background:var(--bg2);border:0.5px solid var(--border);border-radius:10px;
+    padding:12px;margin-bottom:8px;
+  }
+}

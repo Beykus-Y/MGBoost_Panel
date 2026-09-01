@@ -34,7 +34,7 @@ export function createLegacyTransitionsQueue({html,renderHtml,toast,adminFetch,g
     catch(error){renderHtml(box,html`<div class="notice notice-amber">Не удалось загрузить очередь переходов</div>`);throw error;}
     const transitions=data.transitions||[];
     if(!transitions.length){renderHtml(box,html`<div class="empty-state">Открытых переходов нет</div>`);return;}
-    renderHtml(box,html`${data.truncated?html`<div class="notice notice-amber">Показаны последние ${transitions.length} из ${data.total} открытых переходов. Список неполный.</div>`:''}<div class="card flush-card">${transitions.map(row)}</div>`);
+    renderHtml(box,html`${data.truncated?html`<div class="notice notice-amber">Показаны последние ${transitions.length} из ${data.total} открытых переходов. Список неполный.</div>`:''}<div class="card flush-card legacy-transitions-list">${transitions.map(row)}</div>`);
   }
 
   function handleQueueClick(element){

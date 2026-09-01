@@ -32,13 +32,6 @@
 .inline-toggle input{width:auto;min-height:auto;accent-color:var(--accent)}
 .filter-caption{min-height:18px;color:var(--text3);font-size:11px;margin:-8px 0 10px}
 
-/* Node cards */
-.nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:1.5rem}
-.node-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:1rem}
-.node-name{font-size:14px;font-weight:500;margin-bottom:4px}
-.node-addr{font-size:11px;color:var(--text2);margin-bottom:8px;font-family:monospace}
-.node-stats{display:flex;gap:12px;font-size:12px;color:var(--text2)}
-
 /* Usage per node */
 .usage-node-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .usage-node-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
@@ -64,9 +57,8 @@
 /* Polish and responsive layout */
 .card{box-shadow:0 18px 60px rgba(0,0,0,.18)}
 .stats-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
-.stat-card,.node-card{transition:transform .15s,border-color .15s,background .15s}
-.stat-card:hover,.node-card:hover{transform:translateY(-1px);border-color:var(--border2)}
-.nodes-grid{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.stat-card{transition:transform .15s,border-color .15s,background .15s}
+.stat-card:hover{transform:translateY(-1px);border-color:var(--border2)}
 .config-row,.per-user-config{min-width:0}
 .config-uri-text{max-width:100%}
 
@@ -78,7 +70,7 @@
 
 @media (max-width: 560px){
   body{font-size:13px}
-  .stats-grid,.nodes-grid,.user-detail-grid{grid-template-columns:1fr}
+  .stats-grid,.user-detail-grid{grid-template-columns:1fr}
   .section-heading{align-items:flex-start;flex-direction:column}
   .card{padding:1rem;border-radius:10px}
   .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}

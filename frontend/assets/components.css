@@ -42,7 +42,7 @@ label:first-child{margin-top:0}
    (tracked per-wave, see plan section 15). `.kv-grid--copyable` /
    `.kv-row--copyable` replace the old `.technical-fields`/
    `.technical-field` names (single consumer, renamed outright). */
-.detail-grid,.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
 .detail-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
 .detail-label{font-size:11px;color:var(--text2);margin-bottom:2px}
 .detail-value{font-size:13px;font-weight:500}
@@ -173,7 +173,7 @@ td:first-child,th:first-child{white-space:normal;min-width:180px}
   table{min-width:720px}
   #toast{left:.75rem;right:.75rem;bottom:.75rem;text-align:center}
   .ops-form.grid-two{grid-template-columns:1fr}
-  .detail-grid,.kv-grid,.ops-dl{grid-template-columns:1fr}
+  .kv-grid,.ops-dl{grid-template-columns:1fr}
   .kv-row--copyable{grid-template-columns:1fr}
   .kv-row--copyable .copy-small{justify-self:start}
 }

@@ -89,29 +89,29 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
       const total=(u.uplink||0)+(u.downlink||0);
       const s=getNodeSetting(n.id);
       return html`<div class="node-card clickable" data-action="open-node" data-node-id="${n.id}">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <div class="node-card-header">
           <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
-          <div class="node-name" style="flex:1">${n.name}</div>
-          <button data-action="reconnect-node" data-node-id="${n.id}" style="padding:2px 8px;font-size:11px">⟳</button>
+          <div class="node-name">${n.name}</div>
+          <button data-action="reconnect-node" data-node-id="${n.id}" class="node-icon-btn">⟳</button>
         </div>
         <div class="node-addr">${n.address}:${n.port}</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+        <div class="node-badges">
           <span class="badge ${importanceClass(s.importance)}">${importanceLabel(s.importance)}</span>
           <span class="badge ${s.can_remove?'badge-green':'badge-red'}">${s.can_remove?'можно убрать':'не трогать'}</span>
         </div>
         <div class="node-stats">
           <span>↑${fmt(u.uplink)}</span>
           <span>↓${fmt(u.downlink)}</span>
-          <span style="color:var(--text3)">${n.xray_version||'?'}</span>
+          <span class="muted">${n.xray_version||'?'}</span>
         </div>
-        <div style="margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)">
-          <div style="display:flex;justify-content:space-between;gap:8px"><span>VPS / мес</span><b style="color:var(--text)">${fmtMoney(s.monthly_cost,s.currency)}</b></div>
-          <div style="display:flex;justify-content:space-between;gap:8px"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
-          ${(s.provider||s.location)?html`<div style="margin-top:6px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')}</div>`:''}
-          ${s.billing_group?html`<div style="margin-top:4px;color:var(--text3)">группа: ${s.billing_group}</div>`:''}
-          ${total&&s.traffic_price_per_tb?html`<div style="margin-top:4px;color:var(--text3)">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
+        <div class="node-billing-block">
+          <div class="node-billing-row"><span>VPS / мес</span><b>${fmtMoney(s.monthly_cost,s.currency)}</b></div>
+          <div class="node-billing-row"><span>Трафик</span><span>${s.traffic_price_per_tb?fmtMoney(s.traffic_price_per_tb,s.currency)+'/TB':'—'}</span></div>
+          ${(s.provider||s.location)?html`<div class="node-billing-note">${[s.provider,s.location].filter(Boolean).join(' · ')}</div>`:''}
+          ${s.billing_group?html`<div class="node-billing-note">группа: ${s.billing_group}</div>`:''}
+          ${total&&s.traffic_price_per_tb?html`<div class="node-billing-note">${groupTrafficCostLabel(n.id,total,billingGroups)}</div>`:''}
         </div>
-        <button data-action="open-node-settings" data-node-id="${n.id}" style="width:100%;margin-top:10px">Настроить</button>
+        <button class="node-card-footer-btn" data-action="open-node-settings" data-node-id="${n.id}">Настроить</button>
       </div>`;
     })}`);
 
@@ -121,15 +121,15 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
       const s=getNodeSetting(u.node_id);
       return html`<tr class="clickable" data-action="open-node-traffic" data-node-id="${u.node_id===null?'null':u.node_id}">
         <td>
-          <div style="font-weight:500">${u.node_name}</div>
-          <div style="font-size:11px;color:var(--text3)">${[s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance)}</div>
+          <div class="node-traffic-name">${u.node_name}</div>
+          <div class="node-traffic-sub">${[s.provider,s.location].filter(Boolean).join(' · ')||importanceLabel(s.importance)}</div>
         </td>
         <td>${fmt(u.uplink)}</td>
         <td>${fmt(u.downlink)}</td>
-        <td style="font-weight:500">${fmt(total)}</td>
+        <td class="node-traffic-name">${fmt(total)}</td>
         <td>${fmtMoney(s.monthly_cost,s.currency)}</td>
         <td>${groupTrafficCostLabel(u.node_id,total,billingGroups)}</td>
-        <td><button data-action="open-node-settings" data-node-id="${u.node_id===null?'null':u.node_id}" style="padding:4px 10px;font-size:12px">Настроить</button></td>
+        <td><button class="small" data-action="open-node-settings" data-node-id="${u.node_id===null?'null':u.node_id}">Настроить</button></td>
       </tr>`;
     })}`);
   }
@@ -141,13 +141,13 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
   }
 
   function renderQuietHours(list){
-    if(!list||!list.length)return html`<div style="font-size:12px;color:var(--text3)">Не заданы</div>`;
+    if(!list||!list.length)return html`<div class="cell-sub">Не заданы</div>`;
     return html`${list.map((w,i)=>html`
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-        <input type="time" value="${w.from}" style="width:100px" data-qh-from="${i}" />
-        <span style="font-size:12px;color:var(--text2)">—</span>
-        <input type="time" value="${w.to}" style="width:100px" data-qh-to="${i}" />
-        <button style="padding:2px 8px;font-size:12px" data-action="remove-quiet-hour" data-quiet-index="${i}">✕</button>
+      <div class="quiet-hour-row">
+        <input type="time" value="${w.from}" class="quiet-hour-input" data-qh-from="${i}" />
+        <span class="quiet-hour-sep">—</span>
+        <input type="time" value="${w.to}" class="quiet-hour-input" data-qh-to="${i}" />
+        <button class="node-icon-btn" data-action="remove-quiet-hour" data-quiet-index="${i}">✕</button>
       </div>`)}`;
   }
   function collectQuietHours(){
@@ -180,11 +180,11 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
     document.getElementById('node-modal-title').textContent=node?`Настройки ноды · ${node.name}`:'Настройки ноды';
     const body=document.getElementById('node-modal-body');
     renderHtml(body,html`
-      <div style="font-size:13px;color:var(--text2);margin-bottom:1rem">
+      <div class="node-modal-intro">
         Эти параметры хранятся только в MGBoost Panel и не меняют Marzban-ноду.
       </div>
       <label>Отображаемое имя (в боте)</label>
-      <input type="text" id="node-display-name" maxlength="128" placeholder="${node?node.name:''}" value="${s.node_name||''}" style="margin-bottom:12px" />
+      <input type="text" id="node-display-name" maxlength="128" placeholder="${node?node.name:''}" value="${s.node_name||''}" class="node-input-spaced" />
       <div class="form-row">
         <div>
           <label>Провайдер</label>
@@ -197,7 +197,7 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
       </div>
       <label>Группа тарификации</label>
       <input type="text" id="node-billing-group" maxlength="128" placeholder="например: Yandex Cloud / Москва" value="${s.billing_group||''}" />
-      <div style="font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px">
+      <div class="node-field-hint">
         Если несколько нод в одной группе, цена доп. трафика и включённый лимит считаются по суммарному трафику группы.
       </div>
       <div class="form-row">
@@ -241,16 +241,16 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
       </div>
       <label>Заметка</label>
       <textarea id="node-note" maxlength="512" rows="4" placeholder="Например: дешёвая, плохой провайдер, оставить как резерв...">${s.note||''}</textarea>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem">
+      <div class="node-id-grid">
         <div class="detail-item"><div class="detail-label">Marzban ID</div><div class="detail-value">${node?node.id:'—'}</div></div>
         <div class="detail-item"><div class="detail-label">Адрес</div><div class="detail-value">${node?node.address:s.node_address||'—'}</div></div>
         <div class="detail-item"><div class="detail-label">Статус</div><div class="detail-value">${node?node.status:'—'}</div></div>
       </div>
-      <div style="margin-top:1rem">
-        <div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Тихие часы мониторинга (UTC)</div>
-        <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Во время тихих часов алерты в Telegram не отправляются (для прерываемых ВМ).</div>
+      <div class="node-quiet-hours-section">
+        <div class="node-section-label">Тихие часы мониторинга (UTC)</div>
+        <div class="node-section-hint">Во время тихих часов алерты в Telegram не отправляются (для прерываемых ВМ).</div>
         <div id="node-quiet-hours-list">${renderQuietHours(s.monitor_quiet_hours||[])}</div>
-        <button style="margin-top:6px;font-size:12px" data-action="add-quiet-hour">+ Добавить окно</button>
+        <button class="small" data-action="add-quiet-hour">+ Добавить окно</button>
       </div>
       <div class="modal-footer">
         <button data-action="close-modal" data-target="node-modal">Отмена</button>
@@ -328,10 +328,10 @@ export function createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt
 
     const results=await loadUsersUsageForNode(id,period);
     const sorted=results.filter(r=>r.traffic>0).sort((a,b)=>b.traffic-a.traffic);
-    if(!sorted.length){renderHtml(body,html`<p style="color:var(--text3);padding:1rem 0">Нет трафика через эту ноду за выбранный период</p>`);return}
+    if(!sorted.length){renderHtml(body,html`<p class="empty-state">Нет трафика через эту ноду за выбранный период</p>`);return}
     renderHtml(body,html`<div class="table-wrap"><table>
-      <thead><tr><th>Пользователь</th><th style="text-align:right">Трафик</th></tr></thead>
-      <tbody>${sorted.map(r=>html`<tr class="clickable" data-action="open-user-from-node" data-username="${r.username}"><td>${r.username}</td><td style="text-align:right">${fmt(r.traffic)}</td></tr>`)}</tbody>
+      <thead><tr><th>Пользователь</th><th class="text-right">Трафик</th></tr></thead>
+      <tbody>${sorted.map(r=>html`<tr class="clickable" data-action="open-user-from-node" data-username="${r.username}"><td>${r.username}</td><td class="text-right">${fmt(r.traffic)}</td></tr>`)}</tbody>
     </table></div>`);
   }
 

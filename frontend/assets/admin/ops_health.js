@@ -90,7 +90,7 @@ export function createOpsHealth({html,renderHtml,toast,getJson,formatTimestamp,f
       <div class="card">
         <div class="card-title">WL Reconciliation</div>
         <div class="cell-sub">Свежесть коллектора usage-телеметрии, очередь enforcement-операций, обнаруженные расхождения desired/observed, здоровье воркера.</div>
-        <div class="detail-grid">
+        <div class="kv-grid">
           <div><strong>Свежесть коллектора</strong>${collectorFreshnessBlock(sources,data.collector_freshness)}</div>
           <div><strong>Очередь enforcement</strong>${outboxBlock(sources,data.outbox)}</div>
           <div><strong>Расхождения (drift)</strong>${driftBlock(sources,data.drift)}</div>
