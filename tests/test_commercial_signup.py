@@ -1078,7 +1078,7 @@ def _product_snapshot(db, account_id):
 
 
 def test_canonical_signup_refund_success_is_money_only(db, broker):
-    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from tests.test_admin_stars_routes import _refund_handler, LoopRunner
     from src.routes.admin import handle_stars_payment_refund
 
     telegram_id = 555000900
@@ -1096,7 +1096,7 @@ def test_canonical_signup_refund_success_is_money_only(db, broker):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(invoice["id"]))
         assert h._response_code == 200
     finally:
@@ -1122,7 +1122,7 @@ def test_canonical_signup_refund_success_is_money_only(db, broker):
 
     # A second refund attempt on the now-refunded invoice must not repeat
     # the Telegram call and must not be silently accepted either.
-    h2 = FakeHandler(db, bot_runner=LoopRunner(Bot()))
+    h2 = _refund_handler(db, bot_runner=LoopRunner(Bot()))
     handle_stars_payment_refund(h2, str(invoice["id"]))
     assert h2._response_code == 409
     assert len(calls) == 1
@@ -1130,7 +1130,7 @@ def test_canonical_signup_refund_success_is_money_only(db, broker):
 
 def test_canonical_signup_refund_concurrent_requests_make_one_telegram_call(db, broker):
     import threading
-    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from tests.test_admin_stars_routes import _refund_handler, LoopRunner
     from src.routes.admin import handle_stars_payment_refund
 
     invoice, _account, _device = _full_signup_with_device(db, broker, 555000901)
@@ -1146,7 +1146,7 @@ def test_canonical_signup_refund_concurrent_requests_make_one_telegram_call(db, 
     results = []
 
     def worker():
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(invoice["id"]))
         results.append(h._response_code)
 
@@ -1167,7 +1167,7 @@ def test_canonical_signup_refund_concurrent_requests_make_one_telegram_call(db, 
 
 def test_canonical_signup_refund_timeout_reconciles_via_existing_path(db, broker, monkeypatch):
     from types import SimpleNamespace
-    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from tests.test_admin_stars_routes import _refund_handler, LoopRunner
     from src.routes import admin as admin_mod
 
     invoice, account, _device = _full_signup_with_device(db, broker, 555000902)
@@ -1182,7 +1182,7 @@ def test_canonical_signup_refund_timeout_reconciles_via_existing_path(db, broker
     runner = LoopRunner(SlowBot())
     monkeypatch.setattr(admin_mod, "REFUND_RESULT_TIMEOUT_SECONDS", 0.01)
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         admin_mod.handle_stars_payment_refund(h, str(invoice["id"]))
         assert h._response_code == 202
         assert db.get_invoice(invoice["id"])["status"] == "refund_unknown"
@@ -1190,7 +1190,7 @@ def test_canonical_signup_refund_timeout_reconciles_via_existing_path(db, broker
         runner.close()
 
     # Blind retry stays blocked while the outcome is unknown.
-    blocked = FakeHandler(db, bot_runner=LoopRunner(SlowBot()))
+    blocked = _refund_handler(db, bot_runner=LoopRunner(SlowBot()))
     admin_mod.handle_stars_payment_refund(blocked, str(invoice["id"]))
     assert blocked._response_code == 409
 
@@ -1203,7 +1203,7 @@ def test_canonical_signup_refund_timeout_reconciles_via_existing_path(db, broker
 
     runner2 = LoopRunner(ReconcileBot())
     try:
-        h2 = FakeHandler(db, bot_runner=runner2)
+        h2 = _refund_handler(db, bot_runner=runner2)
         admin_mod.handle_stars_payment_reconcile_refund(h2, str(invoice["id"]))
         assert h2._response_code == 200
         final = db.get_invoice(invoice["id"])
@@ -1220,7 +1220,7 @@ def test_paid_canonical_signup_invoice_is_still_not_refundable(db):
     """Deliberate scope boundary: refund is enabled only from the terminal
     'canonical_applied' state, never from the intermediate 'paid' state --
     refunding before apply would race the PH5-05/PH5-11 apply pipeline."""
-    from tests.test_admin_stars_routes import FakeHandler, LoopRunner
+    from tests.test_admin_stars_routes import _refund_handler, LoopRunner
     from src.routes.admin import handle_stars_payment_refund
 
     invoice = db.stars_purchases.create_invoice(
@@ -1240,7 +1240,7 @@ def test_paid_canonical_signup_invoice_is_still_not_refundable(db):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(invoice["id"]))
         assert h._response_code == 409
     finally:
