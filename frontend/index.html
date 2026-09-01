@@ -6,12 +6,13 @@
 <title>MGBoost Panel</title>
 <link rel="stylesheet" href="assets/tokens.css?v=20260901-redesign-wave0">
 <link rel="stylesheet" href="assets/base.css?v=20260901-redesign-wave0">
-<link rel="stylesheet" href="assets/shell.css?v=20260901-redesign-wave1">
-<link rel="stylesheet" href="assets/components.css?v=20260901-redesign-wave5">
+<link rel="stylesheet" href="assets/shell.css?v=20260901-redesign-wave6">
+<link rel="stylesheet" href="assets/components.css?v=20260901-redesign-wave6">
 <link rel="stylesheet" href="assets/domain-accounts.css?v=20260901-redesign-wave3">
-<link rel="stylesheet" href="assets/domain-operations.css?v=20260901-redesign-wave4">
+<link rel="stylesheet" href="assets/domain-operations.css?v=20260901-redesign-wave6">
 <link rel="stylesheet" href="assets/domain-payments-support.css?v=20260901-redesign-wave5">
-<link rel="stylesheet" href="assets/legacy.css?v=20260901-redesign-wave5">
+<link rel="stylesheet" href="assets/domain-technical.css?v=20260901-redesign-wave6">
+<link rel="stylesheet" href="assets/legacy.css?v=20260901-redesign-wave6">
 </head>
 <body>
 
@@ -68,7 +69,7 @@
     <div class="nav-item" data-action="show-page" data-page="settings">
       <span class="nav-icon">⚙</span> Настройки
     </div>
-    <div class="nav-section">Технический / Легаси</div>
+    <div class="nav-section nav-section--legacy">Технический / Легаси</div>
     <div class="nav-item" data-action="show-page" data-page="users">
       <span class="nav-icon">⌁</span> Пользователи Marzban
     </div>
@@ -153,13 +154,13 @@
     <!-- USERS -->
     <div class="page" id="page-users">
       <div class="page-header">
-        <span class="page-title">Система / Техническое / Пользователи Marzban <span id="users-count" style="font-size:13px;color:var(--text3)"></span></span>
+        <span class="page-title">Система / Техническое / Пользователи Marzban <span id="users-count" class="muted-count"></span></span>
         <div class="page-actions">
           <input class="search-box" type="text" placeholder="Поиск..." id="user-search" data-input-action="filter-users" />
           <button class="primary" data-action="open-create-user">+ Создать</button>
         </div>
       </div>
-      <div class="card" style="padding:0">
+      <div class="card flush-card">
         <div class="table-wrap">
           <table>
             <thead>
@@ -240,14 +241,14 @@
         <div class="tab" data-action="switch-tab" data-target="tab-inbound-extra">Доп. параметры клиента (Inbounds)</div>
       </div>
       <div class="tab-content active" id="tab-global">
-        <div class="card" style="margin-bottom:1rem">
+        <div class="card cfg-card--tight">
           <div class="card-title">Добавить конфиг</div>
           <label>Название</label>
           <input type="text" id="cfg-name" placeholder="🇪🇪 Estonia — Hysteria2" />
           <label>URI</label>
           <input type="text" id="cfg-uri" placeholder="hysteria2://pass@host:port#name" />
-          <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
-            <select id="cfg-enabled" style="width:120px">
+          <div class="cfg-add-row">
+            <select id="cfg-enabled" class="cfg-select-fixed">
               <option value="true">Включён</option>
               <option value="false">Выключен</option>
             </select>
@@ -255,8 +256,8 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-title" style="display:flex;justify-content:space-between">
-            <span>Конфиги <span id="cfg-count" style="color:var(--text3)"></span></span>
+          <div class="card-title cfg-list-header">
+            <span>Конфиги <span id="cfg-count" class="muted"></span></span>
           </div>
           <div id="cfg-list"><div class="loading"><span class="spinner"></span></div></div>
         </div>
@@ -264,16 +265,16 @@
       <div class="tab-content" id="tab-per-user">
         <div class="card">
           <div class="card-title">Индивидуальные конфиги по пользователям</div>
-          <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Добавь конфиг конкретному пользователю — он получит его в своей подписке помимо глобальных.</p>
-          <div style="display:flex;gap:8px;margin-bottom:1rem">
-            <select id="pu-user" style="flex:1"><option>Загрузка...</option></select>
+          <p class="cfg-hint">Добавь конфиг конкретному пользователю — он получит его в своей подписке помимо глобальных.</p>
+          <div class="cfg-row-gap">
+            <select id="pu-user" class="cfg-flex-1"><option>Загрузка...</option></select>
           </div>
           <div id="per-user-configs"><div class="loading"><span class="spinner"></span></div></div>
-          <div style="margin-top:1rem;padding-top:1rem;border-top:0.5px solid var(--border)">
+          <div class="cfg-divider">
             <label>URI конфига для выбранного юзера</label>
-            <div style="display:flex;gap:8px;margin-top:4px">
-              <input type="text" id="pu-uri" placeholder="hysteria2://..." style="flex:1" />
-              <input type="text" id="pu-name" placeholder="Название" style="width:160px" />
+            <div class="cfg-inline-gap">
+              <input type="text" id="pu-uri" placeholder="hysteria2://..." class="cfg-flex-1" />
+              <input type="text" id="pu-name" placeholder="Название" class="cfg-width-fixed" />
               <button class="primary" data-action="add-per-user-config">+</button>
             </div>
           </div>
@@ -282,9 +283,9 @@
       <div class="tab-content" id="tab-inbound-extra">
         <div class="card">
           <div class="card-title">Доп. параметры клиента для Inbound'ов</div>
-          <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Здесь можно настроить параметры, которые будут автоматически добавляться к ссылкам (например, для xhttp обфускации) в подписке пользователей.<br/>Например: <code style="background:var(--bg4);padding:1px 5px;border-radius:4px">extra={"obfs":"123"}</code> или любые другие URL-параметры.</p>
-          <div style="display:flex;gap:8px;margin-bottom:1rem">
-            <input type="text" id="ie-inbound-select" list="ie-inbounds-list" placeholder="vless-xhttp-cdn (или любое совпадение, напр. type=xhttp)" style="flex:1" />
+          <p class="cfg-hint">Здесь можно настроить параметры, которые будут автоматически добавляться к ссылкам (например, для xhttp обфускации) в подписке пользователей.<br/>Например: <code class="cfg-inline-code">extra={"obfs":"123"}</code> или любые другие URL-параметры.</p>
+          <div class="cfg-row-gap">
+            <input type="text" id="ie-inbound-select" list="ie-inbounds-list" placeholder="vless-xhttp-cdn (или любое совпадение, напр. type=xhttp)" class="cfg-flex-1" />
             <datalist id="ie-inbounds-list"></datalist>
             <button class="primary" data-action="add-inbound-extra">Добавить</button>
           </div>

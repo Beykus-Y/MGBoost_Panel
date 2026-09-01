@@ -1,0 +1,95 @@
+/* Technical / Legacy: raw Marzban user management (technical/
+   marzban_users.js), global/per-user configs + inbound extras
+   (technical/configs.js). Both files were previously heavy inline-
+   style users -- de-inlined into named classes here. See shell.css
+   for the quiet .nav-section--legacy context marker (redesign plan
+   section 19.3): a passive signal before the operator even opens
+   one of these screens, not a warning banner repeated on each one. */
+
+/* Marzban users: list + detail */
+.usage-node-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.usage-node-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
+.usage-node-name{font-size:12px;color:var(--text2);margin-bottom:4px}
+.usage-node-val{font-size:14px;font-weight:500}
+.user-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1rem}
+@media (max-width:560px){.user-detail-grid{grid-template-columns:1fr}}
+
+.expiry-overdue{color:var(--red)}
+.expiry-soon{color:var(--amber)}
+.online-now{color:var(--green)}
+.cell-strong{font-weight:500}
+.filter-tag{font-size:10px;color:var(--amber);border:0.5px solid var(--amber2);border-radius:3px;padding:1px 5px;vertical-align:middle}
+.user-note{font-size:11px;color:var(--text2)}
+.ua-cell{font-size:11px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.user-note-block{background:var(--bg4);border-radius:8px;padding:10px 12px;margin-bottom:1rem;font-size:13px}
+.section-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px}
+.section-label--tight{margin-bottom:0}
+.section-block{margin-top:1rem}
+.node-usage-row{display:flex;justify-content:space-between}
+.node-usage-pct{color:var(--text3);font-size:11px}
+.small-btn{font-size:11px;padding:3px 10px}
+.devices-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.devices-summary{font-size:12px;color:var(--text2);margin-bottom:8px}
+.device-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px}
+.device-dot--active{color:var(--green)}
+.device-dot--inactive{color:var(--text3)}
+.device-name{margin-left:6px;font-weight:500}
+.device-meta{color:var(--text2);margin-left:6px}
+.device-actions-row{display:flex;align-items:center;gap:8px}
+.device-remove-btn{font-size:11px;padding:2px 8px;color:var(--red)}
+.nf-empty{font-size:12px;color:var(--text3)}
+.checkbox-auto{width:auto}
+.nf-cfg-row{display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer}
+.nf-cfg-label{font-size:12px}
+.nf-group{margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.nf-group-header{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);cursor:pointer}
+.nf-group-title{font-size:13px;flex:1}
+.nf-group-node-name{color:var(--text)}
+.nf-group-host{font-family:monospace;font-size:11px;color:var(--text3)}
+.nf-group-count{font-size:11px;color:var(--text3)}
+.nf-group-body{padding:6px 10px 6px 28px}
+.nf-group-body--collapsed{display:none}
+.nf-all-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer}
+.nf-all-label{font-size:13px}
+.nf-list--disabled{opacity:0.45;pointer-events:none}
+.create-inbound-group{margin-bottom:8px}
+.create-inbound-proto{font-size:12px;color:var(--text2);margin-bottom:4px;text-transform:uppercase}
+.create-inbound-items{display:flex;flex-wrap:wrap;gap:6px 12px;margin-left:4px}
+.create-inbound-item{display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px}
+
+/* Configs: global list, per-user, inbound extras */
+.config-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:0.5px solid var(--border);min-width:0}
+.config-row:last-child{border-bottom:none}
+.config-info{flex:1;min-width:0}
+.config-name-text{font-size:14px;font-weight:500}
+.config-uri-text{font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;max-width:100%}
+.drag-handle{color:var(--text3);cursor:grab;font-size:16px;user-select:none;padding:0 4px;flex-shrink:0}
+.drag-handle:active{cursor:grabbing}
+.per-user-config{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border);min-width:0}
+.per-user-config:last-child{border-bottom:none}
+.configs-empty{color:var(--text3);font-size:13px;padding:1rem 0}
+.config-toggle-badge{cursor:pointer}
+.config-row--dragging{opacity:0.4}
+.puconfig-empty{font-size:13px;color:var(--text3);padding:0.5rem 0}
+.puconfig-info{flex:1;min-width:0}
+.puconfig-name{font-size:13px;font-weight:500}
+.puconfig-uri{font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbound-extra-card{background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)}
+.inbound-extra-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.inbound-extra-tag{font-weight:500;font-size:14px}
+.inbound-extra-hint{font-size:12px;color:var(--text2);margin-bottom:4px}
+.inbound-extra-textarea{width:100%;height:100px;font-family:monospace;font-size:12px}
+.inbound-extra-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+
+/* Static index.html markup for #page-configs */
+.cfg-card--tight{margin-bottom:1rem}
+.cfg-add-row{display:flex;gap:8px;margin-top:12px;align-items:center}
+.cfg-select-fixed{width:120px}
+.cfg-list-header{display:flex;justify-content:space-between}
+.cfg-hint{font-size:13px;color:var(--text2);margin-bottom:1rem}
+.cfg-row-gap{display:flex;gap:8px;margin-bottom:1rem}
+.cfg-flex-1{flex:1}
+.cfg-divider{margin-top:1rem;padding-top:1rem;border-top:0.5px solid var(--border)}
+.cfg-inline-gap{display:flex;gap:8px;margin-top:4px}
+.cfg-width-fixed{width:160px}
+.cfg-inline-code{background:var(--bg4);padding:1px 5px;border-radius:4px}

@@ -37,16 +37,16 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
     const d=parseUTC(ts);
     const diff=d-Date.now();
     const days=Math.ceil(diff/86400000);
-    if(days<0)return html`<span style="color:var(--red)">просрочен</span>`;
-    if(days===0)return html`<span style="color:var(--amber)">сегодня</span>`;
-    if(days<=3)return html`<span style="color:var(--amber)">${days}д</span>`;
+    if(days<0)return html`<span class="expiry-overdue">просрочен</span>`;
+    if(days===0)return html`<span class="expiry-soon">сегодня</span>`;
+    if(days<=3)return html`<span class="expiry-soon">${days}д</span>`;
     return`${days}д`;
   }
   function fmtOnline(dt){
     if(!dt)return'—';
     const d=parseUTC(dt);
     const diff=(Date.now()-d)/1000;
-    if(diff<120)return html`<span style="color:var(--green)">сейчас</span>`;
+    if(diff<120)return html`<span class="online-now">сейчас</span>`;
     if(diff<3600)return`${Math.floor(diff/60)}м назад`;
     if(diff<86400)return`${Math.floor(diff/3600)}ч назад`;
     return`${Math.floor(diff/86400)}д назад`;
@@ -84,13 +84,13 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
       return html`
       <tr class="clickable" data-action="open-user" data-username="${u.username}">
         <td>
-          <div style="font-weight:500">${u.username}${hasFilter?html` <span style="font-size:10px;color:var(--amber);border:0.5px solid var(--amber2);border-radius:3px;padding:1px 5px;vertical-align:middle">фильтр</span>`:''}</div>
-          ${u.note?html`<div style="font-size:11px;color:var(--text2)">${u.note}</div>`:''}
+          <div class="cell-strong">${u.username}${hasFilter?html` <span class="filter-tag">фильтр</span>`:''}</div>
+          ${u.note?html`<div class="user-note">${u.note}</div>`:''}
         </td>
         <td>${statusBadge(u.status)}</td>
         <td>${fmt(u.used_traffic)}${u.data_limit?` / ${fmt(u.data_limit)}`:'  / ∞'}</td>
         <td>${fmtRelDate(u.expire)}</td>
-        <td style="font-size:11px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(u.sub_last_user_agent||'—').split('/')[0]}</td>
+        <td class="ua-cell">${(u.sub_last_user_agent||'—').split('/')[0]}</td>
         <td>${userDeviceCounts[u.username]??0}</td>
         <td>${fmtOnline(u.online_at)}</td>
         <td><button data-action="open-user" data-username="${u.username}">···</button></td>
@@ -141,49 +141,49 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
         <div class="detail-item"><div class="detail-label">Создан</div><div class="detail-value">${fmtDate(u.created_at)}</div></div>
         <div class="detail-item"><div class="detail-label">Онлайн</div><div class="detail-value">${fmtOnline(u.online_at)}</div></div>
       </div>
-      ${u.note?html`<div style="background:var(--bg4);border-radius:8px;padding:10px 12px;margin-bottom:1rem;font-size:13px"><span style="color:var(--text2)">Заметка: </span>${u.note}</div>`:''}
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Трафик по нодам</div>
+      ${u.note?html`<div class="user-note-block"><span class="muted2">Заметка: </span>${u.note}</div>`:''}
+      <div class="section-label">Трафик по нодам</div>
       <div class="usage-node-list">
         ${usageByNode.map(n=>{
           const pct=totalUsage>0?Math.round(n.used_traffic/totalUsage*100):0;
           return html`<div class="usage-node-item">
-            <div style="display:flex;justify-content:space-between">
+            <div class="node-usage-row">
               <span class="usage-node-name">${n.node_name}</span>
-              <span class="usage-node-val">${fmt(n.used_traffic)} <span style="color:var(--text3);font-size:11px">${pct}%</span></span>
+              <span class="usage-node-val">${fmt(n.used_traffic)} <span class="node-usage-pct">${pct}%</span></span>
             </div>
-            <div class="traffic-bar" style="margin-top:6px"><div class="traffic-fill" style="width:${pct}%"></div></div>
+            <div class="traffic-bar"><div class="traffic-fill" style="width:${pct}%"></div></div>
           </div>`;
         })}
       </div>
-      <div style="margin-top:1rem">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Устройства (HWID)</div>
-          <button style="font-size:11px;padding:3px 10px" data-action="change-device-limit" data-username="${username}" data-limit="${devData?devData.limit:3}">Изменить лимит</button>
+      <div class="section-block">
+        <div class="devices-header">
+          <div class="section-label section-label--tight">Устройства (HWID)</div>
+          <button class="small-btn" data-action="change-device-limit" data-username="${username}" data-limit="${devData?devData.limit:3}">Изменить лимит</button>
         </div>
         ${devData?html`
-          <div style="font-size:12px;color:var(--text2);margin-bottom:8px">
+          <div class="devices-summary">
             Активных: <b>${devData.active_count}</b> / <b>${devData.limit===0?'∞':devData.limit}</b>
           </div>
           ${devData.devices.length?devData.devices.map(d=>html`
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:12px">
+            <div class="device-row">
               <div>
-                <span style="${d.is_active?'color:var(--green)':'color:var(--text3)'}">${d.is_active?'●':'○'}</span>
-                <span style="margin-left:6px;font-weight:500">${d.display_name||d.device_name||d.client_name||'Устройство'}</span>
-                <span style="color:var(--text2);margin-left:6px">${d.platform||''}${d.client_name?` · ${d.client_name}`:''}</span>
+                <span class="${d.is_active?'device-dot--active':'device-dot--inactive'}">${d.is_active?'●':'○'}</span>
+                <span class="device-name">${d.display_name||d.device_name||d.client_name||'Устройство'}</span>
+                <span class="device-meta">${d.platform||''}${d.client_name?` · ${d.client_name}`:''}</span>
               </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span style="color:var(--text3)">${fmtOnline(new Date(d.last_seen*1000).toISOString())}</span>
-                <button style="font-size:11px;padding:2px 8px;color:var(--red)" data-action="admin-remove-device" data-device-id="${d.id}" data-username="${username}">✕</button>
+              <div class="device-actions-row">
+                <span class="muted">${fmtOnline(new Date(d.last_seen*1000).toISOString())}</span>
+                <button class="device-remove-btn" data-action="admin-remove-device" data-device-id="${d.id}" data-username="${username}">✕</button>
               </div>
-            </div>`):html`<div style="color:var(--text3);font-size:12px">Нет зарегистрированных устройств</div>`}
-        `:html`<div style="color:var(--text3);font-size:12px">Нет данных</div>`}
+            </div>`):html`<div class="nf-empty">Нет зарегистрированных устройств</div>`}
+        `:html`<div class="nf-empty">Нет данных</div>`}
       </div>
-      <div style="margin-top:1rem" id="nf-section">
-        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
+      <div class="section-block" id="nf-section">
+        <div class="section-label">Фильтр конфигов</div>
         <div class="loading"><span class="spinner"></span></div>
       </div>
-      <div style="margin-top:1rem">
-        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Изменить</div>
+      <div class="section-block">
+        <div class="section-label">Изменить</div>
         <div class="form-row">
           <div>
             <label>Дата истечения</label>
@@ -263,8 +263,8 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
 
     if(!hostOrder.length){
       renderHtml(sec,html`
-        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
-        <p style="font-size:12px;color:var(--text3)">Нет ссылок в подписке</p>`);
+        <div class="section-label">Фильтр конфигов</div>
+        <p class="nf-empty">Нет ссылок в подписке</p>`);
       return;
     }
 
@@ -275,46 +275,44 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
 
       const configChecks=configs.map(cfg=>{
         const checked=isAll||allowedSet.has(cfg);
-        return html`<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer">
-          <input type="checkbox" class="nf-cfg" data-cfg="${cfg}" ${checked?html`checked`:''} style="width:auto" data-change-action="nf-cfg-toggle" />
-          <span style="font-size:12px">${cfg}</span>
+        return html`<label class="nf-cfg-row">
+          <input type="checkbox" class="nf-cfg checkbox-auto" data-cfg="${cfg}" ${checked?html`checked`:''} data-change-action="nf-cfg-toggle" />
+          <span class="nf-cfg-label">${cfg}</span>
         </label>`;
       });
 
       const allGroupChecked=isAll||configs.every(c=>allowedSet.has(c));
 
-      return html`<div style="margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
-        <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--bg3);cursor:pointer" data-action="toggle-nf-group" data-target="${groupId}">
-          <input type="checkbox" class="nf-group-all" data-group-id="${groupId}" ${allGroupChecked?html`checked`:''} style="width:auto" data-change-action="nf-group-all-toggle" />
-          <span style="font-size:13px;flex:1">
-            ${nodeName?html`<span style="color:var(--text)">${nodeName}</span> `:''}
-            <span style="font-family:monospace;font-size:11px;color:var(--text3)">${ip}</span>
+      return html`<div class="nf-group">
+        <div class="nf-group-header" data-action="toggle-nf-group" data-target="${groupId}">
+          <input type="checkbox" class="nf-group-all checkbox-auto" data-group-id="${groupId}" ${allGroupChecked?html`checked`:''} data-change-action="nf-group-all-toggle" />
+          <span class="nf-group-title">
+            ${nodeName?html`<span class="nf-group-node-name">${nodeName}</span> `:''}
+            <span class="nf-group-host">${ip}</span>
           </span>
-          <span style="font-size:11px;color:var(--text3)">${configs.length} конф.</span>
+          <span class="nf-group-count">${configs.length} конф.</span>
         </div>
-        <div id="${groupId}" style="padding:6px 10px 6px 28px">${configChecks}</div>
+        <div id="${groupId}" class="nf-group-body">${configChecks}</div>
       </div>`;
     });
 
     renderHtml(sec,html`
-      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Фильтр конфигов</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
-        <input type="checkbox" id="nf-all" ${isAll?html`checked`:''} data-change-action="nf-all-toggle" style="width:auto" />
-        <span style="font-size:13px">Все конфиги (без фильтра)</span>
+      <div class="section-label">Фильтр конфигов</div>
+      <label class="nf-all-row">
+        <input type="checkbox" id="nf-all" ${isAll?html`checked`:''} data-change-action="nf-all-toggle" class="checkbox-auto" />
+        <span class="nf-all-label">Все конфиги (без фильтра)</span>
       </label>
-      <div id="nf-list" style="${isAll?'opacity:0.45;pointer-events:none':''}">${groupRows}</div>`);
+      <div id="nf-list" class="${isAll?'nf-list--disabled':''}">${groupRows}</div>`);
   }
 
   function toggleNfGroup(id){
     const el=document.getElementById(id);
-    if(el)el.style.display=el.style.display==='none'?'':'none';
+    if(el)el.classList.toggle('nf-group-body--collapsed');
   }
 
   function onNfAllToggle(){
     const all=document.getElementById('nf-all').checked;
-    const list=document.getElementById('nf-list');
-    list.style.opacity=all?'0.45':'';
-    list.style.pointerEvents=all?'none':'';
+    document.getElementById('nf-list').classList.toggle('nf-list--disabled',all);
   }
 
   function onNfGroupAllToggle(groupCb){
@@ -426,16 +424,16 @@ export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxy
       try{const r=await api('/inbounds');inbounds=await r.json();setAllInbounds(inbounds);}catch{}
     }
     renderHtml(el,Object.keys(inbounds||{}).length?html`${Object.entries(inbounds).map(([proto,items])=>html`
-      <div style="margin-bottom:8px">
-        <div style="font-size:12px;color:var(--text2);margin-bottom:4px;text-transform:uppercase">${proto}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px 12px;margin-left:4px">
-          ${items.map(it=>html`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">
-            <input type="checkbox" class="nu-ib" data-proto="${proto}" data-tag="${it.tag}" checked style="width:auto" />
+      <div class="create-inbound-group">
+        <div class="create-inbound-proto">${proto}</div>
+        <div class="create-inbound-items">
+          ${items.map(it=>html`<label class="create-inbound-item">
+            <input type="checkbox" class="nu-ib checkbox-auto" data-proto="${proto}" data-tag="${it.tag}" checked />
             <span>${it.tag}</span>
           </label>`)}
         </div>
       </div>
-    `)}`:html`<p style="color:var(--text3);font-size:12px">Нет inbounds</p>`);
+    `)}`:html`<p class="nf-empty">Нет inbounds</p>`);
   }
   async function createUser(){
     const username=document.getElementById('new-username').value.trim();

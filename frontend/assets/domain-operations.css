@@ -14,7 +14,6 @@
 .node-card-header .node-name{flex:1}
 .node-icon-btn{padding:2px 8px;font-size:12px}
 .node-badges{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
-.node-stats .muted{color:var(--text3)}
 .node-billing-block{margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
 .node-billing-row{display:flex;justify-content:space-between;gap:8px}
 .node-billing-row b{color:var(--text)}

@@ -21,7 +21,7 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
     const configs=await r.json();
     const list=document.getElementById('cfg-list');
     document.getElementById('cfg-count').textContent='('+configs.length+')';
-    if(!configs.length){renderHtml(list,html`<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет конфигов</p>`);return}
+    if(!configs.length){renderHtml(list,html`<p class="configs-empty">Нет конфигов</p>`);return}
     renderHtml(list,html`${configs.map((c,i)=>html`
       <div class="config-row" draggable="true" id="cfg-${i}" data-config-index="${i}">
         <span class="drag-handle">⠿</span>
@@ -29,8 +29,8 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
           <div class="config-name-text">${c.name}</div>
           <div class="config-uri-text">${c.uri}</div>
         </div>
-        <span class="badge ${c.enabled?'badge-green':'badge-red'}" style="cursor:pointer" data-action="toggle-config" data-config-index="${i}">${c.enabled?'вкл':'выкл'}</span>
-        <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-config" data-config-index="${i}">×</button>
+        <span class="badge ${c.enabled?'badge-green':'badge-red'} config-toggle-badge" data-action="toggle-config" data-config-index="${i}">${c.enabled?'вкл':'выкл'}</span>
+        <button class="danger small" data-action="delete-config" data-config-index="${i}">×</button>
       </div>
     `)}`);
     cfgs=configs;
@@ -59,7 +59,7 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
     await proxyApi('/admin/configs/reorder',{method:'POST',body:JSON.stringify(cfgs)});
     loadGlobalConfigs();
   }
-  function dragStart(i){dragIdx=i;document.getElementById('cfg-'+i).style.opacity='0.4'}
+  function dragStart(i){dragIdx=i;document.getElementById('cfg-'+i).classList.add('config-row--dragging')}
   function dragOver(e){e.preventDefault()}
   function drop(i){
     if(dragIdx===null||dragIdx===i)return;
@@ -67,7 +67,7 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
     cfgs.splice(i,0,moved);
     proxyApi('/admin/configs/reorder',{method:'POST',body:JSON.stringify(cfgs)}).then(()=>loadGlobalConfigs());
   }
-  function dragEnd(){dragIdx=null;document.querySelectorAll('.config-row').forEach(r=>r.style.opacity='')}
+  function dragEnd(){dragIdx=null;document.querySelectorAll('.config-row').forEach(r=>r.classList.remove('config-row--dragging'))}
 
   // --- per-user configs -------------------------------------------------
   async function loadPerUserConfigs(){
@@ -80,14 +80,14 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
   function renderPerUserConfigs(username){
     const configs=perUserConfigs[username]||[];
     const el=document.getElementById('per-user-configs');
-    if(!configs.length){renderHtml(el,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет индивидуальных конфигов</p>`);return}
+    if(!configs.length){renderHtml(el,html`<p class="puconfig-empty">Нет индивидуальных конфигов</p>`);return}
     renderHtml(el,html`${configs.map((c,i)=>html`
       <div class="per-user-config">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${c.name}</div>
-          <div style="font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.uri}</div>
+        <div class="puconfig-info">
+          <div class="puconfig-name">${c.name}</div>
+          <div class="puconfig-uri">${c.uri}</div>
         </div>
-        <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-per-user-config" data-username="${username}" data-config-index="${i}">×</button>
+        <button class="danger small" data-action="delete-per-user-config" data-username="${username}" data-config-index="${i}">×</button>
       </div>
     `)}`);
   }
@@ -130,16 +130,16 @@ export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInboun
   function renderInboundExtras(){
     const list=document.getElementById('inbound-extra-list');
     const entries=Object.entries(inboundClientExtras);
-    if(!entries.length){renderHtml(list,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>`);return;}
+    if(!entries.length){renderHtml(list,html`<p class="puconfig-empty">Нет добавленных параметров</p>`);return;}
     renderHtml(list,html`${entries.map(([tag,extra])=>html`
-      <div style="background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-weight:500;font-size:14px">${tag}</div>
-          <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-inbound-extra" data-inbound-tag="${tag}">Удалить</button>
+      <div class="inbound-extra-card">
+        <div class="inbound-extra-header">
+          <div class="inbound-extra-tag">${tag}</div>
+          <button class="danger small" data-action="delete-inbound-extra" data-inbound-tag="${tag}">Удалить</button>
         </div>
-        <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Параметры (URL query) или чистый JSON:</div>
-        <textarea style="width:100%;height:100px;font-family:monospace;font-size:12px" data-inbound-value="${tag}" placeholder="extra=... или { &quot;xmux&quot;: ... }">${extra}</textarea>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <div class="inbound-extra-hint">Параметры (URL query) или чистый JSON:</div>
+        <textarea class="inbound-extra-textarea" data-inbound-value="${tag}" placeholder="extra=... или { &quot;xmux&quot;: ... }">${extra}</textarea>
+        <div class="inbound-extra-footer">
           <button data-action="format-inbound-extra" data-inbound-tag="${tag}">Сжать и закодировать JSON (если введён чистый JSON)</button>
           <button class="primary" data-action="update-inbound-extra" data-inbound-tag="${tag}">Сохранить</button>
         </div>

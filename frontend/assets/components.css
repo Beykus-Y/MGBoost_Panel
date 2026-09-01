@@ -76,6 +76,8 @@ td,th{white-space:nowrap}
 td:first-child,th:first-child{white-space:normal;min-width:180px}
 .clickable{cursor:pointer}
 .cell-sub{font-size:11px;color:var(--text3);margin-top:3px}
+.muted{color:var(--text3)}
+.muted2{color:var(--text2)}
 .muted-count{font-size:13px;color:var(--text3)}
 .empty-state,.error-state{padding:1.5rem;text-align:center;color:var(--text3)}
 .error-state{color:var(--red)}
