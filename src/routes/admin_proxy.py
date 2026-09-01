@@ -3,9 +3,23 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from ..database import AUDIT_EVENT_MARZBAN_PROXY_DESTRUCTIVE_ACTION
 from ..http_utils import json_response, read_body
 from ..marzban import MarzbanClient
 from ..security import admin_session_cookie, get_admin_session_id, revoke_admin_session
+
+from .admin_support import require_primary_capability
+
+# PH7-16 Wave H: DELETE user/{username} (irreversible), PUT user/{username}
+# (arbitrary modify -- can silently disable/relimit/expire a user outside
+# every canonical device-lifecycle safety net) and POST user/{username}/reset
+# (irreversible traffic-counter reset) are the "DELETE and equivalents" the
+# owner's Wave H directive names -- gated the same way every other
+# consequential canonical mutation already is: primary-admin capability +
+# a mandatory reason. POST user (create, non-destructive) and POST
+# node/{id}/reconnect (a benign nudge, not destructive) are deliberately
+# left ungated -- proportionate to blast radius, not a blanket lock.
+_DESTRUCTIVE_OPERATIONS = frozenset({("DELETE", None), ("PUT", None), ("POST", "reset")})
 
 
 _client = MarzbanClient()
@@ -46,6 +60,27 @@ def _json_body(handler):
     if not isinstance(data, dict):
         raise ValueError("Expected JSON object")
     return data
+
+
+def _authorize_destructive(handler, query):
+    """Primary-admin capability + a mandatory 3-300 char `reason` query
+    param, for the destructive proxy operations only. Sends its own error
+    response and returns None on failure; returns (capability, reason) on
+    success. `reason` travels as a query param, not the JSON body -- for
+    PUT the body IS the raw Marzban modify payload passed through
+    verbatim, so a body-embedded reason would either collide with it or
+    require stripping a field before forwarding; a query param keeps the
+    three gated operations (DELETE/PUT/reset, none of which otherwise
+    read query params) uniform and leaves the modify payload untouched."""
+    db = handler.server.db
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return None
+    reason = _single_query(query, "reason", "").strip()
+    if not 3 <= len(reason) <= 300:
+        _error(handler, 400, "reason (3-300 chars) is required")
+        return None
+    return capability, reason
 
 
 def handle_admin_marzban_proxy(handler, proxy_path: str):
@@ -106,10 +141,38 @@ def handle_admin_marzban_proxy(handler, proxy_path: str):
                         end=_date_query(query, "end"),
                     )
                 elif method == "PUT" and operation is None:
-                    result = _client.modify_user(username, _json_body(handler), token)
+                    authorized = _authorize_destructive(handler, query)
+                    if authorized is None:
+                        return
+                    capability, reason = authorized
+                    payload = _json_body(handler)
+                    handler.server.db.log_audit_event(
+                        AUDIT_EVENT_MARZBAN_PROXY_DESTRUCTIVE_ACTION,
+                        marzban_username=username,
+                        metadata={"operation": "modify", "actor_ref": capability.actor_id, "reason": reason},
+                    )
+                    result = _client.modify_user(username, payload, token)
                 elif method == "DELETE" and operation is None:
+                    authorized = _authorize_destructive(handler, query)
+                    if authorized is None:
+                        return
+                    capability, reason = authorized
+                    handler.server.db.log_audit_event(
+                        AUDIT_EVENT_MARZBAN_PROXY_DESTRUCTIVE_ACTION,
+                        marzban_username=username,
+                        metadata={"operation": "delete", "actor_ref": capability.actor_id, "reason": reason},
+                    )
                     result = _client.delete_user(username, token)
                 elif method == "POST" and operation == "reset":
+                    authorized = _authorize_destructive(handler, query)
+                    if authorized is None:
+                        return
+                    capability, reason = authorized
+                    handler.server.db.log_audit_event(
+                        AUDIT_EVENT_MARZBAN_PROXY_DESTRUCTIVE_ACTION,
+                        marzban_username=username,
+                        metadata={"operation": "reset_traffic", "actor_ref": capability.actor_id, "reason": reason},
+                    )
                     result = _client.reset_user_traffic(username, token)
                 else:
                     _error(handler, 405, "Operation not allowed")

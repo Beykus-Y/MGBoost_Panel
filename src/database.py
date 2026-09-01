@@ -115,6 +115,16 @@ AUDIT_EVENT_PAYMENT_APPLY_RETRY_EXHAUSTED = "payment_apply_retry_exhausted"
 AUDIT_EVENT_PAYMENT_REQUEUED = "payment_requeued"
 AUDIT_EVENT_ORPHAN_PAYMENT_CAPTURED = "orphan_payment_captured"
 AUDIT_EVENT_REFUND_UNKNOWN = "refund_unknown"
+# PH7-16 Wave H: primary-admin-initiated request evidence (actor + mandatory
+# reason), logged when the action is REQUESTED -- independent of AUDIT_EVENT_
+# REFUND, which only fires once Telegram has confirmed completion. This is
+# the only durable record of "who asked for this and why" for a refund that
+# ends up pending/unknown/blocked, not just a confirmed one.
+AUDIT_EVENT_STARS_REFUND_REQUESTED = "stars_refund_requested"
+AUDIT_EVENT_STARS_REFUND_RECONCILE_REQUESTED = "stars_refund_reconcile_requested"
+# Raw Marzban proxy (src/routes/admin_proxy.py) delete/modify/reset-traffic
+# calls: same request-evidence discipline as the Stars refund events above.
+AUDIT_EVENT_MARZBAN_PROXY_DESTRUCTIVE_ACTION = "marzban_proxy_destructive_action"
 
 # Stars invoice lifecycle — see §3 of the design doc.
 STARS_INVOICE_TTL_SECONDS = 3600  # 1 hour

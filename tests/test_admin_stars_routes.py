@@ -12,6 +12,37 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# PH7-16 Wave H: refund/reconcile-refund now require primary-admin
+# capability + a mandatory reason (real money, previously ungated -- see
+# src/routes/admin.py). PRIMARY_LOGIN matches the `db` fixture's
+# PRIMARY_MGBOOST_ADMIN_LOGIN env var below, so a session created with this
+# username authorizes as the primary admin capability against that db.
+PRIMARY_LOGIN = "authenticated-primary-login"
+PRIMARY_ACTOR_ID = "owner:mgboost-primary:v1"
+_DEFAULT_REFUND_REASON = "test-authorized-refund-reason"
+
+
+def _admin_session(*, login=PRIMARY_LOGIN):
+    from src.security import AdminSessionStore
+    _raw, session = AdminSessionStore().create(login, "jwt")
+    return session
+
+
+def _refund_handler(db, *, primary=True, reason=_DEFAULT_REFUND_REASON, extra_body=None,
+                     bot_runner=None, path="/"):
+    """FakeHandler pre-wired for the now-gated refund/reconcile-refund
+    routes: a real admin session (primary or secondary) plus a JSON body
+    carrying `reason` (omit by passing reason=None, to exercise the 400
+    path)."""
+    body_payload = dict(extra_body or {})
+    if reason is not None:
+        body_payload["reason"] = reason
+    body = json.dumps(body_payload).encode()
+    login = PRIMARY_LOGIN if primary else "secondary-admin-login"
+    handler = FakeHandler(db, body=body, bot_runner=bot_runner, path=path)
+    handler._admin_session = _admin_session(login=login)
+    return handler
+
 
 class _Wfile:
     def __init__(self):
@@ -60,6 +91,10 @@ class FakeHandler:
 def db():
     tmp = tempfile.mkdtemp()
     os.environ["DATA_DIR"] = tmp
+    # PH7-16 Wave H: primary-admin capability config, needed now that
+    # refund/reconcile-refund require it (see _refund_handler above).
+    os.environ["PRIMARY_MGBOOST_ADMIN_ACTOR_ID"] = PRIMARY_ACTOR_ID
+    os.environ["PRIMARY_MGBOOST_ADMIN_LOGIN"] = PRIMARY_LOGIN
     from importlib import reload
     import src.config as cfg
     reload(cfg)
@@ -334,7 +369,7 @@ def test_refund_route_requires_bot_running(db):
     db.commit_apply_plan(inv["id"], 0, 1000)
     db.mark_invoice_applied(inv["id"], applied_expire=1000)
 
-    h = FakeHandler(db, bot_runner=None)
+    h = _refund_handler(db, bot_runner=None)
     handle_stars_payment_refund(h, str(inv["id"]))
     assert h._response_code == 503
 
@@ -342,9 +377,54 @@ def test_refund_route_requires_bot_running(db):
 def test_refund_route_rejects_wrong_status(db):
     from src.routes.admin import handle_stars_payment_refund
     inv = db.create_stars_invoice(1, "alice", None, "t", 30, 320)
-    h = FakeHandler(db)
+    h = _refund_handler(db)
     handle_stars_payment_refund(h, str(inv["id"]))
     assert h._response_code == 409
+
+
+# PH7-16 Wave H auth-matrix/IDOR coverage: refund/reconcile-refund move real
+# money and previously had no primary-admin gate and no recorded reason.
+def test_refund_route_requires_primary_capability(db):
+    from src.routes.admin import handle_stars_payment_refund
+    inv = _applied_invoice(db)
+    h = _refund_handler(db, primary=False)
+    handle_stars_payment_refund(h, str(inv["id"]))
+    assert h._response_code == 403
+    assert db.get_invoice(inv["id"])["status"] == "applied"
+
+
+@pytest.mark.parametrize("reason", [None, "", "  ", "ab"])
+def test_refund_route_requires_bounded_reason(db, reason):
+    from src.routes.admin import handle_stars_payment_refund
+    inv = _applied_invoice(db)
+    h = _refund_handler(db, reason=reason)
+    handle_stars_payment_refund(h, str(inv["id"]))
+    assert h._response_code == 400
+    assert db.get_invoice(inv["id"])["status"] == "applied"
+
+
+def test_refund_route_logs_requested_audit_evidence_before_telegram_call(db):
+    from src.routes.admin import handle_stars_payment_refund
+
+    class Bot:
+        async def refund_star_payment(self, user_id, charge_id):
+            return True
+
+    inv = _applied_invoice(db, payer=777)
+    runner = LoopRunner(Bot())
+    try:
+        h = _refund_handler(db, bot_runner=runner, reason="operator-confirmed duplicate charge")
+        handle_stars_payment_refund(h, str(inv["id"]))
+        assert h._response_code == 200
+    finally:
+        runner.close()
+    entries = db.get_audit_log(event_type="stars_refund_requested")
+    assert len(entries) == 1
+    metadata = entries[0]["metadata"]
+    assert metadata["actor_ref"] == PRIMARY_ACTOR_ID
+    assert metadata["reason"] == "operator-confirmed duplicate charge"
+    assert metadata["invoice_id"] == inv["id"]
+    assert entries[0]["telegram_id"] == 777
 
 
 class LoopRunner:
@@ -387,7 +467,7 @@ def test_refund_success_uses_actual_payer_and_finishes_after_telegram(db):
     bot = Bot()
     runner = LoopRunner(bot)
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(inv["id"]))
         assert h._response_code == 200
         assert bot.calls == [(999, "refund-charge")]
@@ -416,14 +496,14 @@ def test_concurrent_refund_requests_make_one_telegram_call(db):
     inv = _applied_invoice(db)
     bot = Bot()
     runner = LoopRunner(bot)
-    first = FakeHandler(db, bot_runner=runner)
+    first = _refund_handler(db, bot_runner=runner)
     first_thread = threading.Thread(
         target=handle_stars_payment_refund, args=(first, str(inv["id"]))
     )
     try:
         first_thread.start()
         assert started.wait(timeout=2)
-        second = FakeHandler(db, bot_runner=runner)
+        second = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(second, str(inv["id"]))
         assert second._response_code == 409
         release.set()
@@ -454,12 +534,12 @@ def test_refund_timeout_becomes_unknown_and_blocks_second_refund(db, monkeypatch
     runner = LoopRunner(bot)
     monkeypatch.setattr(admin_mod, "REFUND_RESULT_TIMEOUT_SECONDS", 0.01)
     try:
-        first = FakeHandler(db, bot_runner=runner)
+        first = _refund_handler(db, bot_runner=runner)
         admin_mod.handle_stars_payment_refund(first, str(inv["id"]))
         assert first._response_code == 202
         assert db.get_invoice(inv["id"])["status"] == "refund_unknown"
 
-        second = FakeHandler(db, bot_runner=runner)
+        second = _refund_handler(db, bot_runner=runner)
         admin_mod.handle_stars_payment_refund(second, str(inv["id"]))
         assert second._response_code == 409
         assert bot.calls == 1
@@ -482,13 +562,13 @@ def test_refund_explicit_false_becomes_unknown_and_blocks_second_call(db):
     bot = Bot()
     runner = LoopRunner(bot)
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(inv["id"]))
         assert h._response_code == 202
         row = db.get_invoice(inv["id"])
         assert row["status"] == "refund_unknown"
 
-        second = FakeHandler(db, bot_runner=runner)
+        second = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(second, str(inv["id"]))
         assert second._response_code == 409
         assert bot.calls == 1
@@ -506,12 +586,34 @@ def test_refund_exception_becomes_unknown(db):
     inv = _applied_invoice(db)
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_refund(h, str(inv["id"]))
         assert h._response_code == 202
         assert db.get_invoice(inv["id"])["status"] == "refund_unknown"
     finally:
         runner.close()
+
+
+def test_reconcile_refund_route_requires_primary_capability(db):
+    from src.routes.admin import handle_stars_payment_reconcile_refund
+    inv = _applied_invoice(db, charge="reconcile-auth-charge")
+    assert db.begin_invoice_refund(inv["id"])
+    assert db.mark_invoice_refund_unknown(inv["id"], "timeout")
+    h = _refund_handler(db, primary=False)
+    handle_stars_payment_reconcile_refund(h, str(inv["id"]))
+    assert h._response_code == 403
+    assert db.get_invoice(inv["id"])["status"] == "refund_unknown"
+
+
+def test_reconcile_refund_route_requires_bounded_reason(db):
+    from src.routes.admin import handle_stars_payment_reconcile_refund
+    inv = _applied_invoice(db, charge="reconcile-reason-charge")
+    assert db.begin_invoice_refund(inv["id"])
+    assert db.mark_invoice_refund_unknown(inv["id"], "timeout")
+    h = _refund_handler(db, reason=None)
+    handle_stars_payment_reconcile_refund(h, str(inv["id"]))
+    assert h._response_code == 400
+    assert db.get_invoice(inv["id"])["status"] == "refund_unknown"
 
 
 def test_refund_unknown_reconciliation_marks_confirmed_outgoing_transaction(db):
@@ -530,7 +632,7 @@ def test_refund_unknown_reconciliation_marks_confirmed_outgoing_transaction(db):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_reconcile_refund(h, str(inv["id"]))
         assert h._response_code == 200
         row = db.get_invoice(inv["id"])
@@ -553,7 +655,7 @@ def test_refund_reconciliation_not_found_leaves_state_unchanged(db):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_reconcile_refund(h, str(inv["id"]))
         assert h._response_code == 200
         assert h.json_response()["ok"] is False
@@ -578,7 +680,7 @@ def test_refund_reconciliation_wrong_payer_is_not_confirmed(db):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_payment_reconcile_refund(h, str(inv["id"]))
         assert h._response_code == 200
         assert h.json_response()["ok"] is False
@@ -603,6 +705,28 @@ def test_orphan_payment_is_visible_to_admin_and_refundable(db):
     assert rows[0]["status"] == "manual_review"
 
 
+def test_orphan_refund_route_requires_primary_capability(db):
+    from src.routes.admin import handle_stars_orphan_payment_refund
+    orphan, _ = db.record_stars_orphan_payment(
+        "orphan-auth-charge", None, 555, "XTR", 42, "broken", "invoice_not_found"
+    )
+    h = _refund_handler(db, primary=False)
+    handle_stars_orphan_payment_refund(h, str(orphan["id"]))
+    assert h._response_code == 403
+    assert db.get_stars_orphan_payment(orphan["id"])["status"] == "manual_review"
+
+
+def test_orphan_refund_route_requires_bounded_reason(db):
+    from src.routes.admin import handle_stars_orphan_payment_refund
+    orphan, _ = db.record_stars_orphan_payment(
+        "orphan-reason-charge", None, 555, "XTR", 42, "broken", "invoice_not_found"
+    )
+    h = _refund_handler(db, reason="")
+    handle_stars_orphan_payment_refund(h, str(orphan["id"]))
+    assert h._response_code == 400
+    assert db.get_stars_orphan_payment(orphan["id"])["status"] == "manual_review"
+
+
 def test_orphan_payment_refund_uses_captured_payer_and_charge(db):
     from src.routes.admin import handle_stars_orphan_payment_refund
 
@@ -622,7 +746,7 @@ def test_orphan_payment_refund_uses_captured_payer_and_charge(db):
     bot = Bot()
     runner = LoopRunner(bot)
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_orphan_payment_refund(h, str(orphan["id"]))
         assert h._response_code == 200
         assert bot.calls == [(555, full_charge_id)]
@@ -654,12 +778,12 @@ def test_orphan_refund_false_becomes_unknown_and_duplicate_request_is_safe(db):
     bot = Bot()
     runner = LoopRunner(bot)
     try:
-        first = FakeHandler(db, bot_runner=runner)
+        first = _refund_handler(db, bot_runner=runner)
         handle_stars_orphan_payment_refund(first, str(orphan["id"]))
         assert first._response_code == 202
         assert db.get_stars_orphan_payment(orphan["id"])["status"] == "refund_unknown"
 
-        second = FakeHandler(db, bot_runner=runner)
+        second = _refund_handler(db, bot_runner=runner)
         handle_stars_orphan_payment_refund(second, str(orphan["id"]))
         assert second._response_code == 409
         assert bot.calls == 1
@@ -679,7 +803,7 @@ def test_orphan_refund_timeout_becomes_unknown(db, monkeypatch):
     runner = LoopRunner(Bot())
     monkeypatch.setattr(admin_mod, "REFUND_RESULT_TIMEOUT_SECONDS", 0.01)
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         admin_mod.handle_stars_orphan_payment_refund(h, str(orphan["id"]))
         assert h._response_code == 202
         assert db.get_stars_orphan_payment(orphan["id"])["status"] == "refund_unknown"
@@ -707,7 +831,7 @@ def test_concurrent_orphan_refunds_make_one_telegram_call(db):
     orphan = _orphan_payment(db, "orphan-concurrent")
     bot = Bot()
     runner = LoopRunner(bot)
-    first = FakeHandler(db, bot_runner=runner)
+    first = _refund_handler(db, bot_runner=runner)
     first_thread = threading.Thread(
         target=handle_stars_orphan_payment_refund,
         args=(first, str(orphan["id"])),
@@ -715,7 +839,7 @@ def test_concurrent_orphan_refunds_make_one_telegram_call(db):
     try:
         first_thread.start()
         assert started.wait(timeout=2)
-        second = FakeHandler(db, bot_runner=runner)
+        second = _refund_handler(db, bot_runner=runner)
         handle_stars_orphan_payment_refund(second, str(orphan["id"]))
         assert second._response_code == 409
         release.set()
@@ -726,6 +850,17 @@ def test_concurrent_orphan_refunds_make_one_telegram_call(db):
         release.set()
         first_thread.join(timeout=2)
         runner.close()
+
+
+def test_orphan_reconcile_refund_route_requires_primary_capability(db):
+    from src.routes.admin import handle_stars_orphan_payment_reconcile_refund
+    orphan = _orphan_payment(db, "orphan-reconcile-auth", payer=555)
+    assert db.begin_orphan_refund(orphan["id"])
+    assert db.mark_orphan_refund_unknown(orphan["id"], "timeout")
+    h = _refund_handler(db, primary=False)
+    handle_stars_orphan_payment_reconcile_refund(h, str(orphan["id"]))
+    assert h._response_code == 403
+    assert db.get_stars_orphan_payment(orphan["id"])["status"] == "refund_unknown"
 
 
 @pytest.mark.parametrize("found", [True, False])
@@ -749,7 +884,7 @@ def test_orphan_refund_reconciliation_found_or_not_found(db, found):
 
     runner = LoopRunner(Bot())
     try:
-        h = FakeHandler(db, bot_runner=runner)
+        h = _refund_handler(db, bot_runner=runner)
         handle_stars_orphan_payment_reconcile_refund(h, str(orphan["id"]))
         assert h._response_code == 200
         expected = "refunded" if found else "refund_unknown"

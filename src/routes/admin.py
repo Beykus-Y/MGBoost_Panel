@@ -3,9 +3,12 @@ import json
 import re
 import time
 
+from ..database import AUDIT_EVENT_STARS_REFUND_REQUESTED, AUDIT_EVENT_STARS_REFUND_RECONCILE_REQUESTED
 from ..http_utils import json_response as _json_response
 from ..http_utils import read_body as _read_body
 from ..security import require_admin_auth
+
+from .admin_support import bounded_str, read_json_body, require_primary_capability
 
 
 REFUND_RESULT_TIMEOUT_SECONDS = 15
@@ -931,6 +934,22 @@ def _issue_stars_refund(handler, row, payment_id: int, *, orphan: bool = False):
     _json_response(handler, 200, {"ok": True})
 
 
+# PH7-16 Wave H: refund/reconcile-refund move real money and previously had
+# no primary-admin gate and no recorded reason -- any authenticated admin
+# session could trigger an irreversible Telegram Stars refund with zero
+# evidence of why. Gated the same way every other money-moving canonical
+# mutation already is: require_primary_capability + a mandatory 3-300 char
+# reason, logged as its own audit event the instant the action is
+# requested (not just on eventual Telegram-confirmed completion, since a
+# refund can end up pending/unknown for a long time).
+def _reason_or_error(handler, data):
+    reason, error = bounded_str(data, "reason", min_len=3, max_len=300)
+    if error:
+        _json_response(handler, 400, {"error": error})
+        return None
+    return reason
+
+
 def handle_stars_payment_refund(handler, payment_id):
     try:
         invoice_id = int(payment_id)
@@ -942,6 +961,9 @@ def handle_stars_payment_refund(handler, payment_id):
     if not row:
         _json_response(handler, 404, {"error": "Payment not found"})
         return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
     if row["status"] not in (
         "applied", "manual_review", "apply_retry_exhausted", "apply_failed_user_missing",
         "canonical_applied",
@@ -951,6 +973,18 @@ def handle_stars_payment_refund(handler, payment_id):
     if not row.get("payer_telegram_id") or not row.get("telegram_payment_charge_id"):
         _json_response(handler, 409, {"error": "Invoice has no recorded payer/charge id — nothing to refund"})
         return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason = _reason_or_error(handler, data)
+    if reason is None:
+        return
+    db.log_audit_event(
+        AUDIT_EVENT_STARS_REFUND_REQUESTED,
+        telegram_id=row.get("payer_telegram_id"),
+        marzban_username=row.get("marzban_username"),
+        metadata={"invoice_id": invoice_id, "actor_ref": capability.actor_id, "reason": reason},
+    )
     _issue_stars_refund(handler, row, invoice_id)
 
 
@@ -965,9 +999,24 @@ def handle_stars_orphan_payment_refund(handler, payment_id):
     if not row:
         _json_response(handler, 404, {"error": "Orphan payment not found"})
         return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
     if row["status"] != "manual_review":
         _json_response(handler, 409, {"error": f"Cannot refund from status {row['status']}"})
         return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason = _reason_or_error(handler, data)
+    if reason is None:
+        return
+    db.log_audit_event(
+        AUDIT_EVENT_STARS_REFUND_REQUESTED,
+        telegram_id=row.get("payer_telegram_id"),
+        marzban_username=None,
+        metadata={"orphan_payment_id": orphan_id, "actor_ref": capability.actor_id, "reason": reason},
+    )
     _issue_stars_refund(handler, row, orphan_id, orphan=True)
 
 
@@ -1037,10 +1086,26 @@ def handle_stars_payment_reconcile_refund(handler, payment_id):
     except (ValueError, TypeError):
         _json_response(handler, 400, {"error": "Invalid payment id"})
         return
-    row = handler.server.db.get_invoice(invoice_id)
+    db = handler.server.db
+    row = db.get_invoice(invoice_id)
     if not row:
         _json_response(handler, 404, {"error": "Payment not found"})
         return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason = _reason_or_error(handler, data)
+    if reason is None:
+        return
+    db.log_audit_event(
+        AUDIT_EVENT_STARS_REFUND_RECONCILE_REQUESTED,
+        telegram_id=row.get("payer_telegram_id"),
+        marzban_username=row.get("marzban_username"),
+        metadata={"invoice_id": invoice_id, "actor_ref": capability.actor_id, "reason": reason},
+    )
     _reconcile_stars_refund(handler, row, invoice_id)
 
 
@@ -1050,8 +1115,24 @@ def handle_stars_orphan_payment_reconcile_refund(handler, payment_id):
     except (ValueError, TypeError):
         _json_response(handler, 400, {"error": "Invalid orphan payment id"})
         return
-    row = handler.server.db.get_stars_orphan_payment(orphan_id)
+    db = handler.server.db
+    row = db.get_stars_orphan_payment(orphan_id)
     if not row:
         _json_response(handler, 404, {"error": "Orphan payment not found"})
         return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason = _reason_or_error(handler, data)
+    if reason is None:
+        return
+    db.log_audit_event(
+        AUDIT_EVENT_STARS_REFUND_RECONCILE_REQUESTED,
+        telegram_id=row.get("payer_telegram_id"),
+        marzban_username=None,
+        metadata={"orphan_payment_id": orphan_id, "actor_ref": capability.actor_id, "reason": reason},
+    )
     _reconcile_stars_refund(handler, row, orphan_id, orphan=True)
