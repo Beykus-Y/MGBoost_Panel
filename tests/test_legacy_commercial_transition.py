@@ -669,6 +669,58 @@ def test_worker_units_are_single_30_second_hardened_driver():
     assert timer.count("Unit=mgboost-legacy-commercial-transition.service") == 1
 
 
+def test_worker_tick_activation_boundary_does_not_race_expiry_enforcement(db):
+    """Incident 2026-09-01: activation_at is always aligned to the source
+    subscription's own expiry, so at the moment a transition activates, that
+    subscription is *also* simultaneously expiring. The worker's crash-
+    recovery pre-pass used to run generic expiry-driven parent-sync for every
+    not-yet-applied transition unconditionally -- including one becoming due
+    this very tick -- which disabled its children (observed_state DISABLED)
+    microseconds before apply_ready's surviving-lineage check ran, losing the
+    race every single time and landing a routine, uncontested renewal in
+    MANUAL_REVIEW. One real customer got stuck exactly like this in prod."""
+    from src.legacy_commercial_transition_worker import run_worker_tick
+
+    account_id, cap = _legacy(db, expiry=3600, username="lct-race", tg=996800)
+    child = _add_child(db, account_id, suffix="race")
+    payment = _payment(db, cap, account_id, plan="WL", days=60, tag="race")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    # The race only exists when activation coincides with the source
+    # expiry -- confirm the fixture actually reproduces that boundary.
+    assert transition["activation_at"] == 3600
+
+    def sync_fn(payload):
+        return {"outcome": "SYNCED"}
+
+    result = run_worker_tick(
+        db, sync_fn=sync_fn, revoke_fn=lambda _payload: {"outcome": "REVOKED"},
+        now=transition["activation_at"], clock=lambda: transition["activation_at"],
+        worker_prefix="race-test-worker",
+    )
+    assert result["manual_review"] == 0
+    assert result["errors"] == []
+    assert result["applied"] == 1
+
+    final = db.legacy_commercial_transitions.get(transition["id"])
+    assert final["state"] == "APPLIED"
+    current = db._conn.execute(
+        "SELECT p.plan_code,s.current_expiry FROM mgboost_subscriptions s "
+        "JOIN mgboost_plan_versions p ON p.id=s.current_plan_version_id WHERE s.account_id=?",
+        (account_id,),
+    ).fetchone()
+    assert current["plan_code"] == "WL"
+    assert current["current_expiry"] == transition["target_expiry"]
+    child_row = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (child["child_intent_id"],),
+    ).fetchone()
+    assert child_row["desired_state"] == "ACTIVE"
+    assert child_row["observed_state"] == "ACTIVE"
+
+
 def test_transition_migration_is_idempotent_and_foreign_keys_are_clean(db):
     from src.legacy_commercial_transition_schema import (
         MIGRATION_ID, SCHEMA_CHECKSUM, apply_legacy_commercial_transition_schema,
