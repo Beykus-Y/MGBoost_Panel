@@ -203,6 +203,9 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
     )
     js_source = re.sub(
+        r"const MARZBAN_USERS_UI_READY = import\(`\./admin/technical/marzban_users\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const TICKETS_UI_READY = import\(`\./admin/support/tickets\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const STARS_UI_READY = import\(`\./admin/payments/stars_legacy\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const NODES_UI_READY = import\(`\./admin/operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
@@ -221,7 +224,21 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
         flags=re.DOTALL,
     )
-    js_source = _strip_module_syntax(_admin_shell_source()) + "\n" + _strip_module_syntax(js_source)
+    # PH7-16 Wave 5 moved renderUsers out of admin.js into
+    # admin/technical/marzban_users.js's createMarzbanUsersUi() factory --
+    # the escaping logic under test (kernel.js's html/renderHtml/esc) is
+    # unchanged, but exercising it now requires instantiating that factory
+    # too, the same way admin.js itself does at runtime.
+    marzban_users_source = _strip_module_syntax(
+        (ADMIN_MODULES / "technical" / "marzban_users.js").read_text(encoding="utf-8")
+    )
+    js_source = (
+        _strip_module_syntax(_admin_shell_source())
+        + "\n"
+        + _strip_module_syntax(js_source)
+        + "\n"
+        + marzban_users_source
+    )
     payload = "<img src=x onerror=globalThis.__xss=1>'\\\"&"
     script = f"""
 const vm=require('vm');
@@ -239,8 +256,13 @@ sandbox.globalThis=sandbox;
 vm.createContext(sandbox);
 vm.runInContext(source,sandbox);
 let captured='';
-sandbox.renderHtml=(_element,markup)=>{{captured=markup.value;}};
-sandbox.renderUsers([{{
+const marzbanUsers=sandbox.createMarzbanUsersUi({{
+  html:sandbox.html,renderHtml:(_element,markup)=>{{captured=markup.value;}},toast(){{}},closeModal(){{}},
+  api:async()=>({{ok:false}}),proxyApi:async()=>({{ok:false}}),promptReason:()=>null,
+  getAllUsers:()=>[],setAllUsers(){{}},getAllNodes:()=>[],getAllInbounds:()=>({{}}),setAllInbounds(){{}},
+  getNodeFilters:()=>({{}}),setNodeFilters(){{}}
+}});
+marzbanUsers.renderUsers([{{
   username:{json.dumps(payload)}, note:{json.dumps(payload)}, sub_last_user_agent:{json.dumps(payload)},
   status:'active',used_traffic:0,data_limit:null,expire:null,online_at:null
 }}]);
