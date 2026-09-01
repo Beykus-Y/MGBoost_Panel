@@ -25,6 +25,21 @@ def ceil_to_utc_hour(value: int) -> int:
     return value if value % 3600 == 0 else value + (3600 - value % 3600)
 
 
+# apply_ready's surviving-lineage gate: which child desired/observed states
+# still count as this account's real, authoritative device -- an explicit
+# allowlist (not "not in {REVOKED, ...}") so a new state value added to
+# either CHECK constraint in the future defaults to REJECTED here, not
+# silently accepted. DISABLED is included deliberately: it is the normal,
+# reversible, already-confirmed-remote state of an existing current child --
+# ParentSyncStore.acknowledge() itself writes DISABLED for both an
+# administratively paused slot (PH7-05) and a subscription that has simply
+# expired, and in both cases the child is still this account's own live
+# lineage, not evidence of drift. Only REVOKED/UNKNOWN/ERROR/NOT_CREATED (or
+# any future state outside this allowlist) mean the slot's relationship to
+# the account cannot be trusted -- those keep raising the conflict below.
+_AUTHORITATIVE_CHILD_STATES = ('ACTIVE', 'DISABLED')
+
+
 class LegacyCommercialTransitionStore:
     def __init__(self, connection: sqlite3.Connection, lock, authority):
         self._conn, self._lock, self._authority = connection, lock, authority
@@ -515,8 +530,8 @@ class LegacyCommercialTransitionStore:
                     if (generation['child_id'] is None
                             or generation['child_account_id'] != row['account_id']
                             or generation['slot_generation_id'] != generation['generation_id']
-                            or generation['desired_state'] == 'REVOKED'
-                            or generation['observed_state'] != 'ACTIVE'):
+                            or generation['desired_state'] not in _AUTHORITATIVE_CHILD_STATES
+                            or generation['observed_state'] not in _AUTHORITATIVE_CHILD_STATES):
                         raise LegacyCommercialTransitionConflict('surviving child lineage is not authoritative')
                     surviving_children.append(int(generation['child_id']))
                 mutation=self._conn.execute("INSERT INTO mgboost_entitlement_mutations (account_id,subscription_id,operation,payment_channel,mutation_source,actor_type,actor_ref,reason,external_reference,before_json,after_json,created_at) VALUES (?,?,'LEGACY_COMMERCIAL_TRANSITION','EXTERNAL_PAYMENT','MANUAL_PAYMENT','PRIMARY_ADMIN',?,?,?,?,?,?)",(row['account_id'],sub['id'],row['actor_ref'],row['reason'],payment['external_reference'],json.dumps({'plan_version_id':row['source_plan_version_id'],'current_expiry':row['aligned_source_expiry']},sort_keys=True),json.dumps({'plan_version_id':row['target_plan_version_id'],'new_expiry':row['target_expiry']},sort_keys=True),timestamp)).lastrowid

@@ -418,17 +418,30 @@ def test_transition_baseline_created_only_for_surviving_limited_lineages(db, pla
     ).fetchall()] == [tuple(row) for row in credentials_before]
 
 
-@pytest.mark.parametrize("shape", ["non_active", "missing"])
+@pytest.mark.parametrize("shape", [
+    "revoked", "missing", "observed_unknown", "observed_error", "observed_not_created",
+])
 def test_limited_apply_rejects_unproven_surviving_lineage(db, shape):
+    """apply_ready's surviving-lineage gate is an explicit allowlist
+    (_AUTHORITATIVE_CHILD_STATES = ACTIVE/DISABLED only) -- every other
+    state either CHECK constraint currently permits must still be rejected,
+    covering both desired_state (REVOKED) and every non-allowlisted
+    observed_state (UNKNOWN, ERROR, NOT_CREATED; REVOKED covered by the
+    'revoked' shape) plus a slot with no child at all."""
     account_id, cap = _legacy(db, expiry=3600, username=f"lct-survivor-{shape}", tg=996700+len(shape))
-    if shape == "non_active":
-        child = _add_child(db, account_id, suffix=shape)
-        db._conn.execute(
-            "UPDATE mgboost_child_user_intents SET observed_state='REVOKED',desired_state='REVOKED' WHERE id=?",
-            (child["child_intent_id"],),
-        )
-    else:
+    if shape == "missing":
         db.device_slots.claim(account_id, "missing-child-hwid", HWID_KEY, now=300)
+    else:
+        child = _add_child(db, account_id, suffix=shape)
+        observed = {
+            "revoked": "REVOKED", "observed_unknown": "UNKNOWN",
+            "observed_error": "ERROR", "observed_not_created": "NOT_CREATED",
+        }[shape]
+        desired = "REVOKED" if shape == "revoked" else "ACTIVE"
+        db._conn.execute(
+            "UPDATE mgboost_child_user_intents SET observed_state=?,desired_state=? WHERE id=?",
+            (observed, desired, child["child_intent_id"]),
+        )
     db._conn.commit()
     payment = _payment(db, cap, account_id, plan="WL", tag=f"survivor-{shape}")
     transition = db.legacy_commercial_transitions.create(
@@ -444,6 +457,53 @@ def test_limited_apply_rejects_unproven_surviving_lineage(db, shape):
         "SELECT COUNT(*) FROM mgboost_wl_transition_baselines WHERE transition_id=?",
         (transition["id"],),
     ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("state", ["ACTIVE", "DISABLED"])
+def test_limited_apply_accepts_active_and_disabled_surviving_lineage(db, state):
+    """DISABLED is the normal, reversible, already-confirmed-remote state of
+    an existing current child (ParentSyncStore.acknowledge() writes it for
+    both an administratively paused slot and a subscription that has simply
+    expired) -- it must count as authoritative lineage exactly like ACTIVE."""
+    account_id, cap = _legacy(db, expiry=3600, username=f"lct-ok-{state.lower()}", tg=996800+len(state))
+    child = _add_child(db, account_id, suffix=state.lower())
+    db._conn.execute(
+        "UPDATE mgboost_child_user_intents SET observed_state=?,desired_state=? WHERE id=?",
+        (state, state, child["child_intent_id"]),
+    )
+    db._conn.commit()
+    payment = _payment(db, cap, account_id, plan="WL", tag=f"ok-{state}")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    db.legacy_commercial_transitions.claim_due(worker_id=f"ok-worker-{state}", now=transition["activation_at"])
+    db.legacy_commercial_transitions.assess_capacity(transition["id"], now=transition["activation_at"])
+    applied = db.legacy_commercial_transitions.apply_ready(transition["id"], now=transition["activation_at"])
+    assert applied["state"] == "APPLIED"
+    assert db.manual_payments.get_record(payment["id"])["status"] == "APPLIED"
+
+
+def test_authoritative_child_state_allowlist_matches_known_schema_enum(db):
+    """Guard against silently widening either CHECK constraint without a
+    conscious decision about apply_ready's allowlist: if a future migration
+    adds a new desired_state/observed_state value, this assertion breaks
+    loudly instead of that new value defaulting to trusted."""
+    import re
+    from src.legacy_commercial_transition import _AUTHORITATIVE_CHILD_STATES
+    assert set(_AUTHORITATIVE_CHILD_STATES) == {"ACTIVE", "DISABLED"}
+    schema = db._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='mgboost_child_user_intents'",
+    ).fetchone()["sql"]
+
+    def _enum(column):
+        match = re.search(rf"{column}\b[^(]*IN\s*\(([^)]*)\)", schema)
+        return {value.strip().strip("'") for value in match.group(1).split(",")}
+
+    assert _enum("desired_state") == {"ACTIVE", "DISABLED", "REVOKED"}
+    assert _enum("observed_state") == {
+        "NOT_CREATED", "ACTIVE", "DISABLED", "REVOKED", "UNKNOWN", "ERROR",
+    }
 
 
 def test_capacity_conflict_requires_explicit_generation_and_never_retires_early(db):
@@ -719,6 +779,182 @@ def test_worker_tick_activation_boundary_does_not_race_expiry_enforcement(db):
     ).fetchone()
     assert child_row["desired_state"] == "ACTIVE"
     assert child_row["observed_state"] == "ACTIVE"
+
+
+def test_manual_review_recovers_after_expiry_race_disabled_children_via_retry(db):
+    """The account_id=3 incident recovery path, end to end: a transition
+    already stuck in MANUAL_REVIEW with its children left DISABLED by the
+    (now-fixed) race must still be recoverable through the one sanctioned
+    channel -- retry_manual_review() plus the next worker tick -- now that
+    apply_ready's surviving-lineage gate accepts DISABLED as authoritative.
+    Also proves the recovery is exactly-once: one entitlement mutation, one
+    payment application, the correct (not doubled) target expiry, and a
+    second retry/tick afterward changes nothing further."""
+    from src.legacy_commercial_transition_worker import run_worker_tick
+    from src.parent_sync import run_account_sync_cycle
+
+    account_id, cap = _legacy(db, expiry=3600, username="lct-recovery", tg=996810)
+    child = _add_child(db, account_id, suffix="recovery")
+    payment = _payment(db, cap, account_id, plan="WL", days=60, tag="recovery")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    assert transition["activation_at"] == 3600
+
+    def sync_fn(payload):
+        return {"outcome": "SYNCED"}
+
+    # Reproduce the incident's exact starting shape directly (independent of
+    # the worker's ordering fix, which only stops this from happening going
+    # forward): the generic expiry-driven sync that used to race apply, then
+    # the resulting MANUAL_REVIEW the real apply attempt landed in.
+    run_account_sync_cycle(db, account_id, sync_fn=sync_fn, worker_id="incident-repro", now=3600)
+    disabled = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (child["child_intent_id"],),
+    ).fetchone()
+    assert disabled["desired_state"] == "DISABLED"
+    assert disabled["observed_state"] == "DISABLED"
+    db.legacy_commercial_transitions.manual_review(
+        transition["id"], reason="LegacyCommercialTransitionConflict", now=3600,
+    )
+    assert db.legacy_commercial_transitions.get(transition["id"])["state"] == "MANUAL_REVIEW"
+    assert db.manual_payments.get_record(payment["id"])["status"] == "PENDING"
+
+    retried = db.legacy_commercial_transitions.retry_manual_review(
+        cap, transition["id"], reason="incident recovery after code fix", now=3700,
+    )
+    assert retried["state"] == "SCHEDULED"
+
+    result = run_worker_tick(
+        db, sync_fn=sync_fn, revoke_fn=lambda _payload: {"outcome": "REVOKED"},
+        now=3700, clock=lambda: 3700, worker_prefix="recovery-test",
+    )
+    assert result["manual_review"] == 0
+    assert result["errors"] == []
+    assert result["applied"] == 1
+
+    final = db.legacy_commercial_transitions.get(transition["id"])
+    assert final["state"] == "APPLIED"
+    assert db.manual_payments.get_record(payment["id"])["status"] == "APPLIED"
+    applications = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_manual_payment_applications WHERE payment_record_id=?",
+        (payment["id"],),
+    ).fetchone()[0]
+    assert applications == 1
+    mutations = db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_entitlement_mutations WHERE subscription_id=? "
+        "AND operation='LEGACY_COMMERCIAL_TRANSITION'", (transition["source_subscription_id"] or 0,),
+    ).fetchone()[0]
+    assert mutations == 1
+
+    current = db._conn.execute(
+        "SELECT p.plan_code,s.current_expiry FROM mgboost_subscriptions s "
+        "JOIN mgboost_plan_versions p ON p.id=s.current_plan_version_id WHERE s.account_id=?",
+        (account_id,),
+    ).fetchone()
+    assert current["plan_code"] == "WL"
+    assert current["current_expiry"] == transition["target_expiry"]
+    # 60 days anchored to the original activation boundary (3600) -- not
+    # doubled and not re-anchored to the later retry/recovery tick (3700).
+    assert transition["target_expiry"] == 3600 + 60 * 86400
+
+    recovered = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (child["child_intent_id"],),
+    ).fetchone()
+    assert recovered["desired_state"] == "ACTIVE"
+    assert recovered["observed_state"] == "ACTIVE"
+
+    # A second retry is rejected (only MANUAL_REVIEW transitions are
+    # retryable) -- no way to re-enter the apply path and double-charge.
+    with pytest.raises(LegacyCommercialTransitionConflict, match="not in manual review"):
+        db.legacy_commercial_transitions.retry_manual_review(
+            cap, transition["id"], reason="bogus second retry", now=3800,
+        )
+    # A second tick is a pure no-op for this already-APPLIED transition.
+    second_tick = run_worker_tick(
+        db, sync_fn=sync_fn, revoke_fn=lambda _payload: {"outcome": "REVOKED"},
+        now=3800, clock=lambda: 3800, worker_prefix="recovery-test-2",
+    )
+    assert second_tick == {"assessed": 0, "applied": 0, "retired": 0, "manual_review": 0, "errors": []}
+    assert db.manual_payments.get_record(payment["id"])["status"] == "APPLIED"
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_manual_payment_applications WHERE payment_record_id=?",
+        (payment["id"],),
+    ).fetchone()[0] == 1
+
+
+def test_administratively_paused_child_keeps_pause_across_transition_apply(db):
+    """A slot an operator paused (PH7-05 Disable) before the transition ever
+    activated must stay paused after apply -- the transition renewing the
+    account's entitlement must never resurrect it. Exercises the same
+    surviving-lineage allowlist (the paused child is DISABLED at both the
+    child-intent and slot level, just like the expiry-race case) plus
+    enqueue_current_children's pre-existing per-slot-pause override, which
+    the recovery fix relies on to keep the two cases visually identical at
+    the child_user_intents level but distinct at the slot level."""
+    from src.legacy_commercial_transition_worker import run_worker_tick
+    from src.parent_sync import run_account_sync_cycle
+
+    account_id, cap = _legacy(db, expiry=3600, username="lct-paused", tg=996820, approved_limit=3)
+    active_child = _add_child(db, account_id, suffix="active-survivor", now=300)
+    paused_child = _add_child(db, account_id, suffix="paused-survivor", now=310)
+    paused_slot_number = paused_child["slot"]["slot_number"]
+
+    def sync_fn(payload):
+        return {"outcome": "SYNCED"}
+
+    pause_result = db.device_slot_admin.set_paused(
+        cap, account_id=account_id, slot_number=paused_slot_number, paused=True,
+        reason="operator pause before renewal", idempotency_key="lct-pause-key-000000001", now=500,
+    )
+    assert pause_result["converged"] is False
+    # Converge the pause to Marzban before the transition boundary, mirroring
+    # a real operator pause that has already reached the remote side.
+    run_account_sync_cycle(db, account_id, sync_fn=sync_fn, worker_id="pause-converge", now=500)
+    paused_before = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (paused_child["child_intent_id"],),
+    ).fetchone()
+    assert paused_before["desired_state"] == "DISABLED"
+    assert paused_before["observed_state"] == "DISABLED"
+
+    payment = _payment(db, cap, account_id, plan="WL", days=60, tag="paused-case")
+    transition = db.legacy_commercial_transitions.create(
+        cap, payment_record_id=payment["id"], reason="real paid transition", now=1000,
+    )
+    transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+    assert transition["activation_at"] == 3600
+
+    result = run_worker_tick(
+        db, sync_fn=sync_fn, revoke_fn=lambda _payload: {"outcome": "REVOKED"},
+        now=3600, clock=lambda: 3600, worker_prefix="pause-test",
+    )
+    assert result["manual_review"] == 0
+    assert result["errors"] == []
+    assert result["applied"] == 1
+    assert db.legacy_commercial_transitions.get(transition["id"])["state"] == "APPLIED"
+
+    active_after = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (active_child["child_intent_id"],),
+    ).fetchone()
+    assert active_after["desired_state"] == "ACTIVE"
+    assert active_after["observed_state"] == "ACTIVE"
+
+    paused_after = db._conn.execute(
+        "SELECT desired_state,observed_state FROM mgboost_child_user_intents WHERE id=?",
+        (paused_child["child_intent_id"],),
+    ).fetchone()
+    assert paused_after["desired_state"] == "DISABLED"
+    assert paused_after["observed_state"] == "DISABLED"
+    slot_after = db._conn.execute(
+        "SELECT desired_state FROM mgboost_device_slots WHERE account_id=? AND slot_number=?",
+        (account_id, paused_slot_number),
+    ).fetchone()
+    assert slot_after["desired_state"] == "DISABLED"
 
 
 def test_transition_migration_is_idempotent_and_foreign_keys_are_clean(db):
