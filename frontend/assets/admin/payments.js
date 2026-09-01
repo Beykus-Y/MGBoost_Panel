@@ -149,12 +149,12 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
     renderProducts();
   }
 
-  async function openLegacyTransition(ctx){
-    const catalog=await ensureCatalog(ctx.adminFetch);
-    const current=await ctx.adminFetch(`/admin/accounts/${ctx.account.id}/legacy-transition`)
-      .then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error||'transition fetch failed');return data.transition;});
-    const modal=openModal({title:'Перевести с архивного тарифа'});
-
+  // PH7-16 Wave 3: shared by the account-level entry point (Payments tab,
+  // openLegacyTransition below) and the Operations -> Legacy Transitions
+  // queue (openLegacyTransitionById) -- "same components, two list
+  // contexts" per the plan, not two independent renderers.
+  function _openTransitionModal(ctx,{title}){
+    const modal=openModal({title});
     const request=async(path,body={})=>{
       const response=await ctx.adminFetch(path,{method:'POST',body:JSON.stringify(body)});
       const data=await response.json();if(!response.ok)throw new Error(data.error||'transition request failed');
@@ -193,6 +193,22 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
         renderTransition(await request(`/admin/legacy-transitions/${transition.id}/retry-review`,{reason}));
       });
     };
+    return {modal,request,renderTransition};
+  }
+
+  async function openLegacyTransitionById(transitionId,ctx){
+    const {modal,renderTransition}=_openTransitionModal(ctx,{title:'Переход с архивного тарифа'});
+    renderHtml(modal.el.querySelector('.modal-body'),html`<div class="cell-sub">Загрузка…</div>`);
+    const transition=await ctx.adminFetch(`/admin/legacy-transitions/${transitionId}`)
+      .then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error||'transition fetch failed');return data.transition;});
+    renderTransition(transition);
+  }
+
+  async function openLegacyTransition(ctx){
+    const catalog=await ensureCatalog(ctx.adminFetch);
+    const current=await ctx.adminFetch(`/admin/accounts/${ctx.account.id}/legacy-transition`)
+      .then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error||'transition fetch failed');return data.transition;});
+    const {modal,request,renderTransition}=_openTransitionModal(ctx,{title:'Перевести с архивного тарифа'});
     if(current){renderTransition(current);return;}
     const plans=catalog.plans.filter(item=>['BASIC','BASIC_PLUS','BASIC_PRO','WL','EXTENDED','FAMILY'].includes(item.plan_code));
     renderHtml(modal.el.querySelector('.modal-body'),html`<div class="cell-sub">Текущий архивный тариф работает до UTC-hour activation boundary. Цена проверяется серверным RUB-каталогом.</div>
@@ -391,5 +407,5 @@ export function createPayments({html,renderHtml,toast,openModal,confirmFlow,form
       <div class="cell-sub">${inv.tariff_name} · ${inv.stars_price} ⭐ · ${inv.status}</div></div></div>`)}</div>`:html``}`;
   }
 
-  return {ensureCatalog,openNewPayment,openLegacyTransition,openRecordModal,paymentsTab};
+  return {ensureCatalog,openNewPayment,openLegacyTransition,openLegacyTransitionById,openRecordModal,paymentsTab};
 }

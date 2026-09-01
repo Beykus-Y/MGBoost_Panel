@@ -1,6 +1,7 @@
 """Primary-admin API for reusable legacy->commercial transitions."""
 from __future__ import annotations
 
+from ..admin_read_models import _queue_label
 from ..http_utils import error_response, json_response
 from ..legacy_commercial_transition import LegacyCommercialTransitionConflict, LegacyCommercialTransitionError
 from ..security import require_admin_auth
@@ -63,6 +64,54 @@ def _view(db, row):
         "events": [dict(event) for event in events],
     })
     return result
+
+
+# PH7-16 Wave 3: Operations -> Legacy Transitions queue. Lighter than
+# `_view()` -- one row per open transition, no per-transition devices/events
+# join (that detail loads lazily when an operator opens one from the
+# queue, via the existing GET /admin/legacy-transitions/{id}), so listing
+# up to a few dozen open transitions stays a handful of cheap queries
+# instead of an N+1 over every device slot and audit event.
+def _queue_view(db, row):
+    target = db._conn.execute(
+        "SELECT plan_code,display_name FROM mgboost_plan_versions WHERE id=?",
+        (row["target_plan_version_id"],),
+    ).fetchone()
+    source = db._conn.execute(
+        "SELECT plan_code,display_name FROM mgboost_plan_versions WHERE id=?",
+        (row["source_plan_version_id"],),
+    ).fetchone()
+    result = {key: row[key] for key in (
+        "id", "public_id", "account_id", "state", "review_reason",
+        "activation_at", "target_expiry", "expected_amount_minor", "updated_at",
+    )}
+    result.update({
+        "source_plan_code": source["plan_code"] if source else None,
+        "target_plan_code": target["plan_code"] if target else None,
+        "target_display_name": target["display_name"] if target else None,
+        **_queue_label(db, row["account_id"]),
+    })
+    return result
+
+
+def handle_transitions_queue(handler):
+    """Cross-account queue of every transition still in flight (every
+    state except the two terminal ones, APPLIED/CANCELLED) -- the
+    Operations-area counterpart to the single-account
+    GET /admin/accounts/{id}/legacy-transition entry point already used
+    from the account's Payments tab. Same underlying store, same
+    per-transition detail/mutation routes; this is read-only and adds no
+    new mutation surface."""
+    if not require_admin_auth(handler):
+        return
+    db = handler.server.db
+    if require_primary_capability(handler, db) is None:
+        return
+    rows = db._conn.execute(
+        "SELECT * FROM mgboost_legacy_commercial_transitions "
+        "WHERE state NOT IN ('APPLIED','CANCELLED') ORDER BY updated_at DESC LIMIT 100"
+    ).fetchall()
+    json_response(handler, 200, {"transitions": [_queue_view(db, row) for row in rows]})
 
 
 def handle_transition_detail(handler, transition_id):

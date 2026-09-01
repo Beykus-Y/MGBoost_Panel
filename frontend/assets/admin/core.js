@@ -34,6 +34,16 @@ const HUMAN_LABELS=Object.freeze({
   APPLIED:'Применено',IN_FLIGHT:'Выполняется',RETRY:'Повтор',ERROR:'Ошибка',
   AUTO:'Автоматически',ENDED:'Завершён',NOT_CREATED:'Не создан',
   SYNCED:'Синхронизировано',CANCELLED:'Отменён',LIMITED:'Ограниченный',NONE:'Нет',
+  // PH7-16 Wave 3: P0 legacy->commercial transition states
+  // (mgboost_legacy_commercial_transitions.state) -- were previously shown
+  // as raw enum text in the account-level modal; humanLabel() falls back
+  // to the raw string for anything not listed here, so filling these in
+  // fixes that for both the pre-existing Payments-tab modal and the new
+  // Operations queue.
+  PENDING_PAYMENT:'Ожидает оплаты',SCHEDULED:'Запланирован',
+  SELECTION_REQUIRED:'Нужен выбор устройств',SELECTION_RECORDED:'Выбор записан',
+  RETIREMENT_IN_PROGRESS:'Отзыв устройств',READY_TO_APPLY:'Готов к применению',
+  APPLYING:'Применяется',
   PLAN_PRODUCT:'Продление тарифа',WL_PACKAGE:'WL-пакет',
   ENTITLEMENT_MUTATION:'Entitlement',PAYMENT_RECORD:'Платёж',
   MANUAL_PAYMENT:'Ручной платёж',MANUAL_PAYMENT_EDIT:'Правка платежа',

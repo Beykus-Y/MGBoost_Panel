@@ -34,6 +34,54 @@ def test_get_routes_require_auth_and_primary_and_prevent_enumeration(db):
         assert primary.status == 200
 
 
+# PH7-16 Wave 3: Operations -> Legacy Transitions queue.
+def test_queue_route_requires_auth_and_primary(db):
+    from src.routes import admin_legacy_transitions as routes
+    _transition(db, suffix="queue-auth")
+
+    unauth = make_handler(db, command="GET", authenticated=False)
+    routes.handle_transitions_queue(unauth)
+    assert unauth.status == 401
+
+    secondary = make_handler(db, command="GET", primary=False)
+    routes.handle_transitions_queue(secondary)
+    assert secondary.status == 403
+
+    primary = make_handler(db, command="GET")
+    routes.handle_transitions_queue(primary)
+    assert primary.status == 200
+
+
+def test_queue_lists_open_transitions_and_excludes_terminal_states(db):
+    from src.routes import admin_legacy_transitions as routes
+    account_id, cap, payment, transition = _transition(db, suffix="queue-open")
+    # A second, separate account/transition that gets cancelled -- must not
+    # appear in the queue once terminal.
+    other_account_id, other_cap = _legacy(db, expiry=3600, username="lct-queue-cancelled", tg=889999)
+    other_payment = _payment(db, other_cap, other_account_id, tag="queue-cancelled")
+    other_transition = db.legacy_commercial_transitions.create(
+        other_cap, payment_record_id=other_payment["id"], reason="will be cancelled", now=1000,
+    )
+    db.legacy_commercial_transitions.cancel(other_cap, other_transition["id"], reason="cancelled for queue test")
+
+    handler = make_handler(db, command="GET")
+    routes.handle_transitions_queue(handler)
+    assert handler.status == 200
+    body = handler.json()
+    ids = [row["id"] for row in body["transitions"]]
+    assert transition["id"] in ids
+    assert other_transition["id"] not in ids
+
+    row = next(row for row in body["transitions"] if row["id"] == transition["id"])
+    assert row["account_id"] == account_id
+    assert row["state"] == "PENDING_PAYMENT"
+    assert "label" in row
+    # Lean queue shape: no per-transition devices/events join (that's the
+    # detail route's job) and no raw technical identifiers.
+    assert "devices" not in row
+    assert "events" not in row
+
+
 def test_all_post_routes_require_auth_primary_and_csrf(db):
     from src.routes import admin_legacy_transitions as routes
     account_id, _cap, payment, transition = _transition(db, suffix="post-auth")

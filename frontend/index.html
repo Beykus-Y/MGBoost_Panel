@@ -43,6 +43,9 @@
     <div class="nav-item" data-action="show-page" data-page="ops-health">
       <span class="nav-icon">♥</span> Здоровье
     </div>
+    <div class="nav-item" data-action="show-page" data-page="legacy-transitions">
+      <span class="nav-icon">⇄</span> Легаси-переходы
+    </div>
     <div class="nav-item" data-action="show-page" data-page="nodes">
       <span class="nav-icon">◈</span> Ноды
     </div>
@@ -176,6 +179,18 @@
         <button data-action="show-page" data-page="ops-health">Обновить</button>
       </div>
       <div id="ops-health-box">
+        <div class="loading"><span class="spinner"></span>Загрузка...</div>
+      </div>
+    </div>
+
+    <!-- OPERATIONS / LEGACY TRANSITIONS (P0) -->
+    <div class="page" id="page-legacy-transitions">
+      <div class="page-header">
+        <span class="page-title">Операции / Легаси-переходы</span>
+        <button data-action="show-page" data-page="legacy-transitions">Обновить</button>
+      </div>
+      <div class="cell-sub" style="margin-bottom:12px">Переходы с архивного (LEGACY_PAID_COMPAT) тарифа на коммерческий, ещё не применённые или не отменённые. Открытие строки — тот же диалог, что и на вкладке «Платежи» аккаунта.</div>
+      <div id="legacy-transitions-box">
         <div class="loading"><span class="spinner"></span>Загрузка...</div>
       </div>
     </div>

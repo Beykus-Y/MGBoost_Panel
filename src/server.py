@@ -116,7 +116,7 @@ from .routes.admin_payments import (
 from .routes.admin_legacy_transitions import (
     handle_account_transition, handle_transition_cancel, handle_transition_confirm,
     handle_transition_create, handle_transition_detail, handle_transition_retry_review,
-    handle_transition_select,
+    handle_transition_select, handle_transitions_queue,
 )
 from .routes.admin_session import (
     handle_admin_session_login,
@@ -222,6 +222,8 @@ _ROUTES = [
      lambda h, payment_record_id: handle_transition_create(h, payment_record_id)),
     ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/legacy-transition$"),
      lambda h, account_id: handle_account_transition(h, account_id)),
+    ("GET",    re.compile(r"^/admin/legacy-transitions$"),
+     lambda h: handle_transitions_queue(h)),
     ("GET",    re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})$"),
      lambda h, transition_id: handle_transition_detail(h, transition_id)),
     ("POST",   re.compile(r"^/admin/legacy-transitions/(?P<transition_id>\d{1,18})/confirm$"),

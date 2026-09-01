@@ -47,9 +47,21 @@ let accountUi = null;
 let routingUi = null;
 let nodesUi = null;
 let opsHealthUi = null;
+let legacyTransitionsUi = null;
 const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast});
   return accountUi;
+});
+// PH7-16 Wave 3: the Operations queue reuses accountUi's own `payments`
+// instance (openLegacyTransitionById) instead of a second createPayments()
+// -- one transition-modal implementation, two entry points.
+const LEGACY_TRANSITIONS_READY = ACCOUNT_UI_READY.then(async readyAccountUi=>{
+  const coreModule=await import(`./admin/core.js${_MODULE_VERSION}`);
+  const module=await import(`./admin/legacy_transitions.js${_MODULE_VERSION}`);
+  legacyTransitionsUi=module.createLegacyTransitionsQueue({html,renderHtml,toast,adminFetch,getJson,
+    formatTimestamp:coreModule.formatTimestamp,humanLabel:coreModule.humanLabel,
+    openLegacyTransitionById:readyAccountUi.payments.openLegacyTransitionById,openAccount:readyAccountUi.openAccount});
+  return legacyTransitionsUi;
 });
 const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(module=>{
   routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
@@ -203,6 +215,7 @@ function showPage(name){
   if(name==='users')loadUsers();
   if(name==='nodes')NODES_UI_READY.then(()=>nodesUi&&nodesUi.loadNodes());
   if(name==='ops-health')OPS_HEALTH_READY.then(()=>opsHealthUi&&opsHealthUi.loadOpsHealth());
+  if(name==='legacy-transitions')LEGACY_TRANSITIONS_READY.then(()=>legacyTransitionsUi&&legacyTransitionsUi.loadQueue());
   if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
   if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
   if(name==='tickets'){loadTickets();}
@@ -1307,6 +1320,7 @@ document.addEventListener('click',event=>{
     case'stars-payment-action':work=starsPaymentAction(numericId,el.dataset.paymentAction);break;
     case'stars-orphan-action':work=starsOrphanAction(numericId,el.dataset.paymentAction);break;
     case'routing-host-op':if(routingUi)routingUi.handleRoutingClick(el);break;
+    case'open-legacy-transition':if(legacyTransitionsUi)legacyTransitionsUi.handleQueueClick(el);break;
     case'close-modal':closeModal(el.dataset.target);break;
     // PH7-16 Wave 1: accounts.js used to register its own separate
     // `document.addEventListener('click', ...)` for every action below
