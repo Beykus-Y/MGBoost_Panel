@@ -796,6 +796,20 @@ user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 **Accept/tests:** old URL/config/direct host fail, child works, offline-node reconcile.
 **Rollback:** issue new child; no restoration of shared leaked UUID.
 
+**Status (reconciled 2026-09-01, read-only production verification):
+boundary NOT yet reached — remains `BLOCKED`, no action to take.** The
+current production legacy grace cohort (17 accounts,
+`mgboost_legacy_grace_periods`) uniformly ends at `2026-09-09 11:08 UTC`
+(`2026-09-09 14:08 MSK`). **No revoke, UUID rotation or shared-URL
+mutation may be performed before that boundary and before the
+migration/exception review this item depends on has actually happened.**
+This note exists specifically so a future agent reading this section does
+not mistake production-deployed *tooling* elsewhere in this roadmap (e.g.
+the P0 legacy→commercial transition worker, which does its own
+per-account, payment-gated `REVOKE -> FREE` under explicit operator
+device-selection — see DL-062 — and is unrelated to this item's *global*
+grace-cohort revoke) for authorization to act here.
+
 ## [ ] PH4-07 — Migration observability/support/cleanup
 
 **Depends:** Phase 4. **Scope:** cohorts/failures/orphans/stale aliases/pending/error, support tools, cleanup under DL-042 retention and any entity-specific retention.
@@ -1247,7 +1261,7 @@ exact equality, matching the DL-044/PH5-05 precedent. See PH5-09's own
 entry above for the shared review verdict, DL-054 and full production
 evidence (same deploy, same commit).
 
-## [~] PH5-11 — First commercial STANDARD signup (self-service DIRECT account + system-owned provisioning template)
+## [x] PH5-11 — First commercial STANDARD signup (self-service DIRECT account + system-owned provisioning template)
 
 **Depends:** PH5-01/02/04/05, PH3-01/02/03/04/08, PH2-01.
 **Scope:** первый полноценный commercial signup/purchase flow: Telegram →
@@ -1256,17 +1270,35 @@ invoice → confirmed payment → self-service DIRECT account → subscription �
 opaque credential → first device → child Marzban user → рабочий STANDARD
 config. Повторная покупка того же plan — существующая PH5-02 renewal
 semantics; другой plan — контролируемый отказ (PH5-06 не начат).
-**Implemented locally (2026-08-27); independent review (2026-08-28) —
+
+**Status (reconciled 2026-09-01, read-only production verification):
+PRODUCTION-DEPLOYED.** Implemented 2026-08-27; independent review
+2026-08-28 (APPROVED WITH FIXES, see the review note under PH5-12 below);
+the `tpl-<public_id>` architecture blocker described in the historical
+paragraph immediately below was resolved by the owner the same day —
+see **DL-058** (Вариант A принят, 2026-08-28). Implementation commits
+(`b22e5f8`, `249e09d`) are ancestors of the current `main`/production HEAD
+`fefb2c3`. Production evidence (read-only SQL, 2026-09-01): real
+`mgboost_provisioning_templates` rows exist, real DIRECT commercial
+accounts exist (`account_source='DIRECT'`, `status='ACTIVE'`), and a real
+`stars_invoices` row of `invoice_kind='CANONICAL_SIGNUP'` exists — the
+first-commercial-signup flow has processed at least one real payment
+end-to-end in production, not only in tests.
+
+**Historical note (superseded by DL-058 2026-08-28) — implementation
+checkpoint text as originally written 2026-08-27/28, kept for record:**
+implemented locally; independent review (2026-08-28) —
 implementation-level defects found and closed with regression tests (see
 the review note under PH5-12 below), but the review is APPROVED WITH FIXES
-for those defects ONLY. Deploy is BLOCKED pending an owner decision on the
+for those defects ONLY. Deploy was BLOCKED pending an owner decision on the
 `tpl-<public_id>` per-account provisioning-template architecture: two
 independent reviews of this same diff reached opposite conclusions on
 whether it is technically required or an avoidable per-customer cost, and
 neither is authorized to decide unilaterally (see the PH5-12 review note).
-Local checkout has no production/SSH access in this session, so production
+Local checkout had no production/SSH access in that session, so production
 HEAD/`OPAQUE_SUBSCRIPTION_ENABLED`/live-topology could NOT be independently
-re-verified here; NOT pushed, NOT deployed, canary NOT started.**
+re-verified there. **This blocker no longer applies — see DL-058 and the
+Status line above.**
 
 - **Additive checksum-pinned migration `ph5_11_commercial_signup_v1`**
   (requires PH3-01 + PH5-05 exact checksums): `mgboost_provisioning_templates`
@@ -1337,12 +1369,32 @@ re-verified here; NOT pushed, NOT deployed, canary NOT started.**
   membership changes onto existing children is PH6-adjacent remote-mutation
   territory and deliberately not built here.
 
-## [~] Commercial WL wiring — WL / EXTENDED / FAMILY 30/60d sellable через canonical Stars flow
+## [x] Commercial WL wiring — WL / EXTENDED / FAMILY 30/60d sellable через canonical Stars flow
 
-**Depends:** PH5-01/02/04/05/11, PH6-06/07/09. **Local checkpoint 2026-08-28
+**Depends:** PH5-01/02/04/05/11, PH6-06/07/09.
+
+**Status (reconciled 2026-09-01, read-only production verification):
+PRODUCTION-DEPLOYED, real WL sales/canary evidence present.**
+Implementation commit `989777a` is an ancestor of the current
+`main`/production HEAD `fefb2c3`. Production DB evidence (read-only SQL,
+2026-09-01): 4 real `mgboost_wl_periods` rows (real UTC-hour-aligned
+30/60-day periods, not fixtures) and 2 live `mgboost_wl_enforcement_states`
+rows in `state='ACTIVE'`/`last_direction='INCLUDED'`/
+`decision_source='QUOTA_AVAILABLE'` — i.e. real LIMITED accounts are
+currently enforced by the production PH6-07 runtime. `AGENT_HANDOFF.md`
+(commit `95ba882`, 2026-08-29) separately documents a real no-payment WL
+canary (`account_id=20`, ADMIN_GRANT path, not a Stars purchase) that
+converged end-to-end through the real scheduled collector/enforcement
+cycle; the DB rows above go beyond that canary and reflect further real
+commercial WL usage since. The `tpl-<public_id>` question referenced below
+was resolved by DL-058 the same day this slice was implemented.
+
+**Historical note (superseded by DL-058 2026-08-28) — checkpoint text as
+originally written 2026-08-28, kept for record:** local checkpoint
 (`src/commercial_signup.py`, `src/stars_purchase.py`, `src/bot_support.py`,
 `src/wl_enforcement.py`, `tests/test_commercial_wl_wiring.py`): NOT pushed,
-NOT deployed, реальная Stars-покупка и LIMITED canary НЕ начинались.**
+NOT deployed, реальная Stars-покупка и LIMITED canary НЕ начинались. **This
+is no longer current — see the Status line above.**
 
 Собственно «WL sales gate» из PH5-11: три LIMITED-тарифа (WL 199/349⭐,
 EXTENDED 249/399⭐, FAMILY 299/449⭐ — по 100/150/150 GB за каждый 30-дневный
@@ -1387,7 +1439,7 @@ signup/renewal backend, без нового payment flow:
   WL intersection STANDARD = 0, legacy UNLIMITED не переводится, P0 legacy
   WL hotfix suite зелёный, refund flow (money-only) не менялся.
 
-## [~] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
+## [x] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
 
 **Depends:** PH0-05, PH3-01, PH6-01.
 **Scope:** host membership is operational routing configuration, NOT tariff
@@ -1395,11 +1447,30 @@ data: replacing Germany/Estonia/etc. never requires a new plan version or a
 repurchase. STANDARD/WL delivery composition becomes explicit admin-managed
 state with a hard backend guarantee that the STANDARD profile can never
 contain an exact WL host.
-**Implemented locally (2026-08-27); independent review (2026-08-28) —
+
+**Status (reconciled 2026-09-01, read-only production verification):
+PRODUCTION-DEPLOYED.** Implemented 2026-08-27; independent review
+2026-08-28 (APPROVED WITH FIXES, see review note below); the
+`tpl-<public_id>` blocker referenced in the historical paragraph below was
+resolved by the owner the same day — see **DL-058**. Production DB
+evidence (read-only SQL, 2026-09-01): 1 real `mgboost_delivery_profiles`
+row with 13 real `mgboost_delivery_profile_hosts` membership rows.
+**Known design boundary, still true and unchanged:** a delivery-profile
+membership change applies only to templates/children created afterwards;
+already-provisioned children keep their pinned membership. Propagating a
+profile change onto already-existing children is deliberately not built
+here — it is remote-mutation territory adjacent to PH6, and remains open
+(tracked informally; no dedicated PH-ID exists for it yet — raise one if
+this becomes a near-term need).
+
+**Historical note (superseded by DL-058 2026-08-28) — implementation
+checkpoint text as originally written 2026-08-27/28, kept for record:**
+implemented locally; independent review (2026-08-28) —
 implementation-level defects APPROVED WITH FIXES (see the review note at
-the end of this section), but deploy is BLOCKED pending an owner decision
+the end of this section), but deploy was BLOCKED pending an owner decision
 on the `tpl-<public_id>` architecture question, which two independent
-reviews of this diff could not resolve in agreement.**
+reviews of this diff could not resolve in agreement. **This blocker no
+longer applies — see DL-058 and the Status line above.**
 
 - **Additive checksum-pinned migration `ph5_12_delivery_routing_v1`:**
   `mgboost_delivery_profiles` (CAS `row_version`),
@@ -1497,9 +1568,12 @@ reviews of this diff could not resolve in agreement.**
     the specific `PlanNotSellable` exception.
   - A minor `DeliveryRoutingStore._replay` read was moved inside the store's
     lock (was reading `self._conn` before acquiring it).
-  - **`tpl-<public_id>` architecture verdict: UNRESOLVED — two independent
-    reviews of this same diff disagree, and per the review brief neither
-    is authorized to decide unilaterally; this is an owner decision.**
+  - **`tpl-<public_id>` architecture verdict at review time (2026-08-28):
+    UNRESOLVED — two independent reviews of this same diff disagreed, and
+    per the review brief neither was authorized to decide unilaterally; put
+    to the owner. Resolved the same day — see DL-058 (Вариант A принят).
+    The two readings below are kept as historical record of the
+    disagreement; they are no longer an open question.**
     Reading A (technically necessary / "Variant A"): the pre-existing
     (pre-PH5-11) `ChildProvisioningStore.prepare_child_ensure` contract
     hard-requires `source_alias_id` to belong to the SAME `account_id`
@@ -2058,7 +2132,15 @@ passed (was 1333 + 1 new) via the Playwright venv, `git diff --check`
 clean. Production-deployed application-code-only; see the deploy evidence
 entry for exact HEAD/service/backup facts.
 
-## [x] PH6-07 — Production WL enforcement runtime: scheduler / reconciliation / drift / backlog — implemented locally 2026-08-28, checkpoint only (NO push, NO deploy)
+## [x] PH6-07 — Production WL enforcement runtime: scheduler / reconciliation / drift / backlog — production-deployed (implemented 2026-08-28)
+
+**Status (reconciled 2026-09-01, read-only production verification):
+`mgboost-wl-enforcement.timer`/`.service` are active on production (15-minute
+cadence); `mgboost_wl_reconciliation_cycles` contains real cycle history
+(328 rows at time of verification). The "checkpoint only, NO push, NO
+deploy" framing in the paragraphs below reflects the state at
+implementation time (2026-08-28) and is superseded by the deploy that
+followed.
 
 **Depends:** PH6-06. **Scope narrowed by PH6-06's independent review
 (2026-08-27):** PH6-06 already built the durable local-transaction
@@ -2146,7 +2228,17 @@ unchanged by independent code reading and test reproduction. See
 **Tests:** example 100+50+20-10=160; base-first, multi-period carry, freeze/resume, unused refund/stack; 83 consumed vs 60 effective -> exceeded.
 **Rollback:** compensating entry only.
 
-## [x] PH6-09 — Overshoot/outage fail-safe — implemented locally 2026-08-28, checkpoint only (NO push, NO deploy)
+## [x] PH6-09 — Overshoot/outage fail-safe — production-deployed (implemented 2026-08-28)
+
+**Status (reconciled 2026-09-01, read-only production verification):
+`mgboost-wl-usage-collector.timer`/`.service` are active on production
+(10-minute cadence). The "checkpoint only, NO push, NO deploy" framing in
+the paragraphs below reflects the state at implementation time
+(2026-08-28) and is superseded by the deploy that followed. Product
+semantics are unchanged: 1800s freshness bound remains a technical bound,
+not an SLA; no headroom is introduced; uncertainty can only reduce
+confidence, never increase WL access, and cannot by itself mass-disable
+already-ACTIVE users; overshoot is still not a guaranteed byte-exact SLA.
 
 **Depends:** PH6-03/07. **Scope:** cadence/headroom, bounded overshoot, DB/Marzban/node outage, fail closed for activate/restore, never global disable on uncertain topology.
 **Tests:** each outage/recovery. **Accept:** bound and alerts documented.
@@ -2493,8 +2585,19 @@ added simulating one corrupted source).
 Targeted coverage in `tests/test_admin_operational_admin.py` (24 checks after
 the review's additions).
 
-**Slot ↔ real-device telemetry projection implemented locally (2026-09-01,
-checkpoint only, NO push/deploy):** the previously misleading `devices[].
+**Slot ↔ real-device telemetry projection — status (reconciled 2026-09-01,
+read-only production verification): PRODUCTION-DEPLOYED.** Commits
+`27443f5`/`fefb2c3` are the current `main`/production HEAD. Production DB
+evidence (read-only SQL, 2026-09-01): 12 of 71 `user_devices` rows already
+carry a non-NULL `hwid_verifier` — the bridge described two paragraphs
+below is live and stamping real requests, not merely implemented. The
+"Known architecture gap" note immediately below (no live path stamps the
+verifier) describes the state *before* the bridge follow-up; the bridge
+follow-up further down closes that gap and is itself now also
+production-deployed (see its own updated status note). Historical
+implementation text, kept for record: implemented locally (2026-09-01,
+checkpoint only, NO push/deploy at the time) — the previously misleading
+`devices[].
 real_migration_lineage` UI label ("Реальное устройство: Есть/Нет") actually
 meant "this slot's current generation has a `mgboost_migration_bindings` row
 from the PH4-02 migration flow", never "we know this device's model/OS/VPN
@@ -2529,9 +2632,13 @@ match, cross-account rejection, genesis exclusion, rebind/old-generation
 non-inheritance, deterministic newest-observation tie-break, malformed-input
 fail-closed, no raw HWID/verifier in output) so that wiring in a real
 evidence pipeline later requires no change to this matching contract — see
-`## [ ]` follow-up below. Read-only production forensic on the account #3
-reference case found the local/dev database empty (no accessible production
-snapshot in this environment); see PH8-04-adjacent operational note.
+the follow-up below (built and production-deployed, per the status note
+above). Read-only production forensic on the account #3 reference case, at
+write time, found the local/dev database empty (no accessible production
+snapshot in that session); a later session with production SSH access
+confirmed real `hwid_verifier` rows exist in production (see the status
+note above) — the account #3 case specifically was not re-checked
+individually.
 Targeted: `tests/test_device_real_projection.py`,
 `tests/test_admin_account_read_models.py` (3 new checks). Broader: device
 slot/child lifecycle/provisioning/admin routes/compat registry/legacy
@@ -2549,8 +2656,13 @@ computed via the existing `device_slots.privacy_safe_hwid()` at the same
 judged out of scope for a single projection-read-model checkpoint; flag for
 owner review before attempting.
 
-**Follow-up implemented locally (2026-09-01, checkpoint only, NO
-push/deploy):** the bridge above is built. `user_devices.hwid_verifier`
+**Follow-up — status (reconciled 2026-09-01, read-only production
+verification): PRODUCTION-DEPLOYED**, superseding the "checkpoint only, NO
+push/deploy" framing this paragraph originally carried: commit `27443f5`
+is on the current `main`/production HEAD `fefb2c3`, and production SQL
+confirms 12/71 `user_devices` rows already carry a non-NULL
+`hwid_verifier` — the bridge is live. Implementation detail unchanged: the
+bridge above is built. `user_devices.hwid_verifier`
 (additive, nullable) is stamped by `Database.check_device_access(...,
 hwid_hmac_key=DEVICE_SLOT_HMAC_KEY)` — now the actual name/value, using the
 canonical `device_slots.privacy_safe_hwid()` helper directly, not a
@@ -2852,8 +2964,12 @@ session had no Marzban admin login credentials and did not attempt to
 obtain or guess any; that specific check is the owner's own next step (see
 `AGENT_HANDOFF.md`).
 
-**Bot UX redesign slice (2026-08-30, owner-approved audit follow-up,
-implemented locally, NO push/deploy):** full bot UI audit found the
+**Bot UX redesign slice (2026-08-30, owner-approved audit follow-up) —
+status (reconciled 2026-09-01): PRODUCTION-DEPLOYED.** Commit `b4aa906`
+("redesign Telegram bot user experience") is an ancestor of the current
+`main`/production HEAD `fefb2c3`, superseding the "implemented locally, NO
+push/deploy" framing this paragraph originally carried. Full bot UI audit
+found the
 subscription card (the product's main object) absent from the bot, two
 parallel purchase funnels with different depths, an unfulfillable plan
 choice offered to existing customers (PH5-06 `PlanChangeRequired` surfacing
@@ -2932,8 +3048,42 @@ an equivalent-functionality review of the preserved legacy screens. This
 is a completed, production-deployed slice, not a claim that all of Wave A
 is finished.
 
-**Operational-admin completion slice (2026-08-27, pending independent
-review; NOT deployed):** account detail extended with the authoritative
+**Operational-admin completion slice — status (reconciled 2026-09-01,
+read-only production verification): PRODUCTION-DEPLOYED.** Independent
+review happened in two passes (`a68e265` — found the PH7-05 P0 false-
+convergence class described earlier in PH7-05; `dec28f5` — the fixed
+follow-up); both are ancestors of the current `main`/production HEAD
+`fefb2c3`. The "pending independent review; NOT deployed" framing
+immediately below reflects the state at write time (2026-08-27) and is
+superseded.
+
+**Current admin architecture, honestly described (reconciled 2026-09-01):
+transitional hybrid, not a finished redesign.** `frontend/index.html`
+loads exactly one script, the legacy monolith `assets/admin.js`
+(~1739 lines, still directly Marzban-oriented in places); it dynamically
+`import()`s the newer account-centric ES modules described throughout this
+PH7-12 entry (`admin/core.js`, `admin/accounts.js`, `admin/routing.js`,
+`admin/promo_ops.js`, `admin/modals.js`, `admin/payments.js`,
+`admin/device_ops.js`, `admin/expiry_ops.js`, `admin/timeline.js`,
+`admin/admin_grant_ops.js`) at runtime rather than the page loading them as
+independent top-level `<script type="module">` tags. The legacy
+Marzban-username `Users` screen (DL-050) still exists side by side with
+the canonical `Accounts` screen, under `System/Technical`, not removed.
+**Net effect:** account-centric functionality (Accounts/Devices/
+Subscription/Telegram/Migration-Grace/Technical/Payments/Promo/ADMIN_GRANT/
+Routing) is production-deployed and is the primary navigation surface, but
+the legacy monolithic `admin.js` bootstrap and the legacy Marzban raw-user
+screen both still exist and have not been cut over or removed — the "finish
+splitting the legacy monolithic screen code out of `admin.js`" item noted
+below (`Remaining before Wave A [x]`) remains genuinely open. A future
+full cutover (removing `admin.js` as the sole entry point, isolating
+Marzban-raw functionality into an explicit Technical/Legacy area, one
+coherent navigation model) is real, warranted, unstarted work — tracked as
+**PH7-16** below; no such redesign is attempted in this documentation
+pass.
+
+**Historical note, kept for record — text as originally written
+2026-08-27:** account detail extended with the authoritative
 PH5-04 `entitlement` block (`Overview` renders status/expiry/plan/device/WL
 consumption/packages/overrides read-only), recent canonical payments,
 legacy Stars invoice summary and the unified timeline; Dashboard gained
@@ -2962,21 +3112,41 @@ split-out remains the open Wave A item above.
 Executed via a new, reviewed, hardcoded-target script (`scripts/dl057_megochel_consolidation.py`, iterated twice in production after two real bugs it exposed in itself -- a 15-character `idempotency_key` one byte under the 16-minimum, and a preflight that mis-required the genesis child to still be "non-terminal" and so couldn't resume after the already-applied `REVOKE` -- both fixed and redeployed before the ordering-guaranteed re-run completed cleanly; the underlying primitives' own idempotency made every retry safe, including the real Marzban `REVOKE` never re-rotating): `REVOKE` (`lc_twdq6bl3hi2scoy2rq2kpumuj4`, `APPLIED`, real Marzban genesis child `mgc_2uipd27le766vdd7lt4kjpj5pi` disabled + UUID rotated) -> `FREE` (`APPLIED`, slot 1/generation 1 -> `RELEASED`, slot -> `FREE`) -> `close_account(5)` (subscription id 5 -> `CANCELLED`, account 5 -> `CLOSED`) -> `create_merge(absorbed=5, survivor=6)` (`mgboost_account_merges` id 1, `ACTIVE`, `decision_ref='DL-057-megochel-consolidation-2026-08-27'`) -> `set_display_name(6, 'Megochel')` -> `increase_device_limit(6, +3)` (subscription id 6 unchanged, plan -> `LEGACY_PAID_COMPAT_V1_D6`, `device_limit=6`, `wl_mode` still `UNLIMITED`, `current_expiry` still `NULL`).
 Post-mutation evidence, all read-only against the live DB: account 5 `CLOSED`/subscription `CANCELLED`/generation 19 `RELEASED`/slot `FREE`/zero `ACTIVE` generations anywhere for account 5; exactly one `mgboost_account_merges` row (`5->6`, `ACTIVE`) with exactly one `CREATED` event; account 6 unchanged `ACTIVE` status, unchanged Telegram identity row (id 6, `telegram_id=1623120036`, still not revoked), unchanged opaque credential (id 9, same `generation=1`/`row_version=2`/`last_used_at`), exactly one live subscription (id 6, same row, now `LEGACY_PAID_COMPAT_V1_D6`), new `display_name='Megochel'`; both `mgboost_legacy_account_aliases` rows (`MegochelPC`->5, `MegochelAndroid`->6) byte-for-byte unchanged; `db.legacy_bridge.resolve_account_for_legacy_username('MegochelPC')` and `resolve_account_id(db, 5)` both now return `6`; both real legacy Marzban users (`MegochelPC` id 4, `MegochelAndroid` id 5) confirmed `active` with traffic still accruing normally, completely untouched by this operation; unrelated account 2 (`DISABLED`, pre-existing PH3-08 canary) and the other 16 `ACTIVE` accounts unchanged (18 total, as before); all 5 services active, zero errors/tracebacks/5xx in `mgboost-panel` logs across the whole operation; `admin_read_models.account_detail()`/`account_summaries()` confirmed showing `display_name='Megochel'` for account 6 and the new `consolidation` block correctly cross-referencing both sides. Local/origin/production all at `d5ed3b7`.
 
-## [ ] PH7-14 — Pre-launch admin/operator tooling (planned; backend primitive for one bullet implemented 2026-08-29, everything else still OPEN)
+## [x] PH7-14 — Pre-launch admin/operator tooling
 
-**Owner decision recorded 2026-08-29 (DL-061); planning only.**
+**Owner decision recorded 2026-08-29 (DL-061).**
 
-**Backend primitive implemented 2026-08-29 (`src/admin_grant.py`,
-`AdminGrantStore`; local checkpoint, not yet deployed at doc-write time —
-see AGENT_HANDOFF.md top section for the full review):** covers only the
-"grant a plan through an audited `ADMIN_GRANT`" bullet below, as a
-domain/backend primitive with no UI. Reuses the existing PH5-02
-`apply_same_plan_purchase` engine (no second subscription engine), zero
-financial rows, `PrimaryAdminAuthority`-gated, idempotent. Admin UI to
-drive it, account-creation/rebind UI, `MANUAL_RUB` UI/wiring, subscription
-extension UI, opaque-subscription/entitlement/devices display, and promo
-definition/redemption management is now DONE (PH5-13 2026-08-30: routes/admin_promo.py + promo_ops.js) —
-this item is NOT done.
+**Status (reconciled 2026-09-01, read-only production verification):
+PRODUCTION-DEPLOYED — all acceptance bullets closed.** The "everything else
+still OPEN" framing this heading originally carried (2026-08-29 doc-write
+time) is stale. Per-bullet status, re-verified against current `main`
+(commit `fefb2c3`, == production HEAD) and, where noted, real production
+DB/log evidence:
+
+| Bullet | Status | Evidence |
+| --- | --- | --- |
+| Create a canonical account | `DONE_PROD` | `src/routes/admin_grant.py::handle_admin_account_create`, UI in `frontend/assets/admin/admin_grant_ops.js`; commit `c1ae3d4`..`bb8d56e` is documented in `AGENT_HANDOFF.md` (2026-08-29) as production-deployed with a real canary account (`account_id=20`) |
+| Safely link/rebind Telegram ownership | `DONE_PROD` | `src/routes/admin_ownership.py`; rebind UI in `frontend/assets/admin/accounts.js` (`/admin/accounts/{id}/telegram/rebind`) |
+| Grant a plan through audited `ADMIN_GRANT` | `DONE_PROD` | `src/admin_grant.py::AdminGrantStore`; UI in `admin_grant_ops.js`; real production canary (`account_id=20`, 2026-08-29, `AGENT_HANDOFF.md`) converged through the real PH6 runtime |
+| Record a real manual sale via canonical `MANUAL_RUB` | `DONE_PROD` | `src/routes/admin_payments.py`; UI in `frontend/assets/admin/payments.js` (preview/create/apply/cancel/resolve-review/edit, plus legacy-transition trigger) — PH5-09/PH7-10, kept structurally separate from `ADMIN_GRANT` per DL-061 |
+| Extend a subscription | `DONE_PROD` | PH7-01 `src/routes/admin_expiry.py`; UI in `frontend/assets/admin/expiry_ops.js` |
+| Retrieve/display the opaque subscription | `DONE_PROD` | Credential issue/reissue route surfaced in the Subscription tab per PH7-12 ("production-proven opaque credential issue/reissue route... one-time URL display") |
+| View entitlement / WL periods / devices | `DONE_PROD` | PH7-12 Overview (PH5-04 entitlement block), Devices tab (PH7-05 slot administration + real-device projection) |
+| Manage promo definitions and redemption state | `DONE_PROD` | PH5-13 (2026-08-30): `src/routes/admin_promo.py` + `frontend/assets/admin/promo_ops.js` |
+
+No bullet remains `ABSENT`/`PARTIAL_PROD`/`DONE_MAIN_NOT_PROD` as of this
+reconciliation pass.
+
+**Historical note, kept for record — text as originally written
+2026-08-29:** planning only at write time. Backend primitive implemented
+2026-08-29 (`src/admin_grant.py`, `AdminGrantStore`; local checkpoint, not
+yet deployed at doc-write time — see `AGENT_HANDOFF.md` top section for the
+full review): covered only the "grant a plan through an audited
+`ADMIN_GRANT`" bullet, as a domain/backend primitive with no UI at that
+time. Reuses the existing PH5-02 `apply_same_plan_purchase` engine (no
+second subscription engine), zero financial rows, `PrimaryAdminAuthority`-
+gated, idempotent. **All bullets are now DONE_PROD — see the Status table
+above.**
 
 **Depends:** PH3-01 (canonical account), PH2-05 (Telegram ownership/rebind
 lifecycle), PH5-04/09 (entitlement engine, manual-payment record), PH5-13
@@ -3002,6 +3172,69 @@ mixed or interchangeable — `ADMIN_GRANT` never counts as revenue,
 god-mode entitlement does not satisfy this item; every `ADMIN_GRANT` is
 scoped to an exact plan/duration like any other canonical entitlement.
 
+## [ ] PH7-15 — `tpl-<public_id>` lifecycle cleanup on terminal account operations
+
+**Added:** 2026-09-01 (documentation reconciliation pass), tracking the
+backlog item recorded but not yet given a stable ID in **DL-058**.
+**Depends:** PH5-11 (`src/commercial_signup.py::ensure_template_for_account`),
+`src/child_provisioning.py::prepare_child_ensure`,
+`src/account_consolidation.py::close_account`, DL-057.
+**Scope:** `close_account()`/account consolidation/any future terminal
+account operation currently has no awareness of
+`mgboost_provisioning_templates` at all — confirmed by code inspection at
+DL-058 time and unchanged since. A commercial account's per-account
+infrastructure `tpl-<public_id>` Marzban user is left permanently `ACTIVE`
+after its owning account closes or is absorbed into another, with no
+audit trail and no reversal. This is real, currently-accumulating
+operational debt (production has real `mgboost_provisioning_templates`
+rows tied to real accounts), not a hypothetical.
+**Constraints carried over from DL-058 (do not relitigate without cause):**
+any implementation must (a) touch only template resources proven to
+belong to the closing `account_id` (same ownership-proof pattern already
+used by `child_provisioning.py::prepare_child_ensure`), (b) be crash-safe
+and idempotent (get-or-transition, never an unconditional mutation), and
+(c) write an audit record with before/after/reason like every other
+terminal account operation (PH3-05 Revoke/Free, DL-057 consolidation).
+**Explicit owner-decision requirement:** the exact cleanup semantics
+(disable the Marzban template user immediately on close? retain for N
+days like other tombstone/retention policies? never auto-disable, only
+flag for manual review?) are NOT decided here and must not be invented —
+this is a product/retention decision, not a technical detail an
+implementing agent may pick unilaterally, per this roadmap's own
+governance rule.
+**Accept/tests:** not defined until the owner decision above is made.
+
+## [ ] PH7-16 — Admin v2 / canonical frontend cutover (scope only, not designed)
+
+**Added:** 2026-09-01 (documentation reconciliation pass), tracking a real
+architectural debt confirmed by production read-only inspection: see
+PH7-12's "Current admin architecture, honestly described" note.
+**Depends:** PH7-12 (Wave A foundation), DL-048..052 (existing admin
+redesign decisions).
+**Scope (high-level only — no implementation, no design decision made in
+this pass):**
+- retire `frontend/assets/admin.js` as the sole monolithic runtime entry
+  point that the rest of the admin frontend is dynamically `import()`-ed
+  into, in favor of an explicit canonical account-centric application
+  structure;
+- isolate legacy/Marzban-raw functionality (the `Users` screen under
+  `System/Technical` per DL-050, and any other Marzban-username-centric
+  code still reachable) into one clearly-labeled Technical/Legacy area,
+  rather than having it exist as a parallel, only-partially-distinguished
+  navigation path alongside canonical `Accounts`;
+- remove duplicated navigation/domain semantics between the legacy and
+  canonical worlds once every canonical equivalent exists and is verified;
+- explicitly does NOT include a backend rewrite — this is a frontend
+  architecture/navigation cutover only, scoped by what already exists in
+  `frontend/assets/admin/*.js`.
+**Explicit owner-decision requirement:** frontend technology direction is
+already constrained by **DL-052** (no framework rewrite) and MUST NOT be
+re-opened by an implementing agent without a new, explicit owner decision;
+this item's scope is cutover/reorganization within that existing
+constraint, not a technology choice.
+**Accept/tests:** not defined — this entry exists to make the debt visible
+and trackable, not to authorize implementation.
+
 # Phase 8 — Hardening and scale
 
 ## [ ] PH8-01 — Production-safe bounded HTTP concurrency — P2
@@ -3021,7 +3254,19 @@ scoped to an exact plan/duration like any other canonical entitlement.
 **Scope:** controlled Marzban upgrade, image digest, lock/hashes, SBOM, secret scan, reproducible build, fail placeholder secrets.
 **Tests:** clean build/lock/staging contract. **Rollback:** previous immutable image and DB-compatible release.
 
-## [ ] PH8-04 — Monitoring/alerting
+## [~] PH8-04 — Monitoring/alerting
+
+**Status (reconciled 2026-09-01): PARTIAL_PROD.** `DONE_PROD`: Step 1
+(logging/redaction hardening) and Step 2 (`GET /admin/ops/health` read
+model) below — both are ancestors of `main`/production HEAD `fefb2c3`.
+`STILL OPEN` (explicitly out of Step 2 scope, per that paragraph itself):
+hot-path auth/rate-failure counters; a permanent acquisition-milestone
+fact table; true worker-heartbeat/cycle tracking for
+`mgboost-legacy-commercial-transition.service`/`.timer` (no durable cycle
+table like WL reconciliation's `mgboost_wl_reconciliation_cycles` exists
+for it yet); production-derived alert thresholds (none invented yet, by
+design); actual alert delivery; synthetic alert/redaction drills and
+runbooks.
 
 **Metrics:** auth/rate failures, collector lag, monotonicity, outbox age, desired/observed mismatch, node usage stop, migration errors. No raw token/HWID/UUID/password.
 **Accept/tests:** actionable runbooks + synthetic alert/redaction drills.
@@ -4093,6 +4338,9 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - **Связано:** PH5-11, PH5-12, `src/commercial_signup.py::ensure_template_for_account`,
   `src/child_provisioning.py::prepare_child_ensure`, `src/account_consolidation.py::close_account`,
   DL-057.
+- **Backlog stable ID (added 2026-09-01, documentation reconciliation
+  pass):** the cleanup backlog above is now tracked as **PH7-15** in Phase
+  7. This does not reopen or change the Вариант A decision itself.
 
 ## DL-059 — ACTIVE LIMITED + newly-approved exact WL inbound: auto-add это legitimate topology convergence (PH6-09)
 
@@ -4252,8 +4500,29 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   authoritative worker с cadence 30 секунд, durable history/CAS/outbox;
   production deploy только после independent review.
 - **Кто:** owner.
-- **Статус:** P0 implementation checkpoint подготовлен на отдельной ветке;
-  production rollout запрещён до independent review.
+- **Статус (актуализировано 2026-09-01, read-only production verification):**
+  implementation завершена, independent review состоялся (commit
+  `3ea386c` — "harden P0 legacy commercial transition recovery and
+  fencing", после checkpoint `6e48084`), код и миграции находятся на
+  `main` и на production (production HEAD == `main` HEAD == `fefb2c3`).
+  `mgboost-legacy-commercial-transition.timer`/`.service` реально активны
+  на production (cadence 30 секунд, oneshot). Существует ровно одна
+  реальная строка `mgboost_legacy_commercial_transitions` (id=1),
+  `state='SCHEDULED'`: `PAYMENT_CONFIRMED` зафиксирован 2026-08-31
+  18:33:47 UTC, `activation_at`=2026-09-01 17:00:00 UTC (60-дневный
+  transition, `target_expiry`=2026-10-31 17:00:00 UTC). **На момент этой
+  проверки (2026-09-01 05:25 UTC) activation boundary ещё НЕ наступила** —
+  итоговый outcome (успешный переход в `APPLIED`, либо `MANUAL_REVIEW`)
+  ещё не известен и не должен быть заявлен как решённый до отдельной
+  read-only проверки после прохождения boundary. Итоговая формула:
+  `implementation: DONE_PROD`; `real transition: IN_PROGRESS_PROD / FINAL
+  OUTCOME PENDING`. Прежняя формулировка "P0 implementation checkpoint
+  подготовлен на отдельной ветке; production rollout запрещён до
+  independent review" ниже сохранена как исторический текст на момент
+  принятия решения (2026-08-31) и более не отражает текущее состояние.
+- **Историческая формулировка (на момент принятия решения, 2026-08-31,
+  сохранена для истории):** P0 implementation checkpoint подготовлен на
+  отдельной ветке; production rollout запрещён до independent review.
 - **Связано:** PH3-05/08/09, PH5-02/04/05/06/09, PH6-02, PH7-10, DL-044/061.
 
 # Contradictions and migration hazards

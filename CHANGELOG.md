@@ -15,6 +15,21 @@
 
 ## Unreleased
 
+_(пока пусто — см. раздел ниже для истории, синхронизированной с production reconciliation 2026-09-01)_
+
+## 2026-09-01 — Reconciled with production (HEAD `fefb2c3`)
+
+Documentation reconciliation note (не код/деплой): read-only аудит
+2026-09-01 подтвердил, что `local main HEAD == production HEAD ==
+fefb2c3` — то есть все записи ниже, ранее помеченные как `implemented
+locally`/`NO push/deploy`/`checkpoint only`, фактически уже находятся в
+production. Точные даты индивидуального деплоя сохранены там, где они уже
+были зафиксированы внутри записи; там, где точная дата деплоя не была
+задокументирована отдельно, формулировка ниже нейтрально уточнена как
+"subsequently production-deployed" без выдумывания конкретного timestamp.
+Исторические детали (implementation date, review findings, test counts)
+не удалялись.
+
 ### Added
 
 - PH7-05 slot ↔ real-device telemetry projection (implemented locally, NO
@@ -62,8 +77,11 @@
   HWID candidate never blocks an otherwise-legal legacy request, it just
   leaves the verifier as it already was.
 
-- PH8-04 Step 1+2 operator observability foundation (implemented locally,
-  NO push/deploy). Step 1: `logger.*`/`print()` calls repo-wide now log
+- PH8-04 Step 1+2 operator observability foundation — subsequently
+  production-deployed (read-only production verification 2026-09-01:
+  commits are ancestors of production HEAD `fefb2c3`; `GET
+  /admin/ops/health` code is live). Alert thresholds/delivery/runbooks
+  remain open — see `ROADMAP.md` PH8-04. Step 1: `logger.*`/`print()` calls repo-wide now log
   `type(e).__name__` instead of interpolating the raw exception object (26
   call sites in `src/stars.py`, `src/bot_monitor.py`, `src/database.py`,
   `src/bot_support.py`) — a raw exception can echo secrets/tokens from an
@@ -196,8 +214,12 @@
 
 ### Added
 
-- Commercial WL wiring (2026-08-28, implemented locally, checkpoint only —
-  NO push/deploy, реальная покупка не выполнялась): тарифы WL 199/349⭐,
+- Commercial WL wiring (2026-08-28) — subsequently production-deployed
+  (read-only production verification 2026-09-01: commit `989777a` is an
+  ancestor of production HEAD `fefb2c3`; production DB contains 4 real WL
+  periods and 2 live WL enforcement states — real purchases/canary have
+  since occurred, superseding "реальная покупка не выполнялась" below).
+  Тарифы WL 199/349⭐,
   Расширенный 249/399⭐ и Семейный 299/449⭐ (30/60 дней, device limit
   3/6/12, quota 100/150/150 GB на каждый 30-дневный период) стали
   purchasable через существующий canonical Telegram Stars signup/renewal
@@ -217,8 +239,10 @@
   `tests/test_commercial_wl_wiring.py` (27 тестов, включая сквозной
   runtime-путь convergence/disable/restore и dispatcher successful_payment
   path); обновлены тесты, пинившие прежний 3-SKU sellable gate.
-- PH6-09 overshoot/outage fail-safe поверх production PH6-07 (2026-08-28,
-  implemented locally, checkpoint only — NO push/deploy): new systemd-юниты
+- PH6-09 overshoot/outage fail-safe поверх production PH6-07 (2026-08-28) —
+  subsequently production-deployed (read-only verification 2026-09-01:
+  `mgboost-wl-usage-collector.timer` active, 10-минутный cadence). New
+  systemd-юниты
   `mgboost-wl-usage-collector.{service,timer}` (канонический PH6-03
   collector теперь реально работает по 10-минутному таймеру — раньше
   scheduler отсутствовал и enforcement читал устаревший ledger), freshness
@@ -234,9 +258,13 @@
   в identifier-free read model. Headroom не введён (exact quota threshold);
   commercial overshoot/SLA значения — осознанно НЕ выбраны (owner STOP).
 
-- PH5-11 first commercial STANDARD signup flow (2026-08-27, implemented
-  locally, pending independent review + deploy; canary not started):
-  «Купить VPN» в Telegram для новых клиентов — 3 non-WL тарифа
+- PH5-11 first commercial STANDARD signup flow (2026-08-27) — subsequently
+  production-deployed after independent review (2026-08-28, APPROVED WITH
+  FIXES) and the DL-058 `tpl-<public_id>` owner decision (2026-08-28).
+  Read-only production verification 2026-09-01: commits are ancestors of
+  production HEAD `fefb2c3`; production DB contains real
+  `mgboost_provisioning_templates` rows, real DIRECT accounts and a real
+  `CANONICAL_SIGNUP` invoice — see `ROADMAP.md` PH5-11. «Купить VPN» в Telegram для новых клиентов — 3 non-WL тарифа
   (BASIC/BASIC_PLUS/BASIC_PRO) × 30/60 дней (ровно 6 SKU, цены только из
   активного immutable-каталога, подмена callback не влияет на
   plan/price), canonical Stars invoice, и только после подтверждённой
@@ -415,9 +443,12 @@
   `active` with traffic still accruing, untouched; unrelated accounts/
   cardinalities unchanged; zero errors/5xx across the operation. Local =
   origin = production = `d5ed3b7`.
-- Operational admin completion wave 2 (2026-08-27, **local checkpoint commit,
-  pending independent review and production deploy -- production NOT touched,
-  origin NOT pushed**): the two remaining operational-admin gaps are closed
+- Operational admin completion wave 2 (2026-08-27) — subsequently
+  independently reviewed (`a68e265`, `dec28f5`) and production-deployed
+  (read-only verification 2026-09-01: both commits are ancestors of
+  production HEAD `fefb2c3`), superseding the original "local checkpoint,
+  pending independent review, production NOT touched, origin NOT pushed"
+  framing below. The two remaining operational-admin gaps are closed
   over existing primitives with no new engine and no schema migration.
   PH7-01 admin expiry operations: primary-admin preview + adjust routes over
   a new durable `SubscriptionAdminOpsStore` writer that mutates ONLY
@@ -643,8 +674,10 @@
 - P0: provisioning новых устройств для legacy/WL-аккаунтов отравлялся
   собственным STANDARD-бэкстопом; отравленные операции стали
   невосстановимы (2026-08-28, production incident account #8 / POCO Slot 3
-  generation 49; local hotfix checkpoint, NO push, NO deploy, production
-  read-only). Root cause: PH5-11 render-boundary backstop
+  generation 49) — subsequently production-deployed (read-only
+  verification 2026-09-01: fix is an ancestor of production HEAD
+  `fefb2c3`), superseding the original "local hotfix checkpoint, NO push,
+  NO deploy" framing. Root cause: PH5-11 render-boundary backstop
   (`WL_INBOUND_IN_STANDARD_CHILD`) применялся безусловно ко всем аккаунтам,
   хотя легитимен только там, где delivery WL запрещён: для
   `LEGACY_PAID_COMPAT` с `wl_mode='UNLIMITED'` (и любых других
@@ -763,8 +796,11 @@
 ### Operations
 
 - PH6-07 production WL enforcement runtime (2026-08-28, реализовано локально
-  от `4c9d832`; checkpoint only — НЕ запушено, НЕ задеплоено, production
-  read-only): существующий on-demand PH6-06 enforcement превращён в
+  от `4c9d832`) — subsequently production-deployed (read-only проверка
+  2026-09-01: `mgboost-wl-enforcement.timer` активен, 328 real reconciliation
+  cycles в `mgboost_wl_reconciliation_cycles`), что заменяет прежнюю
+  формулировку "НЕ запушено, НЕ задеплоено, production read-only" ниже.
+  Существующий on-demand PH6-06 enforcement превращён в
   постоянно работающий, crash-safe и наблюдаемый runtime БЕЗ второго
   enforcement engine и без второго outbox. Новый systemd timer
   `mgboost-wl-enforcement.timer` + hardened oneshot
