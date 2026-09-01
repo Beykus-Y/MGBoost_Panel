@@ -1,8 +1,35 @@
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);background:radial-gradient(circle at top left,#151527 0,var(--bg) 34rem);color:var(--text);min-height:100vh;font-size:14px;line-height:1.45}
+html{color-scheme:dark}
+body{
+  font:var(--text-body);
+  font-family:var(--font-ui);
+  background:
+    radial-gradient(1100px 620px at 14% -8%,hsl(var(--accent-h) 70% 40% / .12),transparent 60%),
+    radial-gradient(900px 500px at 100% 0%,rgba(66,200,255,.06),transparent 55%),
+    var(--canvas);
+  background-attachment:fixed;
+  color:var(--text-1);
+  min-height:100vh;
+  letter-spacing:-.005em;
+  -webkit-font-smoothing:antialiased;
+}
 a{color:inherit;text-decoration:none}
+strong{font-weight:600}
+code,pre{font-family:var(--font-mono)}
 
-button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.nav-item:focus-visible,.tab:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.nav-item:focus-visible,.tab:focus-visible{
+  outline:2px solid hsl(var(--accent-h) 90% 70% / .65);outline-offset:2px;border-radius:var(--r-sm);
+}
+
+/* Typography primitives -- shared vocabulary for identity/title/section/
+   metric/value/meta/caption hierarchy referenced throughout the redesign. */
+.t-display{font:var(--text-display);color:var(--text-1);letter-spacing:-.01em}
+.t-title{font:var(--text-title);color:var(--text-1);letter-spacing:-.008em}
+.t-section{font:var(--text-section);color:var(--text-3);text-transform:uppercase;letter-spacing:.07em}
+.t-metric{font:var(--text-metric);color:var(--text-1);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.t-meta{font:var(--text-meta);color:var(--text-2)}
+.t-caption{font:var(--text-caption);color:var(--text-3);text-transform:uppercase;letter-spacing:.08em}
+.t-mono{font-family:var(--font-mono);font-size:11.5px;color:var(--text-2)}
 
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:0.001ms!important;animation-iteration-count:1!important;transition-duration:0.001ms!important;scroll-behavior:auto!important}

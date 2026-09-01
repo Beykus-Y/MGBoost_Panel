@@ -34,12 +34,12 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast, 
     return html`<tr>
       <td><strong>${host.inbound_tag}</strong></td>
       <td>${classBadge(host.classification)}</td>
-      <td>${host.in_standard ? html`<span class="badge ok">в STANDARD</span>` : html`<span class="badge">нет</span>`}</td>
+      <td>${host.in_standard ? html`<span class="badge badge-green">в STANDARD</span>` : html`<span class="badge badge-gray">нет</span>`}</td>
       <td>
         ${blocked ? html`<button disabled title="${reason}">Недоступно</button>
           <div class="cell-sub">${reason}</div>`
           : host.in_standard
-            ? html`<button class="danger" data-action="routing-host-op" data-routing-op="REMOVE" data-tag="${host.inbound_tag}">Убрать из STANDARD</button>`
+            ? html`<button class="quiet small" data-action="routing-host-op" data-routing-op="REMOVE" data-tag="${host.inbound_tag}">Убрать из STANDARD</button>`
             : html`<button class="primary" data-action="routing-host-op" data-routing-op="ADD" data-tag="${host.inbound_tag}">Добавить в STANDARD</button>`}
       </td>
     </tr>`;

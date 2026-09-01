@@ -62,7 +62,7 @@ export function createTimeline({html,formatTimestamp,humanLabel}){
             <span><strong>${item.label}</strong><small>платёж #${item.payment_record_id} · ${humanLabel(item.state)}</small></span>
             <span class="badge ${item.state==='MANUAL_REVIEW'?'badge-red':'badge-amber'}">${humanLabel(item.state)}</span></button>`)}</div></div>`:''}
         ${stars.count?html`<div class="queue-block"><h4>Stars manual-review (legacy экран Stars)</h4><p class="cell-sub">К оплатам Stars применяется отдельный существующий reconciliation на экране «Stars»; всего в статусе: ${stars.count}</p></div>`:''}
-      </div>}`}
+      </div>`}
     </section>`;
   }
 

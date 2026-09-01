@@ -1,1 +1,101 @@
-:root{--bg:#0c0c10;--bg2:#13131a;--bg3:#1a1a24;--bg4:#222230;--border:#2a2a3a;--border2:#3a3a50;--text:#e2e2ee;--text2:#8888aa;--text3:#44445a;--accent:#5b5bff;--accent2:#3a3aaa;--green:#2aff7a;--green2:#0a4a20;--green3:#1aaa50;--red:#ff4a4a;--red2:#4a0a0a;--amber:#ffaa2a;--amber2:#4a3a0a;--teal:#2affdd;--teal2:#0a3a30}
+/* Admin V2 visual redesign -- design tokens. Single source of truth for
+   color, type scale, spacing, radius, elevation and motion. Every other
+   CSS file in this app consumes these custom properties; do not hardcode
+   raw values in component/domain files. */
+:root{
+  /* --- Surfaces: canvas < sidebar < card < elevated/interactive --- */
+  --canvas:#08080d;
+  --surface-sidebar:#0c0c13;
+  --surface-1:#111119;
+  --surface-2:#171722;
+  --surface-3:#1e1e2c;
+  --surface-4:#26263a;
+
+  /* --- Borders: hierarchy, not "box around everything" --- */
+  --border-hair:rgba(255,255,255,.06);
+  --border-subtle:rgba(255,255,255,.09);
+  --border-default:rgba(255,255,255,.13);
+  --border-strong:rgba(255,255,255,.20);
+
+  /* --- Text --- */
+  --text-1:#f2f2f8;
+  --text-2:#9d9db4;
+  --text-3:#6a6a80;
+  --text-4:#454558;
+
+  /* --- Brand accent: confident, single hue, restrained use --- */
+  --accent-h:243;
+  --accent:hsl(var(--accent-h) 100% 68%);
+  --accent-strong:hsl(var(--accent-h) 100% 76%);
+  --accent-dim:hsl(var(--accent-h) 62% 40%);
+  --accent-ink:hsl(var(--accent-h) 100% 96%);
+  --accent-soft-bg:hsl(var(--accent-h) 70% 58% / .16);
+  --accent-soft-border:hsl(var(--accent-h) 70% 62% / .38);
+
+  /* --- Secondary accent: data / informational, distinct from brand --- */
+  --info:#42c8ff;
+  --info-soft-bg:rgba(66,200,255,.13);
+  --info-soft-border:rgba(66,200,255,.32);
+
+  /* --- Semantic states --- */
+  --success:#3ee08a;
+  --success-strong:#6bffb0;
+  --success-soft-bg:rgba(62,224,138,.13);
+  --success-soft-border:rgba(62,224,138,.34);
+
+  --warning:#ffb648;
+  --warning-strong:#ffcb7d;
+  --warning-soft-bg:rgba(255,182,72,.14);
+  --warning-soft-border:rgba(255,182,72,.36);
+
+  --danger:#ff5d6c;
+  --danger-strong:#ff8d97;
+  --danger-soft-bg:rgba(255,93,108,.14);
+  --danger-soft-border:rgba(255,93,108,.36);
+
+  --neutral-soft-bg:rgba(255,255,255,.06);
+  --neutral-soft-border:rgba(255,255,255,.14);
+
+  --purple:#c084fc;
+  --purple-soft-bg:rgba(192,132,252,.14);
+  --purple-soft-border:rgba(192,132,252,.36);
+
+  /* --- Legacy alias bridge: old var names some inline widths/rare spots
+     may still reference; kept as thin aliases, not a second palette. --- */
+  --bg:var(--canvas);--bg2:var(--surface-1);--bg3:var(--surface-2);--bg4:var(--surface-3);
+  --border:var(--border-subtle);--border2:var(--border-default);
+  --text:var(--text-1);--text2:var(--text-2);--text3:var(--text-3);
+  --accent2:var(--accent-dim);
+  --green:var(--success);--green2:var(--success-soft-bg);--green3:var(--success-soft-border);
+  --red:var(--danger);--red2:var(--danger-soft-bg);
+  --amber:var(--warning);--amber2:var(--warning-soft-bg);
+  --teal:var(--info);--teal2:var(--info-soft-bg);
+
+  /* --- Type scale --- */
+  --font-ui:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;
+  --font-mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --text-display:600 26px/1.2 var(--font-ui);
+  --text-title:600 18px/1.3 var(--font-ui);
+  --text-section:650 12px/1.3 var(--font-ui);
+  --text-body:400 13.5px/1.55 var(--font-ui);
+  --text-body-strong:560 13.5px/1.4 var(--font-ui);
+  --text-meta:500 12px/1.4 var(--font-ui);
+  --text-caption:650 10.5px/1.3 var(--font-ui);
+  --text-metric:650 25px/1.1 var(--font-ui);
+
+  /* --- Spacing scale --- */
+  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px;
+
+  /* --- Radius --- */
+  --r-sm:7px;--r-md:11px;--r-lg:16px;--r-xl:20px;--r-pill:999px;
+
+  /* --- Elevation: built mostly from surface+border, shadow used sparingly --- */
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow-md:0 12px 32px rgba(0,0,0,.38),0 2px 8px rgba(0,0,0,.28);
+  --shadow-lg:0 28px 80px rgba(0,0,0,.5),0 6px 18px rgba(0,0,0,.35);
+  --shadow-accent:0 0 0 1px var(--accent-soft-border),0 8px 24px hsl(var(--accent-h) 70% 50% / .22);
+
+  /* --- Motion --- */
+  --ease:cubic-bezier(.2,.7,.3,1);
+  --dur-fast:.12s;--dur-base:.18s;
+}

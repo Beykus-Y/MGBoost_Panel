@@ -5,9 +5,22 @@
    list-row, modal, badges, progress...) live in components.css --
    this file is layout specific to this one screen. */
 
-.account-subtitle{font-size:11px;color:var(--text2);margin:4px 0 0 116px}
+/* Accounts list identity cell: monogram avatar + name/meta stack, so the
+   "who" reads first instead of every cell competing at the same weight. */
+.identity-cell{display:flex;align-items:center;gap:10px}
+.identity-avatar{
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  width:30px;height:30px;border-radius:var(--r-md);
+  background:var(--surface-3);border:1px solid var(--border-subtle);
+  color:var(--text-2);font-weight:650;font-size:12.5px;
+}
+.identity-text{min-width:0}
+td.card-collapse-title>.cell-sub{margin-left:40px}
+@media (max-width:560px){td.card-collapse-title>.cell-sub{margin-left:0}}
+
+.account-subtitle{font:var(--text-meta);color:var(--text-3);margin:4px 0 0 116px}
 .back-button{margin-right:12px}
-.filter-caption{min-height:18px;color:var(--text3);font-size:11px;margin:-8px 0 10px}
+.filter-caption{min-height:18px;color:var(--text-3);font:var(--text-meta);margin:-8px 0 10px}
 /* device_ops.js (Telegram/Ownership tab) toggles this on rows that
    shouldn't render for the current ownership state. */
 .hidden-when-ordinary{display:none}
@@ -29,25 +42,23 @@
 .credential-row{display:flex;gap:8px;margin-top:10px}
 .credential-row input{font-family:monospace}
 
-.expiry-buckets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
-.expiry-buckets span{background:var(--bg3);border:.5px solid var(--border);border-radius:999px;padding:5px 10px;font-size:12px;color:var(--text2)}
+.expiry-buckets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.expiry-buckets span{background:var(--surface-2);border:1px solid var(--border-subtle);border-radius:var(--r-pill);padding:6px 12px;font:var(--text-meta);color:var(--text-2)}
 
-.large-readable-value{font-size:20px;font-weight:600}
-.alias-note{font-size:13px;color:var(--text2);margin-top:3px}
-.bootstrap-title{font-size:12px;color:var(--amber);margin-top:3px}
+.large-readable-value{font:var(--text-title);font-size:22px}
+.alias-note{font-size:13px;color:var(--text-2);margin-top:3px}
+.bootstrap-title{font:var(--text-caption);color:var(--warning);margin-top:3px;text-transform:none;letter-spacing:0}
 .secondary-field{opacity:.72}
 .secondary-field code{overflow-wrap:anywhere;text-align:right}
 
-.technical-generation{border-bottom:.5px solid var(--border);padding:10px 0}
+.technical-generation{border-bottom:1px solid var(--border-hair);padding:11px 0}
 .technical-generation:last-child{border-bottom:0}
-.technical-generation summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
+.technical-generation summary{cursor:pointer;font:var(--text-body-strong);color:var(--text-1);padding:4px 0}
 
-.slot-note summary{cursor:pointer;color:var(--text2);font-size:.8rem;margin-top:.35rem}
+.slot-note summary{cursor:pointer;color:var(--text-2);font-size:.8rem;margin-top:.35rem}
 
-/* Grace-period progress card (Migration tab) -- previously rendered with
-   zero CSS at all (`.grace-progress` had no matching rule anywhere),
-   an unstyled plain div. Restyled onto the shared progress component. */
-.grace-progress{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:1.25rem}
+/* Grace-period progress card (Migration tab). */
+.grace-progress{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:1.35rem}
 
 /* Accounts list: card-collapse below ~560px instead of forcing the
    8-column table to scroll (redesign plan section 11/19.7 -- Accounts
