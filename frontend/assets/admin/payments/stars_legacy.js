@@ -7,7 +7,7 @@
 // `reason` in the JSON body -- this is the mandatory companion fix the
 // owner required before this move: without it, refund/reconcile-refund
 // here would 400 for every admin, including primary. `promptReason` is
-// injected from admin.js, the same helper backing the equivalent fix in
+// injected from router.js, the same helper backing the equivalent fix in
 // admin/technical/marzban_users.js.
 //
 // Fully self-contained otherwise: no state shared with any other screen.

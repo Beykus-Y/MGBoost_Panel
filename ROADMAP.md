@@ -3042,10 +3042,13 @@ invariant evidence, unchanged here.
 owner-authorized, credentialed) interactive authenticated
 Dashboard/Accounts/Devices/Migration/Technical/mobile-viewport
 click-through, confirming the semantics read the same live as they do in
-the fixture-driven browser gate; (2) finish splitting the legacy
-monolithic screen code out of `admin.js` into per-domain ES modules, then
-an equivalent-functionality review of the preserved legacy screens. This
-is a completed, production-deployed slice, not a claim that all of Wave A
+the fixture-driven browser gate — **still open**; (2) ~~finish splitting
+the legacy monolithic screen code out of `admin.js` into per-domain ES
+modules, then an equivalent-functionality review of the preserved legacy
+screens~~ — **done, see PH7-16** (implemented 2026-09-01: every legacy
+screen moved into its own `admin/*.js` domain module, `admin.js` itself
+retired as a concept — no file by that name remains). This is a
+completed, production-deployed slice, not a claim that all of Wave A
 is finished.
 
 **Operational-admin completion slice — status (reconciled 2026-09-01,
@@ -3081,6 +3084,19 @@ Marzban-raw functionality into an explicit Technical/Legacy area, one
 coherent navigation model) is real, warranted, unstarted work — tracked as
 **PH7-16** below; no such redesign is attempted in this documentation
 pass.
+
+**Superseded 2026-09-01 — see PH7-16 below.** The paragraph above is kept
+as-written for the record of what was true at the 2026-09-01 09:xx
+reconciliation pass; by end of day the same date, PH7-16 (Waves 0A-6)
+completed exactly the cutover described as "unstarted work" here.
+`assets/admin.js` no longer exists; the legacy Marzban-username screens
+(Users, Nodes, Extra Configs, Tickets, Stars, Settings) all now live in
+their own `admin/*.js` domain modules under an owner-directed placement
+map (not one undifferentiated `System/Technical` dump), and the raw
+Marzban proxy destructive operations + Stars refund/reconcile-refund
+gained the primary-admin-capability + mandatory-reason gate this note's
+sibling text elsewhere in PH7-12 does not mention. See PH7-16 for the
+full implementation record.
 
 **Historical note, kept for record — text as originally written
 2026-08-27:** account detail extended with the authoritative
@@ -3204,7 +3220,7 @@ implementing agent may pick unilaterally, per this roadmap's own
 governance rule.
 **Accept/tests:** not defined until the owner decision above is made.
 
-## [ ] PH7-16 — Admin v2 / canonical frontend cutover (scope only, not designed)
+## [x] PH7-16 — Admin v2 / canonical frontend cutover — production-deployed (implemented 2026-09-01)
 
 **Added:** 2026-09-01 (documentation reconciliation pass), tracking a real
 architectural debt confirmed by production read-only inspection: see
@@ -3232,6 +3248,63 @@ already constrained by **DL-052** (no framework rewrite) and MUST NOT be
 re-opened by an implementing agent without a new, explicit owner decision;
 this item's scope is cutover/reorganization within that existing
 constraint, not a technology choice.
+
+**Implementation (2026-09-01, Waves 0A through 6, all independently
+deployed and regression-gated):** an owner-reviewed corrective plan pass
+resolved the four open gates below as explicit directives before any code
+was written (git topology re-verified with no real divergence; a false
+"no WL consumption data" claim in the original plan retracted after
+reading `entitlement_engine.py`/`accounts.js` — that data was already
+shipped and rendered), then every wave shipped separately:
+- **Wave 0A/0B:** extracted the shared kernel/api/auth primitives into
+  `admin/app/{kernel,api,auth}.js`, converted the whole graph to real ES
+  modules (`<script type="module">`), one `?v=`-derived cache-busting
+  version propagated through every dynamic `import()`.
+- **Wave 1:** unified the two independently-registered click-dispatch
+  tables and the two `getJson()` copies into one.
+- **Wave 2:** Operations area — `ops_health.js` (first UI consumer of
+  PH8-04's `GET /admin/ops/health`), `operations/nodes.js`, Routing
+  relocated under Operations nav.
+- **Wave H (backend hardening, independently reviewed, its own commit):**
+  raw Marzban proxy destructive operations (`admin_proxy.py`) and Stars
+  refund/reconcile-refund (`admin.py`) gated behind
+  `require_primary_capability` + a mandatory 3-300 char `reason`
+  (query param for the proxy routes, JSON body for Stars) — closing the
+  security gap flagged in the corrective plan pass.
+- **Wave 3:** P0 Legacy Transitions review queue UI
+  (`admin/legacy_transitions.js`), reusing `accounts.js`'s own transition
+  modal rather than a second implementation.
+- **Wave 4:** Extra Configs → `admin/technical/configs.js`, Settings →
+  `admin/settings.js`.
+- **Wave 5:** Users (+legacy device list) → `admin/technical/marzban_users.js`,
+  Tickets → `admin/support/tickets.js`, Telegram Stars →
+  `admin/payments/stars_legacy.js` — per the owner-directed placement map
+  (Tickets top-level Support, Stars top-level Payments, Nodes Operations,
+  Users/Configs Technical/Legacy, Settings System). Closed the Wave H
+  regression this move made mandatory to fix: the legacy Users/Stars
+  actions had no way to supply Wave H's now-required `reason` until this
+  wave added a `promptReason()` prompt to all 7 affected actions.
+- **Wave 6:** final retirement — `frontend/assets/admin.js` (by then just
+  the router/dispatcher/composition-root, every domain screen already
+  moved out) renamed in place to `admin/app/router.js`, alongside
+  kernel.js/api.js/auth.js/main.js. **There is no file named `admin.js`
+  anywhere in the tree any more.**
+
+Verification per wave: full curated backend regression suite, Node ESM
+module-graph smoke tests (`vm`-free, real dynamic `import()` resolution),
+the `test_admin_frontend_security.py` VM-sandbox XSS/CSP/inline-handler
+regression, and a real-browser Playwright pre-deploy checklist (16
+checks by Wave 6: login/logout/session-restore/CSRF/mid-session-401/
+dynamic-import-failure-handling/console-error-free full screen
+walk/cache-busting propagation, plus two Wave-5-added checks proving the
+Wave H-hardened legacy actions succeed end-to-end with a real reason
+prompt). No product/pricing/policy decision was made unilaterally at any
+point; DL-052 (no framework rewrite, vanilla JS ES modules) was never
+reopened. Closes this item and the "finish splitting the legacy
+monolithic screen code out of `admin.js`" half of PH7-12's "Remaining
+before Wave A `[x]`" note (see PH7-12; its other remaining item, an
+owner-performed authenticated click-through, is independent of this and
+stays open).
 **Accept/tests:** not defined — this entry exists to make the debt visible
 and trackable, not to authorize implementation.
 

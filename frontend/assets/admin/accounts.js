@@ -140,15 +140,16 @@ export function createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toa
 
   // PH7-16 Wave 1: this used to be its own separate
   // `document.addEventListener('click', ...)`, registered independently
-  // of admin.js's single dispatcher (a second, parallel dispatch table on
-  // the same event, same footgun class as the two getJson() copies this
-  // wave also folded together). It is now a plain function admin.js's one
-  // click listener calls as its default/unmatched-action fallback --
-  // same pattern already used for routingUi.handleRoutingClick.
+  // of the app router's single dispatcher (a second, parallel dispatch
+  // table on the same event, same footgun class as the two getJson()
+  // copies this wave also folded together). It is now a plain function
+  // the router's (admin/app/router.js, since Wave 6) one click listener
+  // calls as its default/unmatched-action fallback -- same pattern
+  // already used for routingUi.handleRoutingClick.
   function handleAccountClick(element,event){let work;if(element.dataset.action==='open-account'){work=openAccount(Number(element.dataset.accountId),element.dataset.openTab);}if(element.dataset.action==='account-tab')showAccountTab(element.dataset.accountTab);if(element.dataset.action==='issue-account-credential')work=issueCredential(Number(element.dataset.accountId));if(element.dataset.action==='copy-issued-credential')work=navigator.clipboard.writeText(document.getElementById('issued-credential-url').value).then(()=>toast('Скопировано'));if(element.dataset.action==='copy-technical'){const node=document.getElementById(element.dataset.copyTarget);if(node)work=navigator.clipboard.writeText(node.textContent).then(()=>toast('Скопировано'));}if(element.dataset.action==='new-manual-payment'&&detail)work=payments.openNewPayment(opsCtx());if(element.dataset.action==='legacy-commercial-transition'&&detail)work=payments.openLegacyTransition(opsCtx());if(element.dataset.action==='open-manual-payment'&&detail)work=payments.openRecordModal({id:Number(element.dataset.paymentId)},opsCtx(),false);if(element.dataset.action==='tg-rebind'&&detail)work=startOwnershipRebind(Number(element.dataset.accountId));if(element.dataset.action==='open-create-account')work=adminGrantOps.openCreateAccountDialog({adminFetch,openAccount,reload:loadAccounts});if(element.dataset.action==='open-promo-manager')work=window.__PROMO_OPS_READY.then(ops=>ops.openManager());if(element.dataset.action==='open-admin-grant'&&detail)work=adminGrantOps.openGrantDialog(opsCtx());const expiryButton=event.target.closest('[data-expiry-op]');if(expiryButton&&detail&&expiryButton.dataset.accountId===String(detail.account.id)){work=expiryOps.handleExpiryClick(expiryButton,opsCtx());}if(work)Promise.resolve(work).catch(error=>{console.error(error);toast(error.message||'Операция не выполнена','err');});}
   document.addEventListener('input',event=>{if(event.target.id==='account-search')filterAccounts();});
   document.addEventListener('change',event=>{if(event.target.id==='show-technical-accounts'){showTechnical=event.target.checked;loadAccounts().catch(()=>toast('Не удалось обновить список','err'));}if(event.target.id==='show-technical-migration'){migrationShowTechnical=event.target.checked;loadMigration().catch(()=>toast('Не удалось обновить отчёт','err'));}});
-  // PH7-16 Wave 3: `payments` is exposed so admin.js can wire the
+  // PH7-16 Wave 3: `payments` is exposed so router.js can wire the
   // Operations -> Legacy Transitions queue (admin/legacy_transitions.js)
   // to the SAME openLegacyTransitionById() this module already uses,
   // instead of a second createPayments() instance.

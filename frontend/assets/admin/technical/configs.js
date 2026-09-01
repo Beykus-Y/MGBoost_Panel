@@ -4,10 +4,11 @@
 // no canonical equivalent, not fleet-infra monitoring like Nodes).
 //
 // `allInbounds` is shared with the legacy Users screen's "Create user"
-// dialog (still in admin.js) and with bootstrap()'s initial fetch --
-// threaded in via getAllInbounds/setAllInbounds accessors, same
-// single-shared-cache discipline as allNodes/allUsers in
-// admin/operations/nodes.js, not a second independently-cached copy.
+// dialog (admin/technical/marzban_users.js, since Wave 5) and with
+// router.js's own bootstrap() initial fetch -- threaded in via
+// getAllInbounds/setAllInbounds accessors, same single-shared-cache
+// discipline as allNodes/allUsers in admin/operations/nodes.js, not a
+// second independently-cached copy.
 export function createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInbounds,setAllInbounds}){
   let cfgs=[];
   let perUserConfigs={};

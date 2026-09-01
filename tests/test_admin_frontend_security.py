@@ -11,16 +11,19 @@ from src.routes.panel import handle_panel
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ADMIN_JS = ROOT / "frontend" / "assets" / "admin.js"
 ADMIN_MODULES = ROOT / "frontend" / "assets" / "admin"
 ADMIN_APP = ROOT / "frontend" / "assets" / "admin" / "app"
+ROUTER_JS = ADMIN_APP / "router.js"
 ADMIN_HTML = ROOT / "frontend" / "index.html"
 
 # PH7-16 Wave 0A moved the shared kernel/api/auth primitives out of the
-# admin.js monolith into these files; Wave 0B converted them (and admin.js
-# itself, dynamically import()-ed by admin/app/main.js) into real ES
-# modules with explicit import/export. Tests below load them in the same
-# dependency order the real page does (kernel -> api -> auth -> admin.js).
+# admin.js monolith into these files; Wave 0B converted them (and the
+# monolith itself, dynamically import()-ed by admin/app/main.js) into real
+# ES modules with explicit import/export; Wave 6 moved/renamed the
+# monolith (once Waves 1-5 had emptied every domain screen out of it) to
+# `admin/app/router.js` -- there is no file named `admin.js` left anywhere
+# in the tree. Tests below load these in the same dependency order the
+# real page does (kernel -> api -> auth -> router.js).
 ADMIN_SHELL_FILES = [ADMIN_APP / "kernel.js", ADMIN_APP / "api.js", ADMIN_APP / "auth.js"]
 
 
@@ -105,14 +108,14 @@ class FakeHandler:
 
 def test_admin_sources_have_no_inline_handlers_or_unsafe_dynamic_sinks():
     html_source = ADMIN_HTML.read_text(encoding="utf-8")
-    js_source = ADMIN_JS.read_text(encoding="utf-8")
+    js_source = ROUTER_JS.read_text(encoding="utf-8")
     shell_source = _admin_shell_source()
     module_source = "\n".join(path.read_text(encoding="utf-8") for path in ADMIN_MODULES.glob("*.js"))
     combined = html_source + "\n" + shell_source + "\n" + js_source + "\n" + module_source
 
     assert not re.search(r"\son[a-z]+\s*=", combined, re.IGNORECASE)
     # renderHtml's single legitimate `.innerHTML=` sink now lives in
-    # kernel.js (PH7-16 Wave 0A); admin.js itself must not reintroduce one.
+    # kernel.js (PH7-16 Wave 0A); router.js itself must not reintroduce one.
     assert js_source.count(".innerHTML=") == 0
     assert shell_source.count(".innerHTML=") == 1
     assert "template.innerHTML=markup.value" in shell_source
@@ -172,18 +175,19 @@ def test_admin_page_enforces_script_csp_and_legacy_storage_cleanup():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for admin JS security test")
 def test_malicious_admin_api_values_are_escaped_by_real_render_path():
-    # PH7-16 Wave 0B: kernel.js/api.js/auth.js/admin.js are all real ES
-    # modules now (admin.js is dynamically import()-ed by admin/app/main.js
-    # -- see index.html). `vm.runInContext` below runs a plain script, not
-    # linked ES modules and without top-level await, so: (1) first replace
-    # the accounts.js/routing.js/promo_ops.js dynamic-import blocks with
-    # stubs while their exact original text still matches these regexes,
-    # (2) only then run _strip_module_syntax to drop every remaining
-    # import/export/await-import wrapper -- doing it in the other order
-    # would let the generic await-import stripper mangle these blocks
-    # before the stubbing regexes below get a chance to match them. The
-    # escaping/rendering logic under test is untouched either way.
-    js_source = ADMIN_JS.read_text(encoding="utf-8")
+    # PH7-16 Wave 0B: kernel.js/api.js/auth.js/router.js are all real ES
+    # modules now (router.js is dynamically import()-ed by admin/app/main.js
+    # -- see index.html; Wave 6 renamed it here from the top-level
+    # `admin.js` it used to be). `vm.runInContext` below runs a plain
+    # script, not linked ES modules and without top-level await, so: (1)
+    # first replace the accounts.js/routing.js/promo_ops.js dynamic-import
+    # blocks with stubs while their exact original text still matches
+    # these regexes, (2) only then run _strip_module_syntax to drop every
+    # remaining import/export/await-import wrapper -- doing it in the
+    # other order would let the generic await-import stripper mangle these
+    # blocks before the stubbing regexes below get a chance to match them.
+    # The escaping/rendering logic under test is untouched either way.
+    js_source = ROUTER_JS.read_text(encoding="utf-8")
     js_source = re.sub(
         # `import.meta.url` is only valid syntax inside a real module goal
         # -- vm.runInContext parses as a plain script -- so this reference
@@ -191,29 +195,29 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         # that consume it must go too. Their destructured names (html,
         # renderHtml, toast, closeModal, api, proxyApi, adminFetch,
         # doLogin, doLogout) are already provided by the concatenated
-        # shell source that precedes admin.js's source below -- this must
+        # shell source that precedes router.js's source below -- this must
         # NOT eat the following `let allUsers = [];` etc. block, hence the
         # precise (non-greedy-free) match instead of spanning to
         # ACCOUNT_UI_READY.
         r"const _MODULE_VERSION = new URL\(import\.meta\.url\)\.search;\n"
-        r"const \{html,renderHtml,toast,closeModal\} = await import\(`\./admin/app/kernel\.js\$\{_MODULE_VERSION\}`\);\n"
-        r"const \{api,proxyApi,adminFetch\} = await import\(`\./admin/app/api\.js\$\{_MODULE_VERSION\}`\);\n"
-        r"const \{doLogin,doLogout\} = await import\(`\./admin/app/auth\.js\$\{_MODULE_VERSION\}`\);\n",
+        r"const \{html,renderHtml,toast,closeModal\} = await import\(`\./kernel\.js\$\{_MODULE_VERSION\}`\);\n"
+        r"const \{api,proxyApi,adminFetch\} = await import\(`\./api\.js\$\{_MODULE_VERSION\}`\);\n"
+        r"const \{doLogin,doLogout\} = await import\(`\./auth\.js\$\{_MODULE_VERSION\}`\);\n",
         "var _MODULE_VERSION='';\n",
         js_source,
     )
     js_source = re.sub(
-        r"const MARZBAN_USERS_UI_READY = import\(`\./admin/technical/marzban_users\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const TICKETS_UI_READY = import\(`\./admin/support/tickets\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const STARS_UI_READY = import\(`\./admin/payments/stars_legacy\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const NODES_UI_READY = import\(`\./admin/operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const MARZBAN_USERS_UI_READY = import\(`\.\./technical/marzban_users\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const TICKETS_UI_READY = import\(`\.\./support/tickets\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const STARS_UI_READY = import\(`\.\./payments/stars_legacy\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const ACCOUNT_UI_READY = import\(`\.\./accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const ROUTING_UI_READY = import\(`\.\./routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const NODES_UI_READY = import\(`\.\./operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const OPS_HEALTH_READY = \(async\(\)=>\{.*?\n\}\)\(\);\n"
         r"let configsUi=null;\n"
-        r"const CONFIGS_UI_READY = import\(`\./admin/technical/configs\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"const CONFIGS_UI_READY = import\(`\.\./technical/configs\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"let settingsUi=null;\n"
-        r"const SETTINGS_UI_READY = import\(`\./admin/settings\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
+        r"const SETTINGS_UI_READY = import\(`\.\./settings\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
         "const ACCOUNT_UI_READY=Promise.resolve(null);",
         js_source,
         flags=re.DOTALL,
@@ -224,11 +228,11 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         js_source,
         flags=re.DOTALL,
     )
-    # PH7-16 Wave 5 moved renderUsers out of admin.js into
+    # PH7-16 Wave 5 moved renderUsers out of the monolith into
     # admin/technical/marzban_users.js's createMarzbanUsersUi() factory --
     # the escaping logic under test (kernel.js's html/renderHtml/esc) is
     # unchanged, but exercising it now requires instantiating that factory
-    # too, the same way admin.js itself does at runtime.
+    # too, the same way router.js itself does at runtime.
     marzban_users_source = _strip_module_syntax(
         (ADMIN_MODULES / "technical" / "marzban_users.js").read_text(encoding="utf-8")
     )

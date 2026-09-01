@@ -1,30 +1,38 @@
-// PH7-16 Wave 0B: this file is loaded as an ES module, dynamically
-// import()-ed by admin/app/main.js (not a classic <script> tag anymore --
-// see index.html). Everything it needs from the extracted shell pieces
-// (Wave 0A) is now an explicit import instead of a bare-name reference
-// into a shared classic-script global scope. `bootstrap` is exported so
-// main.js can register it as the post-login/session-restore callback
-// (auth.js exposes onAuthenticated() for exactly that, to avoid an
-// auth.js <-> admin.js import cycle).
+// PH7-16 Wave 6 -- this file is the former `frontend/assets/admin.js`
+// (the original 1739-line monolith that every canonical `admin/*.js`
+// domain module used to be dynamically `import()`-ed into), moved here
+// verbatim and renamed once Waves 1-5 had emptied every domain screen out
+// of it. What's left is exactly what the name says: the application's
+// router (showPage/switchTab/the click-change-input dispatch tables) plus
+// the composition root that wires every domain module's factory together
+// (the *_UI_READY block below) and `bootstrap()`, the post-login entry
+// point. There is no more file anywhere named `admin.js` -- per PH7-16's
+// scope (ROADMAP.md), "the legacy monolith" is retired as a concept, not
+// just thinned out. Loaded as an ES module, dynamically `import()`-ed by
+// this same directory's main.js. `bootstrap` is exported so main.js can
+// register it as the post-login/session-restore callback (auth.js
+// exposes onAuthenticated() for exactly that, to avoid an
+// auth.js <-> router.js import cycle).
 //
-// kernel.js/api.js/auth.js are loaded via versioned dynamic import(), same
-// as the admin/*.js canonical modules below and for the same reason: a
-// static `import ... from './admin/app/kernel.js'` specifier would not
-// inherit this file's own `?v=` query, and the server sends a real
+// kernel.js/api.js/auth.js (siblings in this same admin/app/ directory)
+// and every admin/*.js domain module are loaded via versioned dynamic
+// import(), same reasoning as before the move: a static
+// `import ... from './kernel.js'` specifier would not inherit this file's
+// own `?v=` query, and the server sends a real
 // `Cache-Control: public, max-age=3600` for JS assets -- without
 // propagating the version explicitly, a stale-cached kernel/api/auth
-// could silently pair with a freshly-deployed admin.js after a release.
+// could silently pair with a freshly-deployed router.js after a release.
 // `import.meta.url` reflects the exact versioned specifier main.js used
 // to import this module, so re-deriving `_MODULE_VERSION` from it here
-// and reusing it for every dynamic import below (shell pieces and the
+// and reusing it for every dynamic import below (shell siblings and the
 // canonical admin/*.js modules alike) keeps the whole graph on one
 // deploy's URLs -- and, since the browser's module registry is keyed by
 // resolved URL, every one of these dynamic imports converges on the exact
 // same singleton kernel/api/auth instances main.js itself is using.
 const _MODULE_VERSION = new URL(import.meta.url).search;
-const {html,renderHtml,toast,closeModal} = await import(`./admin/app/kernel.js${_MODULE_VERSION}`);
-const {api,proxyApi,adminFetch,getJson} = await import(`./admin/app/api.js${_MODULE_VERSION}`);
-const {doLogin,doLogout} = await import(`./admin/app/auth.js${_MODULE_VERSION}`);
+const {html,renderHtml,toast,closeModal} = await import(`./kernel.js${_MODULE_VERSION}`);
+const {api,proxyApi,adminFetch,getJson} = await import(`./api.js${_MODULE_VERSION}`);
+const {doLogin,doLogout} = await import(`./auth.js${_MODULE_VERSION}`);
 
 let allUsers = [];
 let allNodes = [];
@@ -64,20 +72,20 @@ let legacyTransitionsUi = null;
 let marzbanUsersUi = null;
 let ticketsUi = null;
 let starsUi = null;
-const MARZBAN_USERS_UI_READY = import(`./admin/technical/marzban_users.js${_MODULE_VERSION}`).then(module=>{
+const MARZBAN_USERS_UI_READY = import(`../technical/marzban_users.js${_MODULE_VERSION}`).then(module=>{
   marzbanUsersUi=module.createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxyApi,promptReason,
     getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters});
   return marzbanUsersUi;
 });
-const TICKETS_UI_READY = import(`./admin/support/tickets.js${_MODULE_VERSION}`).then(module=>{
+const TICKETS_UI_READY = import(`../support/tickets.js${_MODULE_VERSION}`).then(module=>{
   ticketsUi=module.createTicketsUi({html,renderHtml,closeModal,proxyApi});
   return ticketsUi;
 });
-const STARS_UI_READY = import(`./admin/payments/stars_legacy.js${_MODULE_VERSION}`).then(module=>{
+const STARS_UI_READY = import(`../payments/stars_legacy.js${_MODULE_VERSION}`).then(module=>{
   starsUi=module.createStarsLegacyUi({html,renderHtml,promptReason,proxyApi});
   return starsUi;
 });
-const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(module=>{
+const ACCOUNT_UI_READY = import(`../accounts.js${_MODULE_VERSION}`).then(module=>{
   accountUi=module.createAccountUi({adminFetch,getJson,html,renderHtml,showPage,toast});
   return accountUi;
 });
@@ -85,43 +93,43 @@ const ACCOUNT_UI_READY = import(`./admin/accounts.js${_MODULE_VERSION}`).then(mo
 // instance (openLegacyTransitionById) instead of a second createPayments()
 // -- one transition-modal implementation, two entry points.
 const LEGACY_TRANSITIONS_READY = ACCOUNT_UI_READY.then(async readyAccountUi=>{
-  const coreModule=await import(`./admin/core.js${_MODULE_VERSION}`);
-  const module=await import(`./admin/legacy_transitions.js${_MODULE_VERSION}`);
+  const coreModule=await import(`../core.js${_MODULE_VERSION}`);
+  const module=await import(`../legacy_transitions.js${_MODULE_VERSION}`);
   legacyTransitionsUi=module.createLegacyTransitionsQueue({html,renderHtml,toast,adminFetch,getJson,
     formatTimestamp:coreModule.formatTimestamp,humanLabel:coreModule.humanLabel,
     openLegacyTransitionById:readyAccountUi.payments.openLegacyTransitionById,openAccount:readyAccountUi.openAccount});
   return legacyTransitionsUi;
 });
-const ROUTING_UI_READY = import(`./admin/routing.js${_MODULE_VERSION}`).then(module=>{
+const ROUTING_UI_READY = import(`../routing.js${_MODULE_VERSION}`).then(module=>{
   routingUi=module.createRoutingUi({adminFetch,getJson,html,renderHtml,toast});
   return routingUi;
 });
-const NODES_UI_READY = import(`./admin/operations/nodes.js${_MODULE_VERSION}`).then(module=>{
+const NODES_UI_READY = import(`../operations/nodes.js${_MODULE_VERSION}`).then(module=>{
   nodesUi=module.createNodesUi({html,renderHtml,toast,closeModal,api,proxyApi,fmt,fmtMoney,getTrafficPeriod,getAllNodes,setAllNodes,getAllUsers,setAllUsers});
   return nodesUi;
 });
 const OPS_HEALTH_READY = (async()=>{
-  const opsCore=await import(`./admin/core.js${_MODULE_VERSION}`);
-  const module=await import(`./admin/ops_health.js${_MODULE_VERSION}`);
+  const opsCore=await import(`../core.js${_MODULE_VERSION}`);
+  const module=await import(`../ops_health.js${_MODULE_VERSION}`);
   opsHealthUi=module.createOpsHealth({html,renderHtml,toast,getJson,
     formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration});
   return opsHealthUi;
 })();
 let configsUi=null;
-const CONFIGS_UI_READY = import(`./admin/technical/configs.js${_MODULE_VERSION}`).then(module=>{
+const CONFIGS_UI_READY = import(`../technical/configs.js${_MODULE_VERSION}`).then(module=>{
   configsUi=module.createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInbounds,setAllInbounds});
   return configsUi;
 });
 let settingsUi=null;
-const SETTINGS_UI_READY = import(`./admin/settings.js${_MODULE_VERSION}`).then(module=>{
+const SETTINGS_UI_READY = import(`../settings.js${_MODULE_VERSION}`).then(module=>{
   settingsUi=module.createSettingsUi({html,renderHtml,toast,proxyApi});
   return settingsUi;
 });
 let promoOps=null;
 const PROMO_OPS_READY = (async()=>{
-  const promoCore=await import(`./admin/core.js${_MODULE_VERSION}`);
-  const {createModals}=await import(`./admin/modals.js${_MODULE_VERSION}`);
-  const module=await import(`./admin/promo_ops.js${_MODULE_VERSION}`);
+  const promoCore=await import(`../core.js${_MODULE_VERSION}`);
+  const {createModals}=await import(`../modals.js${_MODULE_VERSION}`);
+  const module=await import(`../promo_ops.js${_MODULE_VERSION}`);
   const {openModal,confirmFlow}=createModals({html,renderHtml});
   promoOps=module.createPromoOps({html,renderHtml,toast,openModal,confirmFlow,
     formatTimestamp:promoCore.formatTimestamp,humanLabel:promoCore.humanLabel,adminFetch});

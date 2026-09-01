@@ -7,14 +7,14 @@
 // admin capability + a mandatory reason (query param) -- this is the
 // mandatory companion fix the owner required before this move: without
 // it, save/delete/disable/enable/reset-traffic here would 400 for every
-// admin, including primary. `promptReason` is injected from admin.js so
+// admin, including primary. `promptReason` is injected from router.js so
 // the exact same helper backs the equivalent fix in
 // admin/payments/stars_legacy.js, not two independently-written copies.
 //
 // allUsers/allNodes/allInbounds are shared with Dashboard/nodes.js/
 // configs.js -- threaded via the same getAllX/setAllX accessors already
 // established in Waves 2/4, not a second independently-cached copy.
-// nodeFilters is shared only with admin.js's own bootstrap() (initial
+// nodeFilters is shared only with router.js's own bootstrap() (initial
 // fetch); userDeviceCounts is private to this screen.
 export function createMarzbanUsersUi({html,renderHtml,toast,closeModal,api,proxyApi,promptReason,
   getAllUsers,setAllUsers,getAllNodes,getAllInbounds,setAllInbounds,getNodeFilters,setNodeFilters}){

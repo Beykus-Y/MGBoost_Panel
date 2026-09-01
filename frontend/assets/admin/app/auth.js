@@ -1,11 +1,13 @@
 // PH7-16 Wave 0B — session bootstrap/login/logout.
-// ES module. `bootstrap()` (the post-auth app init) lives in the legacy
-// admin.js module, not here -- rather than an auth.js -> admin.js import
-// (which would make a real import cycle with admin.js -> auth.js), this
-// file exposes one explicit registration hook, onAuthenticated(), that
-// main.js calls once, after dynamically importing admin.js, to wire
-// admin.js's exported `bootstrap` as the callback run after a successful
-// login or session restore. Same one-directional-import discipline as the
+// ES module. `bootstrap()` (the post-auth app init) lives in the
+// application router/composition-root module, not here (PH7-16 Wave 6:
+// that module is `admin/app/router.js`, a sibling of this file -- rather
+// than an auth.js -> router.js import (which would make a real import
+// cycle with router.js -> auth.js), this file exposes one explicit
+// registration hook, onAuthenticated(), that main.js calls once, after
+// dynamically importing router.js, to wire router.js's exported
+// `bootstrap` as the callback run after a successful login or session
+// restore. Same one-directional-import discipline as the
 // onUnauthorizedSession() seam in api.js.
 //
 // api.js is loaded via a versioned dynamic import(), not a static one:
@@ -17,7 +19,7 @@
 // was itself reached via a versioned dynamic import -- see main.js) keeps
 // every module in one deploy on the same cache-busted URL, so they all
 // resolve to the exact same singleton instance everywhere they're loaded
-// from (main.js, admin.js, here).
+// from (main.js, router.js, here).
 const _MODULE_VERSION = new URL(import.meta.url).search;
 const { PROXY_API, setCsrfToken, adminFetch, onUnauthorizedSession } =
   await import(`./api.js${_MODULE_VERSION}`);

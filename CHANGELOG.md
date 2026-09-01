@@ -15,7 +15,45 @@
 
 ## Unreleased
 
-_(пока пусто — см. раздел ниже для истории, синхронизированной с production reconciliation 2026-09-01)_
+### Changed — Admin
+
+PH7-16 (Admin v2 / canonical frontend cutover), Waves 3-6, реализованы
+локально 2026-09-01 (commits `3aa1016`..`d8208ad` и Wave 6, ветка `main`,
+**не задеплоено/не запушено в этой сессии**): легаси Marzban-экраны
+(Users, Extra Configs, Tickets, Telegram Stars, Settings) вынесены из
+монолитного `admin.js` в собственные ES-модули по owner-directed
+placement map — Users → `System/Технический` (`admin/technical/
+marzban_users.js`), Configs → `System/Технический`
+(`admin/technical/configs.js`), Tickets → новый top-level раздел
+«Поддержка» (`admin/support/tickets.js`), Telegram Stars → новый
+top-level раздел «Платежи» (`admin/payments/stars_legacy.js`), Settings →
+`System` (`admin/settings.js`). Ничего функционально не удалено — только
+перенесено/изолировано. `frontend/assets/admin.js` (бывший
+~1739-строчный монолит) переименован в `admin/app/router.js` — файла
+`admin.js` в дереве больше не существует.
+
+### Security — Admin (Wave H, отдельный reviewed backend slice)
+
+Raw Marzban proxy destructive-операции (`DELETE`/`PUT`/reset в
+`admin_proxy.py`) и Stars refund/reconcile-refund (`admin.py`) теперь
+требуют primary-admin capability + обязательный `reason` (3-300
+символов, в audit log), тот же паттерн, что и остальные consequential
+canonical-мутации. До Wave 5 это создавало временную регрессию (легаси
+Users/Stars-кнопки возвращали 400 для всех админов, включая primary) —
+закрыта в рамках переноса Users/Stars: все 7 затронутых действий теперь
+запрашивают причину через `window.prompt()` перед отправкой.
+
+## 2026-09-01 — Reconciled with production (HEAD `fefb2c3`)
+
+Documentation reconciliation note (не код/деплой): read-only аудит
+2026-09-01 подтвердил, что `local main HEAD == production HEAD ==
+fefb2c3` — то есть все записи ниже, ранее помеченные как `implemented
+locally`/`NO push/deploy`/`checkpoint only`, фактически уже находятся в
+production. Точные даты индивидуального деплоя сохранены там, где они уже
+были зафиксированы внутри записи; там, где точная дата деплоя не была
+задокументирована отдельно, формулировка ниже нейтрально уточнена как
+"subsequently production-deployed" без выдумывания конкретного timestamp.
+Исторические детали (implementation date, review findings, test counts)
 
 ## 2026-09-01 — Reconciled with production (HEAD `fefb2c3`)
 
