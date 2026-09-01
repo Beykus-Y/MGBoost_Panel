@@ -1,23 +1,35 @@
 /* Application shell: app frame, sidebar/navigation, page switching,
    page header/actions bar, login page. */
 
-#app{display:none;min-height:100vh}
-#main{flex:1;overflow:auto;padding:28px 32px 48px;min-width:0;max-width:1520px;margin:0 auto;width:100%}
+#app{display:none;min-height:100vh;position:relative}
+/* A single hairline of light spanning the whole chrome (sidebar + main)
+   -- reads as one lit surface with two zones, not two stacked boxes. */
+#app::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;z-index:5;pointer-events:none;
+  background:linear-gradient(90deg,transparent,hsl(var(--accent-h) 75% 62% / .4) 30%,hsl(190 85% 62% / .25) 70%,transparent);
+}
+#main{
+  flex:1;overflow:auto;padding:28px 32px 48px;min-width:0;max-width:1520px;margin:0 auto;width:100%;
+  position:relative;
+  background-image:radial-gradient(1000px 460px at 28% -8%,hsl(var(--accent-h) 70% 55% / .07),transparent 62%);
+  background-repeat:no-repeat;
+}
 .page{display:none}
 .page.active{display:block}
 
-/* --- Sidebar: its own surface, not a border-away extension of the
-   workspace. Brand identity block, grouped nav with real hierarchy. --- */
+/* --- Sidebar: part of the same lit chrome surface as the workspace,
+   not a bordered-off box next to it -- separation comes from a soft
+   tonal shift and an inset fade, not a hard rule. Brand identity
+   block, grouped nav with real hierarchy. --- */
 #sidebar{
-  width:224px;flex-shrink:0;
+  width:212px;flex-shrink:0;
   display:flex;flex-direction:column;
   position:sticky;top:0;height:100vh;
-  padding:18px 12px 14px;
+  padding:18px 10px 14px;
   background:
-    linear-gradient(180deg,hsl(var(--accent-h) 60% 30% / .10),transparent 220px),
+    linear-gradient(180deg,hsl(var(--accent-h) 60% 32% / .12),transparent 240px),
     var(--surface-sidebar);
-  border-right:1px solid var(--border-hair);
-  box-shadow:1px 0 0 rgba(0,0,0,.25);
+  box-shadow:inset -1px 0 0 var(--border-hair),8px 0 24px -16px rgba(0,0,0,.5);
 }
 #sidebar .logo{display:flex;align-items:center;gap:10px;padding:2px 8px 16px;margin-bottom:10px;border-bottom:1px solid var(--border-hair)}
 .brand-mark{

@@ -35,36 +35,5 @@ export function createTimeline({html,formatTimestamp,humanLabel}){
     </div>${timeline.truncated?html`<div class="cell-sub">Показаны последние события; полная история доступна в каждой доменной таблице.</div>`:html``}`;
   }
 
-  function paymentQueueItem(item){
-    const product=item.plan_code
-      ?`${humanLabel(item.plan_code)} · ${item.duration_days} дн.`
-      :`${humanLabel(item.package_sku)}`;
-    return html`<button class="compact-row queue-row" data-action="open-account" data-account-id="${item.account_id}" data-open-tab="payments">
-      <span><strong>${item.label}</strong><small>${product} · ${item.amount_minor} ₽ · ${item.public_id||''}${item.sync_state&&item.sync_state!=='SYNCED'?html` · sync: ${humanLabel(item.sync_state)}`:''}</small></span>
-      <strong>${item.amount_minor} ₽</strong></button>`;
-  }
-
-  function queuesSection(queues){
-    if(!queues)return html``;
-    const pending=(queues.pending||[]);
-    const review=(queues.manual_review||[]);
-    const syncPending=(queues.sync_pending||[]);
-    const stars=queues.stars_manual_review||{count:0,items:[]};
-    return html`<section class="dashboard-section"><div class="section-heading"><div>
-      <span class="eyebrow">Операционные очереди</span><h2>Ручные платежи и сбои</h2></div>
-      <button data-action="show-page" data-page="accounts">К аккаунтам</button></div>
-      ${(!pending.length&&!review.length&&!syncPending.length&&!stars.count)?html`<div class="empty-state">Очереди пусты — платёжных и sync-исключений нет</div>`:
-      html`<div class="queue-grid">
-        ${pending.length?html`<div class="queue-block"><h4>Pending-платежи (${pending.length})</h4><div class="compact-list">${pending.map(paymentQueueItem)}</div></div>`:''}
-        ${review.length?html`<div class="queue-block"><h4>Ручная проверка (${review.length})</h4><div class="compact-list">${review.map(paymentQueueItem)}</div></div>`:''}
-        ${syncPending.length?html`<div class="queue-block"><h4>Child-sync не завершён (${syncPending.length})</h4><div class="compact-list">${syncPending.map(item=>html`
-          <button class="compact-row queue-row" data-action="open-account" data-account-id="${item.account_id}" data-open-tab="payments">
-            <span><strong>${item.label}</strong><small>платёж #${item.payment_record_id} · ${humanLabel(item.state)}</small></span>
-            <span class="badge ${item.state==='MANUAL_REVIEW'?'badge-red':'badge-amber'}">${humanLabel(item.state)}</span></button>`)}</div></div>`:''}
-        ${stars.count?html`<div class="queue-block"><h4>Stars manual-review (legacy экран Stars)</h4><p class="cell-sub">К оплатам Stars применяется отдельный существующий reconciliation на экране «Stars»; всего в статусе: ${stars.count}</p></div>`:''}
-      </div>`}
-    </section>`;
-  }
-
-  return {renderTimeline,queuesSection};
+  return {renderTimeline};
 }

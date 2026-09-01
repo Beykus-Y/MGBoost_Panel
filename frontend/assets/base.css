@@ -3,10 +3,14 @@ html{color-scheme:dark}
 body{
   font:var(--text-body);
   font-family:var(--font-ui);
-  background:
-    radial-gradient(1100px 620px at 14% -8%,hsl(var(--accent-h) 70% 40% / .12),transparent 60%),
-    radial-gradient(900px 500px at 100% 0%,rgba(66,200,255,.06),transparent 55%),
-    var(--canvas);
+  background-color:var(--canvas);
+  background-image:
+    radial-gradient(1200px 680px at 16% -10%,hsl(var(--accent-h) 72% 42% / .16),transparent 62%),
+    radial-gradient(900px 560px at 104% -6%,rgba(66,200,255,.09),transparent 58%),
+    radial-gradient(1000px 700px at 50% 115%,hsl(var(--accent-h) 55% 30% / .07),transparent 60%),
+    var(--dot-grid);
+  background-size:auto,auto,auto,var(--dot-grid-size);
+  background-repeat:no-repeat,no-repeat,no-repeat,repeat;
   background-attachment:fixed;
   color:var(--text-1);
   min-height:100vh;

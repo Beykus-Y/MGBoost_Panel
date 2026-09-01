@@ -34,16 +34,26 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
         renderHtml(grid,html`<div class="empty-state">Тарифы ещё не настроены — добавьте первый тариф</div>`);
         return;
       }
-      renderHtml(grid,html`${tariffs.map(t=>html`
-        <div class="tariff-card${t.active?'':' tariff-card--inactive'}">
+      const RUB_PER_STAR=350/320;
+      const sorted=[...tariffs].sort((a,b)=>a.duration_days-b.duration_days);
+      const activeRates=sorted.filter(t=>t.active).map(t=>t.stars_price/t.duration_days);
+      const bestRate=activeRates.length?Math.min(...activeRates):null;
+      renderHtml(grid,html`${sorted.map(t=>{
+        const rate=t.stars_price/t.duration_days;
+        const isBest=t.active&&bestRate!==null&&rate===bestRate&&activeRates.length>1;
+        return html`
+        <div class="tariff-card${t.active?'':' tariff-card--inactive'}${isBest?' tariff-card--best':''}">
+          ${isBest?html`<span class="tariff-best-tag">Выгоднее ★/день</span>`:''}
           <div class="tariff-card-head">
             <span class="tariff-name">${t.name}</span>
             <label class="switch switch--sm"><input type="checkbox" ${t.active?html`checked`:''} data-change-action="toggle-stars-tariff" data-tariff-id="${t.id}" /><span class="switch-track"><span class="switch-thumb"></span></span></label>
           </div>
           <div class="tariff-price"><span class="tariff-price-value">${t.stars_price}</span><span class="tariff-price-unit">⭐️</span></div>
-          <div class="tariff-duration">${t.duration_days} дней</div>
+          <div class="tariff-price-rub">≈ ${Math.round(t.stars_price*RUB_PER_STAR)} ₽ справочно</div>
+          <div class="tariff-duration">${t.duration_days} дней<span class="tariff-status-tag">${t.active?'активен':'неактивен'}</span></div>
           <button class="quiet small tariff-delete-btn" data-action="delete-stars-tariff" data-tariff-id="${t.id}">Удалить</button>
-        </div>`)}`);
+        </div>`;
+      })}`);
     }catch(e){renderHtml(grid,html`<div class="error-state">Ошибка загрузки</div>`);}
   }
 

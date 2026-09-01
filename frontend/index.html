@@ -4,16 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MGBoost Panel</title>
-<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-stars-recompose">
-<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-stars-recompose">
+<link rel="stylesheet" href="assets/tokens.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/base.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/shell.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/components.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-accounts.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-operations.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-payments-support.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-technical.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-dashboard.css?v=20260902-adminv2-catalog">
+<link rel="stylesheet" href="assets/domain-settings.css?v=20260902-adminv2-catalog">
 </head>
 <body>
 
@@ -109,21 +109,20 @@
           <button data-action="load-dashboard">Обновить</button>
         </div>
       </div>
+      <div id="ops-strip"></div>
       <div class="dash-layout">
         <div class="dash-main">
           <div id="account-dashboard"><div class="loading"><span class="spinner"></span>Загрузка состояния аккаунтов...</div></div>
         </div>
         <aside class="dash-rail">
-          <div class="dash-rail-heading"><span class="eyebrow">Marzban</span><h3>Инфраструктура</h3></div>
-          <div class="stats-grid stats-grid--rail" id="sys-stats">
-            <div class="loading"><span class="spinner"></span>Загрузка...</div>
-          </div>
-          <div class="card rail-card">
-            <div class="card-title">Ноды</div>
-            <div id="dash-nodes"><div class="loading"><span class="spinner"></span></div></div>
-          </div>
-          <div class="card rail-card">
-            <div class="card-title">Трафик по нодам <span id="traffic-period-label" class="muted"></span></div>
+          <div class="telemetry-panel">
+            <div class="telemetry-panel-head"><span class="eyebrow">Marzban</span><h3>Инфраструктура</h3></div>
+            <div class="telemetry-list" id="sys-stats">
+              <div class="loading"><span class="spinner"></span>Загрузка...</div>
+            </div>
+            <div class="telemetry-caption">Ноды</div>
+            <div class="telemetry-list telemetry-list--nodes" id="dash-nodes"><div class="loading"><span class="spinner"></span></div></div>
+            <div class="telemetry-caption">Трафик <span id="traffic-period-label" class="muted"></span></div>
             <div id="dash-node-traffic"><div class="loading"><span class="spinner"></span></div></div>
           </div>
         </aside>
@@ -135,22 +134,26 @@
       <div class="page-header"><span class="page-title">Аккаунты <span id="accounts-count" class="muted-count"></span></span><div class="page-actions"><input class="search-box" id="account-search" type="text" placeholder="Имя, note, alias или public ID"/><label class="inline-toggle"><input id="show-technical-accounts" type="checkbox"/> Показывать служебные аккаунты</label><button class="primary" data-action="open-create-account">+ Создать аккаунт</button><button data-action="open-promo-manager">Промокоды…</button><button data-action="show-page" data-page="accounts">Обновить</button></div></div>
       <div id="accounts-metadata-warning"></div><div id="technical-hidden-count" class="filter-caption"></div>
       <div class="segment-row" id="accounts-segments"></div>
-      <div class="card flush-card"><div class="table-wrap"><table>
-        <thead>
-          <tr class="thead-group-row">
-            <th></th>
-            <th colspan="3">Состояние</th>
-            <th colspan="2">Устройства</th>
-            <th colspan="2">Переход</th>
-          </tr>
-          <tr><th>Клиент</th><th>Статус</th><th>Подписка</th><th>Telegram</th><th>Слоты</th><th>Реальные устройства</th><th>Готовность</th><th>Статус / действие</th></tr>
-        </thead>
-        <tbody id="accounts-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span>Загрузка...</td></tr></tbody></table></div></div>
+      <div class="master-row master-row--head">
+        <div class="ml-zone ml-zone--identity">Клиент</div>
+        <div class="ml-zone ml-zone--state">Состояние</div>
+        <div class="ml-zone ml-zone--action">Переход</div>
+      </div>
+      <div class="master-list" id="accounts-tbody"><div class="loading"><span class="spinner"></span>Загрузка...</div></div>
     </div>
 
     <!-- ACCOUNT DETAIL -->
     <div class="page" id="page-account-detail">
-      <div class="page-header"><div><button class="back-button" data-action="show-page" data-page="accounts">← Аккаунты</button><span class="page-title" id="account-detail-title">Аккаунт</span><div id="account-detail-subtitle" class="account-subtitle"></div></div></div><div id="account-detail-metadata-warning"></div>
+      <div class="account-head">
+        <button class="quiet small back-button" data-action="show-page" data-page="accounts">← Аккаунты</button>
+        <span class="account-head-avatar" id="account-head-avatar">?</span>
+        <div class="account-head-text">
+          <div class="account-head-title" id="account-detail-title">Аккаунт</div>
+          <div class="account-head-subtitle" id="account-detail-subtitle"></div>
+        </div>
+        <div class="account-head-stats" id="account-head-stats"></div>
+      </div>
+      <div id="account-detail-metadata-warning"></div>
       <div class="tabs account-tabs" id="account-tabs">
         <div class="tab active" data-action="account-tab" data-account-tab="overview">Обзор</div>
         <div class="tab" data-action="account-tab" data-account-tab="subscription">Подписка</div>
@@ -656,6 +659,6 @@
 
 <div id="toast"></div>
 
-<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-stars-recompose"></script>
+<script type="module" src="assets/admin/app/main.js?v=20260902-adminv2-catalog"></script>
 </body>
 </html>

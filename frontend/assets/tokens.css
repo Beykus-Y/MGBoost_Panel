@@ -98,4 +98,9 @@
   /* --- Motion --- */
   --ease:cubic-bezier(.2,.7,.3,1);
   --dur-fast:.12s;--dur-base:.18s;
+
+  /* --- Ambient texture: a barely-there dot grid, one background layer
+     among several -- not a pattern anyone should consciously notice. --- */
+  --dot-grid:radial-gradient(rgba(255,255,255,.035) 1px,transparent 1px);
+  --dot-grid-size:24px 24px;
 }

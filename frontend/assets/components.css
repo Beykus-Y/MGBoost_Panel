@@ -77,28 +77,24 @@ label:first-child{margin-top:0}
 .ops-dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:.35rem .9rem;margin:.5rem 0}
 .ops-dl dt{color:var(--text-3);font-size:.82rem}
 .ops-dl dd{margin:0;font-size:.92rem;color:var(--text-1)}
-.compact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
-.compact-row{display:flex;justify-content:space-between;text-align:left;background:var(--surface-1);border:1px solid var(--border-hair);border-radius:var(--r-md);padding:10px 12px;transition:border-color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease)}
-.compact-row:hover{border-color:var(--border-default);background:var(--surface-2)}
-.compact-row small{display:block;color:var(--text-3);font-weight:400;margin-top:2px}
 .spaced-card{margin-top:14px}
 
 /* Cards -- generic surface used by every domain. */
 .card{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:1.35rem;box-shadow:var(--shadow-sm)}
 .card-title{font:var(--text-caption);color:var(--text-3);margin-bottom:1rem}
 .flush-card{padding:0}
+/* Secondary-rail card modifier -- for genuinely secondary reference
+   panels next to a page's real compositional centerpiece (Routing's
+   plan-mapping/audit rail, Account Overview's aliases rail). Not for
+   a screen's primary content. */
+.rail-card{padding:1rem 1.1rem}
+.rail-card .card-title{margin-bottom:.7rem}
 @media (max-width:560px){.card{padding:1rem;border-radius:var(--r-md)}}
 
 /* Stat / metric tiles */
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:1.5rem}
 .stat-card{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-md);padding:1rem 1.1rem;transition:transform var(--dur-base) var(--ease),border-color var(--dur-base) var(--ease),background var(--dur-base) var(--ease)}
 .stat-card:hover{transform:translateY(-2px);border-color:var(--border-strong);background:var(--surface-2)}
-/* Applied by JS to individual metric tiles whose value is a real problem
-   (nonzero error/mismatch count), not to a whole section -- keeps the
-   signal proportional instead of tinting every card the same alarm color. */
-.stat-card--alert{border-color:var(--warning-soft-border);background:var(--warning-soft-bg)}
-.stat-card--alert .stat-value{color:var(--warning-strong)}
-.dashboard-section--alert .section-heading h2{color:var(--warning-strong)}
 .stat-label{font:var(--text-caption);color:var(--text-3);margin-bottom:6px}
 .stat-value{font:var(--text-metric)}
 .stat-sub{font:var(--text-meta);color:var(--text-3);margin-top:3px}
@@ -106,7 +102,6 @@ label:first-child{margin-top:0}
 @media (max-width:560px){.stats-grid{grid-template-columns:1fr}}
 
 /* Section heading */
-.dashboard-section{margin-bottom:1.75rem}
 .section-heading{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:14px}
 .section-heading h2{font:var(--text-title);margin-top:3px}
 .eyebrow{font:var(--text-caption);color:var(--accent-strong)}
@@ -139,10 +134,6 @@ label:first-child{margin-top:0}
 .device-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem}
 
 /* Timeline */
-.queue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.8rem}
-.queue-block{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:.9rem 1rem}
-.queue-block h4{margin:0 0 .6rem;font:var(--text-body-strong);font-size:.95rem}
-.queue-row{width:100%}
 .timeline-list{margin-top:.6rem}
 .timeline-day{margin-bottom:1rem}
 .timeline-day-title{font-weight:600;margin-bottom:.4rem;color:var(--text-2);font-size:.85rem}
@@ -158,7 +149,6 @@ label:first-child{margin-top:0}
 .tl-src-credential{background:var(--info-soft-bg);color:var(--info)}
 .tl-src-ownership{background:var(--accent-soft-bg);color:var(--accent-strong)}
 @media (max-width:560px){
-  .queue-grid{grid-template-columns:1fr}
   .timeline-item{grid-template-columns:auto 1fr}
   .timeline-time{grid-column:1/2}
   .timeline-body{grid-column:1/-1}

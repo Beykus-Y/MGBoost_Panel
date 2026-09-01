@@ -285,11 +285,12 @@ def test_operational_admin_tabs_render_under_csp_without_identifier_leaks():
             page.add_init_script("globalThis.__mgboost_xss = 0")
             page.goto(f"http://127.0.0.1:{server.server_port}/sub-admin/", wait_until="networkidle")
 
-            # Dashboard queues render and each row carries the payments tab hint.
+            # Dashboard attention queue renders and each row carries the payments tab hint.
             page.locator('.nav-item[data-page="dashboard"]').click()
-            page.wait_for_selector("#account-dashboard .queue-row", state="attached")
-            assert page.locator("#account-dashboard .queue-row").count() == 1
-            assert "169" in page.locator("#account-dashboard .queue-row").inner_text()
+            page.wait_for_selector("#account-dashboard .attention-item", state="attached")
+            assert page.locator("#account-dashboard .attention-item").count() == 1
+            assert "169" in page.locator("#account-dashboard .attention-item").inner_text()
+            assert page.locator("#account-dashboard .attention-item").get_attribute("data-open-tab") == "payments"
 
             # Account detail: payments tab lists lifecycle + immutable refs.
             page.locator('.nav-item[data-page="accounts"]').click()

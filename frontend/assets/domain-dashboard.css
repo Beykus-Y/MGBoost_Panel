@@ -1,28 +1,109 @@
 /* Dashboard (app/router.js loadDashboard: sys-stats/dash-nodes/
-   dash-node-traffic). Wave 9 architecture note: Dashboard is a
-   top-level IA item like Accounts/Migration, not grouped under any of
-   the five nav sections the other domain-*.css files map to. Rules
-   Dashboard only *shares* with other screens (stat-card, section-
-   heading, etc.) live in components.css instead.
+   dash-node-traffic; accounts.js loadDashboard: ops-strip/attention
+   panel/migration lane). Admin V2 command-center pass: the page is not
+   a grid of cards. It's four purpose-built zones --
+   1. `.ops-strip`      a single operational status line, top of page.
+   2. `.attention-panel` the one central object: everything that needs
+                          a human decision, as a flat list with a
+                          severity rail, not stat tiles.
+   3. `.migration-lane`  the transition period as a single horizontal
+                          lane with inline milestones, not a stats-grid.
+   4. `.telemetry-panel` infrastructure as a dense label/value rail,
+                          not three stacked stat-card boxes.
+   None of these are `.card` -- they're bespoke, page-owned surfaces. */
 
-   Admin V2 visual redesign, composition note: the page is no longer a
-   single stacked column (queues -> campaign -> health -> expiring ->
-   infra-stats -> nodes -> traffic, all full width, one after another).
-   It's now a main+rail split: `.dash-main` carries the operator's
-   actual work queue (what needs a decision), `.dash-rail` is a
-   persistent narrower column for routine infrastructure health that's
-   worth glancing at but never the reason someone opens this page. */
-
-.dash-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
-.dash-main{min-width:0}
-.dash-rail{
-  display:flex;flex-direction:column;gap:14px;
-  position:sticky;top:28px;
+/* --- 1. Operational strip --- */
+.ops-strip{
+  display:flex;align-items:center;gap:0;flex-wrap:wrap;
+  padding:12px 4px;margin-bottom:20px;
+  border-bottom:1px solid var(--border-hair);
 }
-.dash-rail-heading{padding-bottom:2px}
-.dash-rail-heading h3{font:var(--text-body-strong);font-size:13px;color:var(--text-1);margin-top:2px}
-.rail-card{padding:1rem 1.1rem}
-.rail-card .card-title{margin-bottom:.7rem}
+.ops-strip-item{display:flex;align-items:baseline;gap:7px;padding:0 18px;white-space:nowrap}
+.ops-strip-item:first-child{padding-left:0}
+.ops-strip-item--clickable{cursor:pointer;border-radius:var(--r-sm);transition:background var(--dur-fast) var(--ease)}
+.ops-strip-item--clickable:hover{background:var(--surface-2)}
+.ops-strip-label{font:var(--text-caption);color:var(--text-3)}
+.ops-strip-value{font:var(--text-body-strong);font-size:14px;font-variant-numeric:tabular-nums}
+.ops-strip-sep{width:1px;align-self:stretch;background:var(--border-hair);flex-shrink:0}
+.ops-strip-status{font:var(--text-body-strong);font-size:14px}
+.ops-strip-status .dot{width:8px;height:8px;margin-right:7px}
+
+/* --- 2. Attention panel: the central object --- */
+.attention-panel{margin-bottom:28px}
+.attention-panel-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:2px}
+.attention-panel-head h2{font:var(--text-title)}
+.attention-list{border-top:1px solid var(--border-subtle)}
+.attention-item{
+  display:flex;align-items:center;gap:14px;
+  padding:13px 6px 13px 14px;
+  border-bottom:1px solid var(--border-hair);
+  position:relative;cursor:pointer;
+  transition:background var(--dur-fast) var(--ease);
+}
+.attention-item:hover{background:var(--surface-1)}
+.attention-item::before{
+  content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;
+  background:var(--text-4);
+}
+.attention-item--danger::before{background:var(--danger)}
+.attention-item--warning::before{background:var(--warning)}
+.attention-item--info::before{background:var(--info)}
+.attention-main{flex:1;min-width:0}
+.attention-label{font:var(--text-body-strong);font-size:13.5px;color:var(--text-1)}
+.attention-meta{font:var(--text-meta);color:var(--text-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attention-value{font:var(--text-body-strong);font-size:14px;font-variant-numeric:tabular-nums;color:var(--text-1);flex-shrink:0}
+.attention-item--danger .attention-value{color:var(--danger-strong)}
+.attention-item--warning .attention-value{color:var(--warning-strong)}
+.attention-empty{padding:22px 6px;color:var(--text-3);font-size:13px;border-top:1px solid var(--border-subtle)}
+
+/* --- 3. Migration lane --- */
+.migration-lane{margin-bottom:28px}
+.lane-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:14px}
+.lane-title{font:var(--text-title);margin-top:2px}
+.lane-track{position:relative;height:10px;background:var(--surface-2);border:1px solid var(--border-hair);border-radius:var(--r-pill);overflow:visible;margin-bottom:18px}
+.lane-fill{position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,var(--accent-dim),var(--accent-strong));overflow:hidden}
+.lane-marker{
+  position:absolute;top:50%;width:14px;height:14px;border-radius:50%;
+  background:var(--canvas);border:3px solid var(--accent-strong);
+  transform:translate(-50%,-50%);box-shadow:0 0 0 4px hsl(var(--accent-h) 70% 55% / .18);
+}
+.lane-milestones{display:flex;flex-wrap:wrap}
+.lane-milestone{flex:1 1 140px;padding:0 18px;border-left:1px solid var(--border-hair)}
+.lane-milestone:first-child{padding-left:0;border-left:0}
+.lane-milestone-value{display:block;font:var(--text-metric);font-size:21px}
+.lane-milestone-label{display:block;font:var(--text-meta);color:var(--text-3);margin-top:2px}
+.lane-milestone-sub{display:block;font:var(--text-caption);color:var(--text-4);margin-top:1px;text-transform:none;letter-spacing:0}
+
+/* --- Expiring subscriptions: de-emphasized secondary ticker below the
+   two primary zones, not another stat-tile section. --- */
+.expiry-lane-head{margin-bottom:10px}
+.expiry-ticker{border-top:1px solid var(--border-hair)}
+.expiry-ticker-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  width:100%;text-align:left;padding:9px 4px;border-bottom:1px solid var(--border-hair);
+  background:transparent;border-left:0;border-right:0;border-radius:0;
+}
+.expiry-ticker-row:hover{background:var(--surface-1)}
+.expiry-ticker-row small{display:block;color:var(--text-3);font-weight:400;margin-top:1px}
+
+/* --- 4. Telemetry rail: infrastructure as a dense label/value list. --- */
+.telemetry-panel{position:sticky;top:28px}
+.telemetry-panel-head{padding-bottom:10px}
+.telemetry-panel-head h3{font:var(--text-body-strong);font-size:13px;color:var(--text-1);margin-top:2px}
+.telemetry-list{display:flex;flex-direction:column}
+.telemetry-row{
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  padding:7px 2px;border-bottom:1px solid var(--border-hair);
+}
+.telemetry-row:last-child{border-bottom:0}
+.telemetry-label{display:flex;align-items:center;gap:6px;font:var(--text-meta);color:var(--text-3);flex-shrink:0;min-width:0}
+.telemetry-value{display:flex;flex-direction:column;align-items:flex-end;font:var(--text-body-strong);font-size:13px;font-variant-numeric:tabular-nums;color:var(--text-1);text-align:right;flex-shrink:0}
+.telemetry-value--positive{color:var(--success)}
+.telemetry-sub{font-size:10.5px;font-weight:400;color:var(--text-4);text-align:right}
+.telemetry-caption{font:var(--text-caption);color:var(--text-4);margin:14px 0 6px}
+.telemetry-list--nodes .telemetry-row{padding:7px 2px}
+.telemetry-node-name{font:var(--text-meta);color:var(--text-1);font-weight:600;flex-shrink:0}
+.telemetry-node-addr{font-family:var(--font-mono);font-size:10px;color:var(--text-4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .traffic-period-select{width:150px}
 /* Default hidden -- app/router.js's onTrafficPeriodChange toggles
@@ -31,33 +112,25 @@
    pattern as #app in shell.css. */
 .traffic-date-input{width:190px;display:none}
 .stat-value--positive{color:var(--success)}
-.dash-node-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-hair)}
-.dash-node-row:last-child{border-bottom:0}
-.dash-node-info{flex:1;min-width:0}
-.dash-node-name{font:var(--text-body-strong);font-size:12.5px}
-.dash-node-addr{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
-.dash-traffic-row{padding:8px 0;border-bottom:1px solid var(--border-hair)}
+.dash-traffic-row{padding:7px 2px;border-bottom:1px solid var(--border-hair)}
 .dash-traffic-row:last-child{border-bottom:0}
-.dash-traffic-header{display:flex;justify-content:space-between;font:var(--text-meta);font-size:11.5px;margin-bottom:5px}
+.dash-traffic-header{display:flex;justify-content:space-between;font:var(--text-meta);font-size:11px;margin-bottom:4px}
 .dash-traffic-empty{color:var(--text-3);font-size:12px;padding:.5rem 0}
 
-/* Rail stat tiles: single narrow column of compact rows instead of the
-   auto-fit grid used everywhere else -- this is the rail, not a
-   section that owns its own row. */
-.stats-grid--rail{grid-template-columns:1fr;gap:8px;margin-bottom:0}
-.stats-grid--rail .stat-card{padding:.7rem .85rem}
-.stats-grid--rail .stat-value{font-size:19px}
-.stats-grid--rail:hover .stat-card{transform:none}
+.dash-layout{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:32px;align-items:start}
+.dash-main{min-width:0}
 
 @media (max-width: 1100px){
   .dash-layout{grid-template-columns:1fr}
-  .dash-rail{position:static;flex-direction:row;flex-wrap:wrap;gap:12px}
-  .dash-rail-heading{width:100%}
-  .stats-grid--rail{flex:1 1 260px;grid-template-columns:repeat(2,1fr)}
-  .rail-card{flex:1 1 260px}
+  .telemetry-panel{position:static}
+  .lane-milestones{gap:12px 0}
+  .lane-milestone{flex:1 1 45%}
 }
 
 @media (max-width: 560px){
-  .dash-rail{flex-direction:column}
-  .stats-grid--rail{grid-template-columns:1fr}
+  .ops-strip{flex-direction:column;align-items:flex-start;gap:8px}
+  .ops-strip-sep{display:none}
+  .ops-strip-item{padding:0}
+  .lane-milestone{flex:1 1 100%;border-left:0;padding-left:0;padding-top:8px;border-top:1px solid var(--border-hair)}
+  .lane-milestone:first-child{border-top:0;padding-top:0}
 }

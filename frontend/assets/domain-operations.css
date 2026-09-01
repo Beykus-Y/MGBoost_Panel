@@ -23,11 +23,55 @@
 }
 @media (max-width:560px){.routing-rail{flex-direction:column}}
 
-.routing-main table{table-layout:fixed}
-.routing-main th:first-child,.routing-main td:first-child{width:26%}
-.routing-main th:nth-child(2),.routing-main td:nth-child(2){width:20%}
-.routing-main th:nth-child(3),.routing-main td:nth-child(3){width:16%}
-.routing-action-cell{white-space:normal;width:38%}
+.routing-meta{margin-bottom:14px}
+
+/* Routing as a membership editor: two visual pools, not a "host /
+   status / button" table. STANDARD pool on the left (current members
+   + hosts available to add), Excluded/WL pool on the right, visually
+   locked -- fail-closed hosts read as excluded-by-design, never as a
+   healthy, merely-unpopulated list. */
+.pool-board{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:start}
+.pool-zone{
+  border-radius:var(--r-xl);padding:1.4rem 1.5rem;
+  border:1px solid var(--border-subtle);
+}
+.pool-zone--standard{
+  background:linear-gradient(165deg,hsl(var(--accent-h) 55% 30% / .10),var(--surface-1) 55%);
+  border-color:var(--accent-soft-border);
+}
+.pool-zone--excluded{
+  background:repeating-linear-gradient(135deg,var(--surface-1),var(--surface-1) 10px,rgba(255,255,255,.012) 10px,rgba(255,255,255,.012) 20px);
+  border-style:dashed;opacity:.92;
+}
+.pool-zone-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:14px}
+.pool-zone-head h2{font:var(--text-title);font-size:17px;margin-top:2px}
+.pool-count{font:var(--text-caption);color:var(--text-3);white-space:nowrap}
+.pool-zone-sub{font:var(--text-caption);color:var(--text-3);margin:16px 0 10px}
+.pool-empty{font-size:12.5px;color:var(--text-3);padding:6px 0}
+
+.pool-chips{display:flex;flex-wrap:wrap;gap:8px}
+.pool-chip{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:8px 8px 8px 13px;border-radius:var(--r-pill);
+  font-family:var(--font-mono);font-size:12px;
+}
+.pool-chip--member{background:var(--accent-soft-bg);border:1px solid var(--accent-soft-border);color:var(--text-1)}
+.pool-chip-action{
+  display:flex;align-items:center;justify-content:center;
+  width:20px;height:20px;border-radius:50%;flex-shrink:0;
+  background:var(--surface-3);border:1px solid var(--border-default);color:var(--text-2);
+  font-family:var(--font-ui);font-weight:700;line-height:1;padding:0;min-height:0;
+}
+.pool-chip-action:hover{background:var(--danger-soft-bg);border-color:var(--danger-soft-border);color:var(--danger-strong)}
+.pool-chip--available{
+  cursor:pointer;background:var(--surface-2);border:1px dashed var(--border-strong);color:var(--text-2);
+  transition:border-color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);
+}
+.pool-chip--available:hover{border-color:var(--accent);border-style:solid;background:var(--accent-soft-bg);color:var(--text-1)}
+.pool-chip--available .pool-chip-action--add{background:transparent;border:0;color:var(--accent-strong);font-size:15px}
+.pool-chip--locked{background:var(--surface-2);border:1px solid var(--border-hair);color:var(--text-3);cursor:help}
+.pool-chip-lock{font-size:11px;opacity:.8}
+.pool-chip-tag{font-weight:600}
 
 .routing-events{list-style:none;margin:0;padding:0}
 .routing-events li{padding:8px 0;border-bottom:1px solid var(--border-hair);font-size:12.5px;color:var(--text-2)}

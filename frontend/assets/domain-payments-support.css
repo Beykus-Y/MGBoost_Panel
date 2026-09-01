@@ -43,21 +43,29 @@
 .stars-hint{font-size:12px;color:var(--text-3)}
 .stars-hint--tight{margin-top:8px}
 
-.tariff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.tariff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:16px}
 .tariff-card{
-  display:flex;flex-direction:column;gap:8px;
+  position:relative;display:flex;flex-direction:column;gap:6px;
   background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);
-  padding:1rem 1.1rem;transition:border-color var(--dur-base) var(--ease),transform var(--dur-base) var(--ease);
+  padding:1.1rem 1.1rem 1rem;transition:border-color var(--dur-base) var(--ease),transform var(--dur-base) var(--ease);
 }
 .tariff-card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
-.tariff-card--inactive{opacity:.55}
+.tariff-card--inactive{opacity:.5}
+.tariff-card--best{border-color:var(--success-soft-border);background:linear-gradient(165deg,var(--success-soft-bg),var(--surface-1) 60%)}
+.tariff-best-tag{
+  align-self:flex-start;font:var(--text-caption);letter-spacing:.04em;
+  color:var(--success-strong);background:var(--success-soft-bg);border:1px solid var(--success-soft-border);
+  border-radius:var(--r-pill);padding:2px 9px;margin-bottom:2px;text-transform:none;
+}
 .tariff-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .tariff-name{font:var(--text-body-strong);font-size:14px}
-.tariff-price{display:flex;align-items:baseline;gap:5px;font-variant-numeric:tabular-nums}
+.tariff-price{display:flex;align-items:baseline;gap:5px;font-variant-numeric:tabular-nums;margin-top:2px}
 .tariff-price-value{font:var(--text-metric);font-size:26px}
 .tariff-price-unit{font-size:16px}
-.tariff-duration{font:var(--text-meta);color:var(--text-3)}
-.tariff-delete-btn{align-self:flex-start;margin-top:4px;color:var(--text-3)}
+.tariff-price-rub{font:var(--text-caption);color:var(--text-4);text-transform:none;letter-spacing:0}
+.tariff-duration{display:flex;align-items:center;justify-content:space-between;gap:8px;font:var(--text-meta);color:var(--text-3);margin-top:6px;padding-top:8px;border-top:1px solid var(--border-hair)}
+.tariff-status-tag{font-size:10.5px;color:var(--text-4)}
+.tariff-delete-btn{align-self:flex-start;margin-top:6px;color:var(--text-3)}
 .tariff-add-card .card-title{margin-bottom:.85rem}
 
 .stars-add-row{margin-top:14px}

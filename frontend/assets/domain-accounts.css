@@ -41,13 +41,30 @@
 .segment-chip--warn.active{border-color:var(--warning-soft-border);background:var(--warning-soft-bg)}
 .segment-chip--warn.active .segment-count{background:var(--warning);color:#241701}
 
-.thead-group-row th{
-  position:static;top:auto;background:transparent;
-  padding:10px 14px 4px;border-bottom:0;
-  font-size:9.5px;color:var(--text-4);letter-spacing:.09em;text-align:center;
+/* Accounts master-list: not a <table>. Three zones per row -- identity
+   + lifecycle (who), subscription/device state (what), action/
+   attention (what next) -- separated by hairlines, not full box
+   borders. Rows are plain divs; no per-row card. */
+.master-row{
+  display:grid;grid-template-columns:minmax(200px,1.7fr) minmax(280px,2.6fr) minmax(140px,1fr);
+  gap:20px;align-items:center;
+  padding:13px 8px;border-bottom:1px solid var(--border-hair);
+  transition:background var(--dur-fast) var(--ease);
 }
-.thead-group-row th:first-child{border:0}
-.thead-group-row th[colspan]{border-bottom:1px solid var(--border-hair);padding-bottom:6px}
+.master-row:not(.master-row--head):hover{background:var(--surface-1);cursor:pointer}
+.master-row--head{
+  padding:0 8px 10px;border-bottom:1px solid var(--border-subtle);
+  font:var(--text-caption);color:var(--text-4);
+}
+.master-list{margin-bottom:8px}
+.master-list .master-row:last-child{border-bottom:0}
+.ml-zone{min-width:0}
+.ml-lifecycle{margin-left:40px}
+.ml-state-line{display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap}
+.ml-state-line:first-child{margin-top:0}
+.ml-state-line--meta{font:var(--text-meta);color:var(--text-3)}
+.ml-sub{font:var(--text-meta);color:var(--text-3)}
+.ml-zone--action{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
 
 /* Accounts list identity cell: monogram avatar + name/meta stack, so the
    "who" reads first instead of every cell competing at the same weight. */
@@ -59,11 +76,33 @@
   color:var(--text-2);font-weight:650;font-size:12.5px;
 }
 .identity-text{min-width:0}
-td.card-collapse-title>.cell-sub{margin-left:40px}
-@media (max-width:560px){td.card-collapse-title>.cell-sub{margin-left:0}}
 
-.account-subtitle{font:var(--text-meta);color:var(--text-3);margin:4px 0 0 116px}
-.back-button{margin-right:12px}
+/* Account workspace: a sticky identity header that stays in control of
+   the screen as the operator scrolls through tab content, instead of a
+   page-title that scrolls away after the first screenful. */
+.account-head{
+  position:sticky;top:0;z-index:10;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  margin:0 -4px 18px;padding:14px 4px 16px;
+  background:linear-gradient(180deg,var(--canvas) 82%,transparent);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border-hair);
+}
+.account-head .back-button{flex-shrink:0}
+.account-head-avatar{
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  width:42px;height:42px;border-radius:var(--r-lg);
+  background:linear-gradient(155deg,var(--surface-3),var(--surface-2));
+  border:1px solid var(--border-subtle);
+  color:var(--text-1);font-weight:700;font-size:17px;
+}
+.account-head-text{min-width:0}
+.account-head-title{font:var(--text-title);line-height:1.2}
+.account-head-subtitle{font:var(--text-meta);color:var(--text-3);margin-top:2px}
+.account-head-stats{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto}
+@media (max-width:900px){.account-head-stats{margin-left:0;width:100%}}
+
+.back-button{margin-right:0}
 .filter-caption{min-height:18px;color:var(--text-3);font:var(--text-meta);margin:-8px 0 10px}
 /* device_ops.js (Telegram/Ownership tab) toggles this on rows that
    shouldn't render for the current ownership state. */
@@ -104,32 +143,21 @@ td.card-collapse-title>.cell-sub{margin-left:40px}
 /* Grace-period progress card (Migration tab). */
 .grace-progress{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:1.35rem}
 
-/* Accounts list: card-collapse below ~560px instead of forcing the
-   8-column table to scroll (redesign plan section 11/19.7 -- Accounts
-   and Legacy Transitions both get card-collapse, being lists of
-   similar rows). Scoped to rows accounts.js marks with
-   .card-collapse-row/data-label, not to every table on the page. */
+/* Accounts master-list at narrow widths: the 3-zone grid collapses to
+   a single stacked column and each row becomes its own quiet card
+   (the row needs a visible boundary once it's no longer aligned into
+   columns with its neighbours). */
 @media (max-width: 560px){
   .device-grid{grid-template-columns:1fr}
   .credential-row{flex-direction:column}
-  .account-subtitle{margin-left:0}
+  .account-head{position:static;backdrop-filter:none}
 
-  #page-accounts .table-wrap{overflow-x:visible}
-  #page-accounts table{min-width:0}
-  #page-accounts thead{display:none}
-  #page-accounts tbody,#page-accounts tr.card-collapse-row{display:block}
-  #page-accounts tr.card-collapse-row{
-    background:var(--bg2);border:0.5px solid var(--border);border-radius:10px;
+  .master-row--head{display:none}
+  .master-row{
+    grid-template-columns:1fr;gap:10px;
+    background:var(--surface-1);border:1px solid var(--border-hair);border-radius:var(--r-md);
     padding:12px;margin-bottom:8px;
   }
-  #page-accounts tr.card-collapse-row td{
-    display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
-    padding:4px 0;border-bottom:0;white-space:normal;min-width:0;
-  }
-  #page-accounts tr.card-collapse-row td[data-label]::before{
-    content:attr(data-label);color:var(--text3);font-size:11px;flex-shrink:0;
-  }
-  #page-accounts tr.card-collapse-row td.card-collapse-title{
-    display:block;padding-bottom:8px;margin-bottom:4px;border-bottom:0.5px solid var(--border);
-  }
+  .ml-lifecycle{margin-left:0}
+  .ml-zone--action{flex-direction:row;align-items:center;justify-content:flex-start;flex-wrap:wrap}
 }

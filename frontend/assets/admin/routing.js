@@ -24,48 +24,63 @@ export function createRoutingUi({ adminFetch, getJson, html, renderHtml, toast, 
     return html`<span class="badge ${hostClassBadgeClass(cls)}">${CLASS_LABELS[cls] || cls}</span>`;
   }
 
-  function hostRow(host) {
-    const blocked = host.classification !== 'STANDARD';
-    const reason = host.classification === 'WL_EXACT'
+  function wlReason(host) {
+    return host.classification === 'WL_EXACT'
       ? 'Доказанный WL-хост: попадание в STANDARD запрещено на бэкенде (exact PH0-05 allowlist).'
-      : host.classification === 'WL_SUSPECT'
-        ? 'wl-подобное имя отсутствует в exact-топологии — переклассификация fail-closed.'
-        : '';
-    return html`<tr>
-      <td><strong>${host.inbound_tag}</strong></td>
-      <td>${classBadge(host.classification)}</td>
-      <td>${host.in_standard ? html`<span class="badge badge-green">в STANDARD</span>` : html`<span class="badge badge-gray">нет</span>`}</td>
-      <td class="routing-action-cell">
-        ${blocked ? html`<button disabled title="${reason}">Недоступно</button>
-          <div class="cell-sub">${reason}</div>`
-          : host.in_standard
-            ? html`<button class="quiet small" data-action="routing-host-op" data-routing-op="REMOVE" data-tag="${host.inbound_tag}">Убрать из STANDARD</button>`
-            : html`<button class="primary" data-action="routing-host-op" data-routing-op="ADD" data-tag="${host.inbound_tag}">Добавить в STANDARD</button>`}
-      </td>
-    </tr>`;
+      : 'wl-подобное имя отсутствует в exact-топологии — переклассификация fail-closed.';
+  }
+
+  function memberChip(host) {
+    return html`<div class="pool-chip pool-chip--member">
+      <span class="pool-chip-tag">${host.inbound_tag}</span>
+      <button class="pool-chip-action" data-action="routing-host-op" data-routing-op="REMOVE" data-tag="${host.inbound_tag}" title="Убрать из STANDARD">−</button>
+    </div>`;
+  }
+
+  function availableChip(host) {
+    return html`<div class="pool-chip pool-chip--available" data-action="routing-host-op" data-routing-op="ADD" data-tag="${host.inbound_tag}">
+      <span class="pool-chip-tag">${host.inbound_tag}</span>
+      <span class="pool-chip-action pool-chip-action--add" title="Добавить в STANDARD">+</span>
+    </div>`;
+  }
+
+  function lockedChip(host) {
+    return html`<div class="pool-chip pool-chip--locked" title="${wlReason(host)}">
+      <span class="pool-chip-lock">⛔</span>
+      <span class="pool-chip-tag">${host.inbound_tag}</span>
+      ${classBadge(host.classification)}
+    </div>`;
   }
 
   function render() {
     const box = document.getElementById('routing-box');
     if (!state) { renderHtml(box, html`<p class="muted">Загрузка…</p>`); return; }
     const topo = state.topology || {};
-    const rows = (state.hosts || []).map(hostRow);
+    const hosts = state.hosts || [];
+    const members = hosts.filter(h => h.classification === 'STANDARD' && h.in_standard);
+    const available = hosts.filter(h => h.classification === 'STANDARD' && !h.in_standard);
+    const excluded = hosts.filter(h => h.classification !== 'STANDARD');
     const events = (state.events || []).slice(0, 12).map(ev => html`<li>
       <strong>${ev.event_type}</strong> ${ev.inbound_tag ? html`· ${ev.inbound_tag}` : ''}
       <span class="cell-sub">${ev.actor_ref || ev.actor_type} · ${formatTimestamp(ev.created_at)} · ${ev.reason}</span>
     </li>`);
     renderHtml(box, html`
       ${topo.ok === false ? html`<div class="notice notice-amber">Топология сейчас нездорова (${topo.error_class || 'mismatch'}) — мутации роутинга заблокированы fail-closed. Обновите страницу позже.</div>` : ''}
+      <div class="routing-meta cell-sub">profile row_version: ${state.profile_row_version ?? '—'} · топология проверена: ${topo.checked_at ? formatTimestamp(topo.checked_at) : '—'}</div>
       <div class="routing-layout">
-        <div class="card routing-main">
-          <div class="card-title">Live hosts → STANDARD membership
-            <span class="cell-sub"> profile row_version: ${state.profile_row_version ?? '—'} · топология проверена: ${topo.checked_at ? formatTimestamp(topo.checked_at) : '—'}</span>
+        <div class="routing-main">
+          <div class="pool-board">
+            <section class="pool-zone pool-zone--standard">
+              <div class="pool-zone-head"><div><span class="eyebrow">Delivery profile</span><h2>STANDARD pool</h2></div><span class="pool-count">${members.length} хост${members.length===1?'':'ов'}</span></div>
+              <div class="pool-chips">${members.length?members.map(memberChip):html`<div class="pool-empty">Пул пуст</div>`}</div>
+              ${available.length?html`<div class="pool-zone-sub">Доступны для добавления</div><div class="pool-chips">${available.map(availableChip)}</div>`:''}
+            </section>
+            <section class="pool-zone pool-zone--excluded">
+              <div class="pool-zone-head"><div><span class="eyebrow">Fail-closed</span><h2>Excluded · WL</h2></div><span class="pool-count">${excluded.length} хост${excluded.length===1?'':'ов'}</span></div>
+              <div class="pool-chips">${excluded.length?excluded.map(lockedChip):html`<div class="pool-empty">Нет WL-хостов в топологии</div>`}</div>
+              ${!topo.ok?html`<p class="cell-sub">Состав hosts показан по последним данным; для мутаций требуется свежая успешная проверка топологии.</p>`:''}
+            </section>
           </div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Inbound tag</th><th>Классификация</th><th>STANDARD</th><th>Действие</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table></div>
-          ${!topo.ok ? html`<p class="cell-sub">Состав hosts показан по последним данным; для мутаций требуется свежая успешная проверка топологии.</p>` : ''}
         </div>
         <aside class="routing-rail">
           <div class="card rail-card">
