@@ -288,20 +288,16 @@ async function loadDashboard(){
   const label=document.getElementById('traffic-period-label');
   if(label)label.textContent=period.label;
   renderHtml(document.getElementById('sys-stats'),html`
-    <div class="stat-card"><div class="stat-label">Пользователи</div><div class="stat-value">${sys.total_user}</div><div class="stat-sub">${sys.users_active} активных · ${sys.users_expired} истекших</div></div>
-    <div class="stat-card"><div class="stat-label">Онлайн</div><div class="stat-value stat-value--positive">${sys.online_users}</div><div class="stat-sub">прямо сейчас</div></div>
-    <div class="stat-card"><div class="stat-label">Входящий трафик</div><div class="stat-value">${fmt(sys.incoming_bandwidth)}</div><div class="stat-sub">${fmt(sys.incoming_bandwidth_speed)}/с</div></div>
-    <div class="stat-card"><div class="stat-label">Исходящий трафик</div><div class="stat-value">${fmt(sys.outgoing_bandwidth)}</div><div class="stat-sub">${fmt(sys.outgoing_bandwidth_speed)}/с</div></div>
-    <div class="stat-card"><div class="stat-label">CPU</div><div class="stat-value">${sys.cpu_usage.toFixed(1)}%</div><div class="stat-sub">${sys.cpu_cores} ядр</div></div>
-    <div class="stat-card"><div class="stat-label">RAM</div><div class="stat-value">${mem}%</div><div class="stat-sub">${fmt(sys.mem_used)} / ${fmt(sys.mem_total)}</div></div>
+    <div class="telemetry-row"><span class="telemetry-label">Пользователи</span><span class="telemetry-value">${sys.total_user}<span class="telemetry-sub">${sys.users_active} акт. · ${sys.users_expired} ист.</span></span></div>
+    <div class="telemetry-row"><span class="telemetry-label">Онлайн</span><span class="telemetry-value telemetry-value--positive">${sys.online_users}</span></div>
+    <div class="telemetry-row"><span class="telemetry-label">Входящий</span><span class="telemetry-value">${fmt(sys.incoming_bandwidth)}<span class="telemetry-sub">${fmt(sys.incoming_bandwidth_speed)}/с</span></span></div>
+    <div class="telemetry-row"><span class="telemetry-label">Исходящий</span><span class="telemetry-value">${fmt(sys.outgoing_bandwidth)}<span class="telemetry-sub">${fmt(sys.outgoing_bandwidth_speed)}/с</span></span></div>
+    <div class="telemetry-row"><span class="telemetry-label">CPU</span><span class="telemetry-value">${sys.cpu_usage.toFixed(1)}%<span class="telemetry-sub">${sys.cpu_cores} ядр</span></span></div>
+    <div class="telemetry-row"><span class="telemetry-label">RAM</span><span class="telemetry-value">${mem}%<span class="telemetry-sub">${fmt(sys.mem_used)}/${fmt(sys.mem_total)}</span></span></div>
   `);
   renderHtml(document.getElementById('dash-nodes'),html`${nodes.map(n=>html`
-    <div class="dash-node-row">
-      <span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span>
-      <div class="dash-node-info">
-        <div class="dash-node-name">${n.name}</div>
-        <div class="dash-node-addr">${n.address} · xray ${n.xray_version||'?'}</div>
-      </div>
+    <div class="telemetry-row">
+      <span class="telemetry-label"><span class="dot ${n.status==='connected'?'dot-green':'dot-red'}"></span><span class="telemetry-node-name">${n.name}</span><span class="telemetry-node-addr"> ${n.address}</span></span>
       <span class="badge ${n.status==='connected'?'badge-green':'badge-red'}">${n.status==='connected'?'ок':'офф'}</span>
     </div>
   `)}`);
@@ -416,6 +412,14 @@ document.addEventListener('click',event=>{
     case'delete-stars-tariff':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.deleteStarsTariff(numericId));break;
     case'stars-payment-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsPaymentAction(numericId,el.dataset.paymentAction));break;
     case'stars-orphan-action':work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.starsOrphanAction(numericId,el.dataset.paymentAction));break;
+    case'stars-status-filter':{
+      const status=el.dataset.status||'';
+      el.parentElement.querySelectorAll('.segment-chip').forEach(chip=>chip.classList.toggle('active',chip===el));
+      const hiddenSelect=document.getElementById('stars-payments-filter');
+      if(hiddenSelect)hiddenSelect.value=status;
+      work=withModule(STARS_UI_READY,'Telegram Stars','stars',ui=>ui.loadStarsPayments(status||undefined));
+      break;
+    }
     case'routing-host-op':work=withModule(ROUTING_UI_READY,'Роутинг хостов','routing',ui=>ui.handleRoutingClick(el));break;
     case'open-legacy-transition':work=withModule(LEGACY_TRANSITIONS_READY,'Легаси-переходы','legacy-transitions',ui=>ui.handleQueueClick(el));break;
     case'close-modal':closeModal(el.dataset.target);break;

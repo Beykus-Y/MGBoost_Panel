@@ -10,38 +10,102 @@
    CSS at all, rendering with default browser bullets/margins
    inconsistent with the dark theme. Relocated here in Wave 9 (was
    temporarily in legacy.css, unowned). */
+/* Routing composition: primary host-membership table on the left, plan
+   mapping + immutable audit as a persistent narrower rail on the right
+   -- not three equal-weight cards stacked one after another. */
+.routing-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start}
+.routing-main{min-width:0}
+.routing-rail{display:flex;flex-direction:column;gap:14px;position:sticky;top:28px}
+@media (max-width:1100px){
+  .routing-layout{grid-template-columns:1fr}
+  .routing-rail{position:static;flex-direction:row;flex-wrap:wrap}
+  .routing-rail .rail-card{flex:1 1 280px}
+}
+@media (max-width:560px){.routing-rail{flex-direction:column}}
+
+.routing-meta{margin-bottom:14px}
+
+/* Routing as a membership editor: two visual pools, not a "host /
+   status / button" table. STANDARD pool on the left (current members
+   + hosts available to add), Excluded/WL pool on the right, visually
+   locked -- fail-closed hosts read as excluded-by-design, never as a
+   healthy, merely-unpopulated list. */
+.pool-board{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:start}
+.pool-zone{
+  border-radius:var(--r-xl);padding:1.4rem 1.5rem;
+  border:1px solid var(--border-subtle);
+}
+.pool-zone--standard{
+  background:linear-gradient(165deg,hsl(var(--accent-h) 55% 30% / .10),var(--surface-1) 55%);
+  border-color:var(--accent-soft-border);
+}
+.pool-zone--excluded{
+  background:repeating-linear-gradient(135deg,var(--surface-1),var(--surface-1) 10px,rgba(255,255,255,.012) 10px,rgba(255,255,255,.012) 20px);
+  border-style:dashed;opacity:.92;
+}
+.pool-zone-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:14px}
+.pool-zone-head h2{font:var(--text-title);font-size:17px;margin-top:2px}
+.pool-count{font:var(--text-caption);color:var(--text-3);white-space:nowrap}
+.pool-zone-sub{font:var(--text-caption);color:var(--text-3);margin:16px 0 10px}
+.pool-empty{font-size:12.5px;color:var(--text-3);padding:6px 0}
+
+.pool-chips{display:flex;flex-wrap:wrap;gap:8px}
+.pool-chip{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:8px 8px 8px 13px;border-radius:var(--r-pill);
+  font-family:var(--font-mono);font-size:12px;
+}
+.pool-chip--member{background:var(--accent-soft-bg);border:1px solid var(--accent-soft-border);color:var(--text-1)}
+.pool-chip-action{
+  display:flex;align-items:center;justify-content:center;
+  width:20px;height:20px;border-radius:50%;flex-shrink:0;
+  background:var(--surface-3);border:1px solid var(--border-default);color:var(--text-2);
+  font-family:var(--font-ui);font-weight:700;line-height:1;padding:0;min-height:0;
+}
+.pool-chip-action:hover{background:var(--danger-soft-bg);border-color:var(--danger-soft-border);color:var(--danger-strong)}
+.pool-chip--available{
+  cursor:pointer;background:var(--surface-2);border:1px dashed var(--border-strong);color:var(--text-2);
+  transition:border-color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);
+}
+.pool-chip--available:hover{border-color:var(--accent);border-style:solid;background:var(--accent-soft-bg);color:var(--text-1)}
+.pool-chip--available .pool-chip-action--add{background:transparent;border:0;color:var(--accent-strong);font-size:15px}
+.pool-chip--locked{background:var(--surface-2);border:1px solid var(--border-hair);color:var(--text-3);cursor:help}
+.pool-chip-lock{font-size:11px;opacity:.8}
+.pool-chip-tag{font-weight:600}
+
 .routing-events{list-style:none;margin:0;padding:0}
-.routing-events li{padding:6px 0;border-bottom:0.5px solid var(--border);font-size:13px}
+.routing-events li{padding:8px 0;border-bottom:1px solid var(--border-hair);font-size:12.5px;color:var(--text-2)}
 .routing-events li:last-child{border-bottom:0}
+.routing-events li strong{color:var(--text-1)}
 
 .nodes-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:1.5rem}
-.node-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:1rem;transition:transform .15s,border-color .15s,background .15s}
-.node-card:hover{transform:translateY(-1px);border-color:var(--border2)}
-.node-name{font-size:14px;font-weight:500;margin-bottom:4px}
-.node-addr{font-size:11px;color:var(--text2);margin-bottom:8px;font-family:monospace}
-.node-stats{display:flex;gap:12px;font-size:12px;color:var(--text2)}
+.node-card{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:1.1rem;transition:transform var(--dur-base) var(--ease),border-color var(--dur-base) var(--ease),background var(--dur-base) var(--ease)}
+.node-card:hover{transform:translateY(-2px);border-color:var(--border-strong)}
+.node-name{font:var(--text-body-strong);font-size:14px;margin-bottom:4px}
+.node-addr{font-size:11px;color:var(--text-3);margin-bottom:10px;font-family:var(--font-mono)}
+.node-stats{display:flex;gap:14px;font:var(--text-meta)}
 .node-card-header{display:flex;align-items:center;gap:6px;margin-bottom:4px}
 .node-card-header .node-name{flex:1}
 .node-icon-btn{padding:2px 8px;font-size:12px}
-.node-badges{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
-.node-billing-block{margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border);font-size:12px;color:var(--text2)}
+.node-badges{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0}
+.node-billing-block{margin-top:11px;padding-top:11px;border-top:1px solid var(--border-hair);font:var(--text-meta)}
 .node-billing-row{display:flex;justify-content:space-between;gap:8px}
-.node-billing-row b{color:var(--text)}
-.node-billing-note{margin-top:4px;color:var(--text2)}
-.node-card-footer-btn{width:100%;margin-top:10px}
+.node-billing-row b{color:var(--text-1)}
+.node-billing-note{margin-top:4px;color:var(--text-3)}
+.node-card-footer-btn{width:100%;margin-top:11px}
 .node-traffic-name{font-weight:500}
-.node-traffic-sub{font-size:11px;color:var(--text2)}
+.node-traffic-sub{font-size:11px;color:var(--text-3)}
 .text-right{text-align:right}
-.node-modal-intro{font-size:13px;color:var(--text2);margin-bottom:1rem}
+.node-modal-intro{font-size:13px;color:var(--text-2);margin-bottom:1rem}
 .node-input-spaced{margin-bottom:12px}
-.node-field-hint{font-size:11px;color:var(--text3);margin-top:4px;margin-bottom:10px}
+.node-field-hint{font-size:11px;color:var(--text-3);margin-top:4px;margin-bottom:10px}
 .node-id-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:1rem}
 .node-quiet-hours-section{margin-top:1rem}
-.node-section-label{font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px}
-.node-section-hint{font-size:12px;color:var(--text2);margin-bottom:8px}
+.node-section-label{font:var(--text-caption);color:var(--text-3);margin-bottom:8px}
+.node-section-hint{font-size:12px;color:var(--text-2);margin-bottom:8px}
 .quiet-hour-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
 .quiet-hour-input{width:100px}
-.quiet-hour-sep{font-size:12px;color:var(--text2)}
+.quiet-hour-sep{font-size:12px;color:var(--text-2)}
 
 /* Legacy Transitions queue (legacy_transitions.js): card-collapse below
    ~560px instead of forcing a wide table to scroll -- per redesign plan

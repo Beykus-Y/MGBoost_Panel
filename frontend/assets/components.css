@@ -1,38 +1,56 @@
 /* Shared, cross-domain UI components: buttons, form controls, table,
-   badges/dot/notice, tabs, loading, toast, modal (unified visual contract
-   for both modal systems), progress/traffic bars. Consumed by every
-   domain screen -- do not add domain-specific layout here (see
-   domain-*.css once those exist). */
+   badges/dot/notice, tabs, loading, toast, modal, progress/traffic bars.
+   Consumed by every domain screen. */
 
-button{cursor:pointer;font-family:inherit;font-size:13px;border:0.5px solid var(--border2);background:var(--bg3);color:var(--text);border-radius:8px;padding:7px 14px;min-height:34px;white-space:nowrap;transition:background 0.15s,border-color 0.15s}
-button:hover{background:var(--bg4);border-color:var(--border2)}
-button:disabled{opacity:.5;cursor:default;pointer-events:none}
-/* Wave 8 contrast fix: #aaaaff on --accent2 measured 4.19:1, just under
-   WCAG AA's 4.5:1 for normal-size text (flagged as a risk in the
-   original audit, section 12). #b3b3ff clears it at 4.57:1. */
-button.primary{background:var(--accent2);border-color:var(--accent);color:#b3b3ff}
-button.primary:hover{background:var(--accent);color:#fff}
-button.danger{background:var(--red2);border-color:#aa3a3a;color:#ffaaaa}
-button.danger:hover{background:#7a1a1a}
-button.success{background:var(--green2);border-color:var(--green3);color:#aaffcc}
-button.small{padding:.28rem .6rem;font-size:.8rem}
-.copy-small{padding:4px 7px;min-height:26px;font-size:10px}
+/* --- Buttons: real hierarchy -- primary / secondary(default) / quiet /
+   danger / success / compact utility. --- */
+button{
+  cursor:pointer;font-family:inherit;font:var(--text-body-strong);
+  border:1px solid var(--border-default);background:var(--surface-2);color:var(--text-1);
+  border-radius:var(--r-md);padding:8px 15px;min-height:36px;white-space:nowrap;
+  transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);
+}
+button:hover{background:var(--surface-3);border-color:var(--border-strong)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.45;cursor:default;pointer-events:none}
 
-input,select,textarea{background:var(--bg);border:0.5px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;padding:8px 12px;min-height:34px;width:100%;outline:none;transition:border-color 0.15s}
-input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+button.primary{
+  background:linear-gradient(155deg,var(--accent-strong),var(--accent-dim));
+  border-color:hsl(var(--accent-h) 70% 55% / .5);color:#0a0a12;font-weight:650;
+  box-shadow:0 6px 18px hsl(var(--accent-h) 70% 50% / .28);
+}
+button.primary:hover{filter:brightness(1.08);box-shadow:0 8px 22px hsl(var(--accent-h) 70% 50% / .38)}
+
+button.quiet{background:transparent;border-color:transparent;color:var(--text-2)}
+button.quiet:hover{background:var(--surface-2);color:var(--text-1);border-color:var(--border-subtle)}
+
+button.danger{background:var(--danger-soft-bg);border-color:var(--danger-soft-border);color:var(--danger-strong)}
+button.danger:hover{background:rgba(255,93,108,.22)}
+button.success{background:var(--success-soft-bg);border-color:var(--success-soft-border);color:var(--success-strong)}
+button.success:hover{background:rgba(62,224,138,.22)}
+
+button.small{padding:5px 11px;font-size:12px;min-height:29px;border-radius:var(--r-sm)}
+.copy-small{padding:4px 9px;min-height:27px;font-size:10.5px;border-radius:var(--r-sm);color:var(--text-2)}
+
+input,select,textarea{
+  background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-md);
+  color:var(--text-1);font-family:inherit;font-size:13.5px;padding:9px 12px;min-height:36px;width:100%;outline:none;
+  transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease);
+}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px hsl(var(--accent-h) 90% 65% / .15)}
 input:disabled,select:disabled,textarea:disabled{opacity:.5;cursor:default}
-select option{background:var(--bg2)}
-label{font-size:12px;color:var(--text2);display:block;margin-bottom:4px;margin-top:10px}
+select option{background:var(--surface-2)}
+label{font:var(--text-meta);color:var(--text-2);display:block;margin-bottom:5px;margin-top:12px}
 label:first-child{margin-top:0}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.search-box{background:var(--bg3);border:0.5px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-size:13px;width:220px;min-width:220px;outline:none}
+.search-box{background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-md);padding:8px 13px;color:var(--text-1);font-size:13.5px;width:240px;min-width:220px;outline:none}
+.search-box:focus{border-color:var(--accent);box-shadow:0 0 0 3px hsl(var(--accent-h) 90% 65% / .15)}
 .input-narrow{max-width:110px}
 .input-uppercase{text-transform:uppercase}
 .plain-list{list-style:none;margin:0;padding:0}
-.search-box:focus{border-color:var(--accent)}
 .ops-form{display:flex;flex-direction:column;gap:.65rem;margin-top:.5rem}
-.ops-form label{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:var(--text2)}
-.ops-form input,.ops-form select,.ops-form textarea{padding:.45rem .55rem;border:1px solid var(--border);border-radius:8px;font:inherit;background:var(--bg);color:var(--text)}
+.ops-form label{display:flex;flex-direction:column;gap:.3rem;font:var(--text-meta)}
+.ops-form input,.ops-form select,.ops-form textarea{padding:.5rem .6rem;border:1px solid var(--border-default);border-radius:var(--r-md);font:inherit;background:var(--surface-1);color:var(--text-1)}
 .ops-form.grid-two{display:grid;grid-template-columns:1fr 1fr;gap:.65rem}
 .ops-form .wide{grid-column:1/-1}
 .ops-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem}
@@ -40,213 +58,204 @@ label:first-child{margin-top:0}
 .ops-checkline{display:flex;align-items:center;gap:.45rem;font-size:.88rem}
 .ops-submit-row{width:100%;text-align:right}
 .ops-consequences{margin:.4rem 0 .6rem 1.1rem;font-size:.9rem;display:flex;flex-direction:column;gap:.25rem}
-.ops-preview h4{margin:.2rem 0 .4rem}
+.ops-preview h4{margin:.2rem 0 .4rem;font:var(--text-body-strong)}
 
-/* Key/value primitives -- shared across Account workspace, Operations
-   and Technical/Legacy screens. `.detail-grid` is kept as an alias of
-   `.kv-grid` (identical rule) because ops_health.js still renders it
-   directly; drop the alias once every consumer has moved to `.kv-grid`
-   (tracked per-wave, see plan section 15). `.kv-grid--copyable` /
-   `.kv-row--copyable` replace the old `.technical-fields`/
-   `.technical-field` names (single consumer, renamed outright). */
-.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
-.detail-item{background:var(--bg4);border-radius:8px;padding:10px 12px}
-.detail-label{font-size:11px;color:var(--text2);margin-bottom:2px}
-.detail-value{font-size:13px;font-weight:500}
-.kv-grid--copyable{display:grid;gap:1px;margin-top:10px;border:.5px solid var(--border);border-radius:8px;overflow:hidden}
-.kv-row--copyable{display:grid;grid-template-columns:minmax(145px,190px) minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--bg3);padding:8px 10px}
-.kv-row--copyable>span{color:var(--text2);font-size:11px}
-.kv-row--copyable code{overflow-wrap:anywhere;white-space:normal;color:var(--text);font-size:11px}
-.detail-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:9px;font-size:12px;color:var(--text2)}
-.detail-line strong{color:var(--text);font-family:monospace;font-size:11px}
-.list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:.5px solid var(--border)}
+/* Key/value primitives */
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+.detail-item{background:var(--surface-2);border:1px solid var(--border-hair);border-radius:var(--r-md);padding:11px 13px;transition:border-color var(--dur-fast) var(--ease)}
+.detail-item:hover{border-color:var(--border-subtle)}
+.detail-label{font:var(--text-caption);color:var(--text-3);margin-bottom:5px}
+.detail-value{font:var(--text-body-strong);font-size:14px;color:var(--text-1)}
+.kv-grid--copyable{display:grid;gap:1px;margin-top:10px;border:1px solid var(--border-subtle);border-radius:var(--r-md);overflow:hidden;background:var(--border-hair)}
+.kv-row--copyable{display:grid;grid-template-columns:minmax(145px,190px) minmax(0,1fr) auto;align-items:center;gap:10px;background:var(--surface-1);padding:9px 12px}
+.kv-row--copyable>span{color:var(--text-3);font:var(--text-caption);text-transform:none;letter-spacing:0}
+.kv-row--copyable code{overflow-wrap:anywhere;white-space:normal;color:var(--text-2);font-family:var(--font-mono);font-size:11.5px}
+.detail-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px;font:var(--text-meta)}
+.detail-line strong{color:var(--text-1);font-family:var(--font-mono);font-size:11.5px;font-weight:500}
+.list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border-hair)}
 .list-row:last-child{border-bottom:0}
-.ops-dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:.3rem .9rem;margin:.5rem 0}
-.ops-dl dt{color:var(--text3);font-size:.82rem}
-.ops-dl dd{margin:0;font-size:.92rem;color:var(--text)}
-.compact-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
-.compact-row{display:flex;justify-content:space-between;text-align:left;background:var(--bg2)}
-.compact-row small{display:block;color:var(--text3);font-weight:400;margin-top:2px}
+.ops-dl{display:grid;grid-template-columns:minmax(140px,auto) 1fr;gap:.35rem .9rem;margin:.5rem 0}
+.ops-dl dt{color:var(--text-3);font-size:.82rem}
+.ops-dl dd{margin:0;font-size:.92rem;color:var(--text-1)}
 .spaced-card{margin-top:14px}
 
-/* Cards -- generic surface used by every domain (Wave 9: moved out of
-   legacy.css, confirmed used by 11+ files across every screen, not
-   owned by any single domain). */
-.card{background:var(--bg2);border:0.5px solid var(--border);border-radius:12px;padding:1.25rem;box-shadow:0 18px 60px rgba(0,0,0,.18)}
-.card-title{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:1rem}
+/* Cards -- generic surface used by every domain. */
+.card{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:1.35rem;box-shadow:var(--shadow-sm)}
+.card-title{font:var(--text-caption);color:var(--text-3);margin-bottom:1rem}
 .flush-card{padding:0}
-@media (max-width:560px){.card{padding:1rem;border-radius:10px}}
+/* Secondary-rail card modifier -- for genuinely secondary reference
+   panels next to a page's real compositional centerpiece (Routing's
+   plan-mapping/audit rail, Account Overview's aliases rail). Not for
+   a screen's primary content. */
+.rail-card{padding:1rem 1.1rem}
+.rail-card .card-title{margin-bottom:.7rem}
+@media (max-width:560px){.card{padding:1rem;border-radius:var(--r-md)}}
 
-/* Stat / metric tiles -- shared by Dashboard (app/router.js sys-stats)
-   and Migration (accounts.js loadMigration summary cards), not
-   exclusive to either, so this lives here rather than in a single
-   domain file. */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:1.5rem}
-.stat-card{background:var(--bg3);border:0.5px solid var(--border);border-radius:10px;padding:1rem;transition:transform .15s,border-color .15s,background .15s}
-.stat-card:hover{transform:translateY(-1px);border-color:var(--border2)}
-.stat-label{font-size:11px;color:var(--text2);margin-bottom:4px}
-.stat-value{font-size:22px;font-weight:500;color:#fff}
-.stat-sub{font-size:11px;color:var(--text2);margin-top:2px}
+/* Stat / metric tiles */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:1.5rem}
+.stat-card{background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-md);padding:1rem 1.1rem;transition:transform var(--dur-base) var(--ease),border-color var(--dur-base) var(--ease),background var(--dur-base) var(--ease)}
+.stat-card:hover{transform:translateY(-2px);border-color:var(--border-strong);background:var(--surface-2)}
+.stat-label{font:var(--text-caption);color:var(--text-3);margin-bottom:6px}
+.stat-value{font:var(--text-metric)}
+.stat-sub{font:var(--text-meta);color:var(--text-3);margin-top:3px}
 @media (max-width:900px){.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:560px){.stats-grid{grid-template-columns:1fr}}
 
-/* Section heading -- shared by Dashboard (accounts.js) and timeline.js
-   (queuesSection, reused on both Dashboard and the Account workspace
-   Audit tab). */
-.dashboard-section{margin-bottom:1.5rem}
-.section-heading{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:12px}
-.section-heading h2{font-size:17px;font-weight:500;margin-top:2px}
-.eyebrow{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em}
+/* Section heading */
+.section-heading{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:14px}
+.section-heading h2{font:var(--text-title);margin-top:3px}
+.eyebrow{font:var(--text-caption);color:var(--accent-strong)}
+/* Compact variant for section headings inside a modal body (promo
+   manager, ...) -- same hierarchy language as page-level sections,
+   smaller footprint since it repeats 2-3x in a single scroll area. */
+.promo-section-heading{margin:1.1rem 0 .7rem}
+.promo-section-heading h2{font-size:14px}
+.promo-section-heading:first-child{margin-top:.2rem}
 @media (max-width:560px){.section-heading{align-items:flex-start;flex-direction:column}}
 
-.inline-toggle{display:flex;align-items:center;gap:7px;margin:0;color:var(--text2);white-space:nowrap}
+/* Switch: a real toggle for binary settings (Stars enabled, tariff
+   active, ...) -- reusable anywhere a checkbox currently reads as a
+   raw utilitarian input rather than a deliberate on/off control. */
+.switch{position:relative;display:inline-flex;align-items:center;flex-shrink:0;cursor:pointer}
+.switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:44px;height:24px}
+.switch-track{width:44px;height:24px;border-radius:var(--r-pill);background:var(--surface-3);border:1px solid var(--border-default);transition:background var(--dur-base) var(--ease),border-color var(--dur-base) var(--ease);position:relative;flex-shrink:0}
+.switch-thumb{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--text-3);transition:transform var(--dur-base) var(--ease),background var(--dur-base) var(--ease)}
+.switch input:checked~.switch-track{background:var(--accent-soft-bg);border-color:var(--accent-soft-border)}
+.switch input:checked~.switch-track .switch-thumb{transform:translateX(20px);background:var(--accent-strong)}
+.switch input:focus-visible~.switch-track{outline:2px solid hsl(var(--accent-h) 90% 70% / .65);outline-offset:2px}
+.switch--sm .switch-track,.switch--sm input{width:34px;height:19px}
+.switch--sm .switch-thumb{width:14px;height:14px}
+.switch--sm input:checked~.switch-track .switch-thumb{transform:translateX(15px)}
+
+.inline-toggle{display:flex;align-items:center;gap:7px;margin:0;color:var(--text-2);white-space:nowrap;font:var(--text-meta)}
 .inline-toggle input{width:auto;min-height:auto;accent-color:var(--accent)}
 @media (max-width:900px){.inline-toggle{width:100%}}
 
-/* device_ops.js (Account workspace Telegram/Ownership tab) and
-   technical/marzban_users.js (Technical Marzban page) both use this
-   for their action-button rows. */
 .device-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem}
 
-/* Timeline (timeline.js) -- shared by Dashboard's queuesSection and
-   the Account workspace's Audit tab; not domain-exclusive. */
-.queue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.8rem}
-.queue-block{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:.85rem}
-.queue-block h4{margin:0 0 .5rem;font-size:.95rem}
-.queue-row{width:100%}
+/* Timeline */
 .timeline-list{margin-top:.6rem}
 .timeline-day{margin-bottom:1rem}
-.timeline-day-title{font-weight:600;margin-bottom:.4rem;color:var(--text2)}
-.timeline-item{display:grid;grid-template-columns:auto auto 1fr;gap:.5rem .6rem;align-items:start;padding:.42rem 0;border-bottom:1px dashed var(--border)}
-.timeline-time{font-variant-numeric:tabular-nums;color:var(--text2);font-size:.8rem;padding-top:.15rem}
+.timeline-day-title{font-weight:600;margin-bottom:.4rem;color:var(--text-2);font-size:.85rem}
+.timeline-item{display:grid;grid-template-columns:auto auto 1fr;gap:.5rem .6rem;align-items:start;padding:.5rem 0;border-bottom:1px dashed var(--border-hair)}
+.timeline-time{font-variant-numeric:tabular-nums;color:var(--text-3);font-size:.78rem;padding-top:.15rem}
 .timeline-body strong{font-weight:600}
-.timeline-details summary{cursor:pointer;color:var(--text2);font-size:.78rem;margin-left:.35rem}
+.timeline-details summary{cursor:pointer;color:var(--text-3);font-size:.78rem;margin-left:.35rem}
 .timeline-details .ops-dl dt{word-break:break-all}
-.tl-src-entitlement{background:var(--bg4);color:var(--text2)}
-.tl-src-payment{background:var(--green2);color:var(--green)}
-.tl-src-device{background:var(--red2);color:var(--red)}
-.tl-src-migration{background:var(--amber2);color:var(--amber)}
-.tl-src-credential{background:var(--teal2);color:var(--teal)}
-.tl-src-ownership{background:var(--accent2);color:#aaaaff}
+.tl-src-entitlement{background:var(--surface-3);color:var(--text-2)}
+.tl-src-payment{background:var(--success-soft-bg);color:var(--success)}
+.tl-src-device{background:var(--danger-soft-bg);color:var(--danger)}
+.tl-src-migration{background:var(--warning-soft-bg);color:var(--warning)}
+.tl-src-credential{background:var(--info-soft-bg);color:var(--info)}
+.tl-src-ownership{background:var(--accent-soft-bg);color:var(--accent-strong)}
 @media (max-width:560px){
-  .queue-grid{grid-template-columns:1fr}
   .timeline-item{grid-template-columns:auto 1fr}
   .timeline-time{grid-column:1/2}
   .timeline-body{grid-column:1/-1}
 }
 
 /* Table */
-.table-wrap{overflow-x:auto;width:100%;overflow:auto;border-radius:12px;overscroll-behavior-x:contain}
+.table-wrap{overflow-x:auto;width:100%;overflow:auto;border-radius:var(--r-lg);overscroll-behavior-x:contain}
 table{width:100%;border-collapse:collapse;min-width:860px;table-layout:auto}
-th{font-size:11px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:0.05em;padding:8px 12px;text-align:left;border-bottom:0.5px solid var(--border)}
-td{padding:10px 12px;border-bottom:0.5px solid var(--border);color:var(--text);font-size:13px;vertical-align:middle}
+th{font:var(--text-caption);color:var(--text-3);padding:11px 14px;text-align:left;border-bottom:1px solid var(--border-subtle);background:var(--surface-1)}
+td{padding:12px 14px;border-bottom:1px solid var(--border-hair);color:var(--text-1);font-size:13.5px;vertical-align:middle}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:var(--bg3)}
-tbody tr{transition:background .12s}
-thead th{position:sticky;top:0;z-index:1;background:var(--bg2)}
+tbody tr{transition:background var(--dur-fast) var(--ease)}
+tbody tr:hover td{background:var(--surface-2)}
+tbody tr.clickable{cursor:pointer}
+thead th{position:sticky;top:0;z-index:1}
 td,th{white-space:nowrap}
 td:first-child,th:first-child{white-space:normal;min-width:180px}
+td .cell-sub{white-space:normal}
 .clickable{cursor:pointer}
-.cell-sub{font-size:11px;color:var(--text2);margin-top:3px}
-.cell-sub--spaced{margin-bottom:12px}
+.cell-sub{font:var(--text-meta);color:var(--text-3);margin-top:3px;font-weight:400}
+.cell-sub--spaced{margin-bottom:14px}
 .label-inline{margin:0}
-.status-inline{margin-left:10px;font-size:13px;color:var(--text3)}
+.status-inline{margin-left:10px;font-size:13px;color:var(--text-3)}
 .w-full{width:100%}
-.muted{color:var(--text3)}
-.muted2{color:var(--text2)}
-.muted-count{font-size:13px;color:var(--text3)}
-.empty-state,.error-state{padding:1.5rem;text-align:center;color:var(--text3)}
-.error-state{color:var(--red)}
+.muted{color:var(--text-3)}
+.muted2{color:var(--text-2)}
+.muted-count{font:var(--text-meta);color:var(--text-3);font-weight:500}
+.empty-state,.error-state{padding:2rem 1.5rem;text-align:center;color:var(--text-3);font-size:13px}
+.error-state{color:var(--danger)}
 
-/* Badges / status */
-.badge{display:inline-flex;align-items:center;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;border:0.5px solid}
-.badge-green{background:var(--green2);border-color:var(--green3);color:var(--green)}
-.badge-red{background:var(--red2);border-color:#aa3a3a;color:var(--red)}
-.badge-amber{background:var(--amber2);border-color:#aa7a1a;color:var(--amber)}
-.badge-gray{background:var(--bg4);border-color:var(--border2);color:var(--text2)}
-.badge-blue{background:#1a1a4a;border-color:#3a3aaa;color:#8888ff}
+/* Badges / status -- pill shape, dot marker, real color weight so
+   severity reads at a glance instead of every state looking like a
+   generic outline tag. */
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  font:600 11px/1 var(--font-ui);letter-spacing:.01em;
+  padding:4px 10px 4px 8px;border-radius:var(--r-pill);border:1px solid;
+}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}
+.badge-green{background:var(--success-soft-bg);border-color:var(--success-soft-border);color:var(--success-strong)}
+.badge-red{background:var(--danger-soft-bg);border-color:var(--danger-soft-border);color:var(--danger-strong)}
+.badge-amber{background:var(--warning-soft-bg);border-color:var(--warning-soft-border);color:var(--warning-strong)}
+.badge-gray{background:var(--neutral-soft-bg);border-color:var(--neutral-soft-border);color:var(--text-2)}
+.badge-blue{background:var(--info-soft-bg);border-color:var(--info-soft-border);color:var(--info)}
+.badge-purple{background:var(--purple-soft-bg);border-color:var(--purple-soft-border);color:var(--purple)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;flex-shrink:0}
-.dot-green{background:var(--green)}
-.dot-red{background:var(--red)}
-.dot-amber{background:var(--amber)}
-.dot-gray{background:var(--text3)}
+.dot-green{background:var(--success)}
+.dot-red{background:var(--danger)}
+.dot-amber{background:var(--warning)}
+.dot-gray{background:var(--text-3)}
 
-/* Notices/alerts */
-.notice{background:var(--bg3);border:0.5px solid var(--border2);border-radius:10px;padding:10px 12px;color:var(--text2);font-size:12px;margin-bottom:14px}
-.notice-amber{background:var(--amber2);border-color:#7a5a18;color:#ffd18a}
-.notice-success{background:var(--green2);border-color:var(--green3);color:#b8ffd0;margin-top:12px}
-.notice-danger{background:var(--red2);border-color:#aa3a3a;color:#ffaaaa}
+/* Notices/alerts -- left accent bar instead of a flat tinted box, so
+   severity reads as a signal, not a wash of color across the text. */
+.notice{background:var(--surface-2);border:1px solid var(--border-subtle);border-left:3px solid var(--border-strong);border-radius:var(--r-md);padding:11px 14px;color:var(--text-2);font-size:12.5px;margin-bottom:14px}
+.notice-amber{background:var(--warning-soft-bg);border-color:var(--warning-soft-border);border-left-color:var(--warning);color:var(--warning-strong)}
+.notice-success{background:var(--success-soft-bg);border-color:var(--success-soft-border);border-left-color:var(--success);color:var(--success-strong);margin-top:12px}
+.notice-danger{background:var(--danger-soft-bg);border-color:var(--danger-soft-border);border-left-color:var(--danger);color:var(--danger-strong)}
 
 /* Tabs */
-.tabs{display:flex;gap:4px;margin-bottom:1.25rem;border-bottom:0.5px solid var(--border);padding-bottom:0}
-.tab{padding:8px 14px;font-size:13px;color:var(--text2);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.15s}
-.tab:hover{color:var(--text)}
-.tab.active{color:#8888ff;border-bottom-color:var(--accent)}
+.tabs{display:flex;gap:2px;margin-bottom:1.5rem;border-bottom:1px solid var(--border-subtle);padding-bottom:0}
+.tab{padding:9px 15px;font:var(--text-body-strong);color:var(--text-3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all var(--dur-fast) var(--ease);border-radius:var(--r-sm) var(--r-sm) 0 0}
+.tab:hover{color:var(--text-1);background:var(--surface-1)}
+.tab.active{color:var(--text-1);border-bottom-color:var(--accent-strong);background:transparent}
 .tab-content{display:none}
 .tab-content.active{display:block}
 
 /* Loading */
-.loading{color:var(--text3);font-size:13px;padding:2rem;text-align:center}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:6px}
+.loading{color:var(--text-3);font-size:13px;padding:2.5rem;text-align:center}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-default);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Toast */
-#toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--bg3);border:0.5px solid var(--border2);border-radius:10px;padding:10px 16px;font-size:13px;color:var(--text);z-index:2000;transform:translateY(20px);opacity:0;transition:all 0.2s;pointer-events:none}
+#toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surface-3);border:1px solid var(--border-default);border-radius:var(--r-md);padding:11px 18px;font:var(--text-body-strong);color:var(--text-1);z-index:2000;transform:translateY(20px);opacity:0;transition:all 0.2s var(--ease);pointer-events:none;box-shadow:var(--shadow-md)}
 #toast.show{transform:translateY(0);opacity:1}
-#toast.ok{border-color:var(--green3);color:var(--green)}
-#toast.err{border-color:#aa3a3a;color:var(--red)}
+#toast.ok{border-color:var(--success-soft-border);color:var(--success-strong)}
+#toast.err{border-color:var(--danger-soft-border);color:var(--danger-strong)}
 
-/* Modal -- unified visual contract for both the static `.modal-overlay`
-   system and the dynamically-created `.ops-modal-overlay` system
-   (modals.js). Their JS lifecycle stays separate (see plan section 7 /
-   corrective pass item 3): open/close still toggles `display` via the
-   `.open` class exactly as before, unchanged. Only the shared surface
-   styling (background, radius, shadow, sizing) is unified here.
-   NOTE: adding an open/close transition (motion plan) requires the
-   overlay to stay in the render tree while animating out, which needs a
-   JS-side delay before removal/hide -- tried a CSS-only visibility-based
-   approach here first and it broke Playwright's visibility detection in
-   test_admin_browser_e2e.py (innerText requires a "Visible" actionable
-   element, which a `visibility:hidden`-by-default-but-always-`display:flex`
-   overlay does not reliably satisfy at read time). Reverted to the
-   original display:none/flex toggle; the motion addition is deferred to
-   a follow-up wave that also touches modals.js/kernel.js's close path. */
+/* Modal */
 .modal-overlay,.ops-modal-overlay{
   position:fixed;inset:0;
-  background:rgba(0,0,0,0.7);
+  background:rgba(4,4,8,0.72);backdrop-filter:blur(2px);
   display:none;align-items:center;justify-content:center;
   z-index:1000;
 }
 .modal-overlay.open,.ops-modal-overlay.open{display:flex}
 .ops-modal-overlay{z-index:1100}
 .modal,.ops-modal{
-  background:var(--bg2);border:0.5px solid var(--border);border-radius:14px;
-  padding:1.5rem;max-width:95vw;max-height:90vh;overflow-y:auto;
-  box-shadow:0 24px 90px rgba(0,0,0,.55);
+  background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-xl);
+  padding:1.6rem;max-width:95vw;max-height:90vh;overflow-y:auto;
+  box-shadow:var(--shadow-lg);
 }
 .modal{width:480px}
-/* Size modifier for modals that need more room than the default
-   (ticket detail, node settings) -- same width as .ops-modal, kept as
-   an independent modifier since the two systems' JS stays separate. */
 .modal--lg{width:640px}
 .ops-modal{width:640px;max-height:88vh;overflow:auto}
-.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem}
-.modal-title{font-size:16px;font-weight:500}
-/* Wave 8 consistency fix: the dynamically-created ops-modal (modals.js)
-   used a different close-button class (.ops-close) with no matching
-   rule anywhere, so it rendered as a default bordered button instead
-   of the same borderless icon button every static modal uses. */
-.modal-close,.ops-close{background:none;border:none;color:var(--text2);font-size:20px;cursor:pointer;padding:0;line-height:1}
-.modal-close:hover,.ops-close:hover{color:var(--text)}
-.modal-footer{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:1.25rem;padding-top:1rem;border-top:0.5px solid var(--border)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.35rem}
+.modal-title{font:var(--text-title)}
+.modal-close,.ops-close{background:none;border:none;color:var(--text-3);font-size:20px;cursor:pointer;padding:0;line-height:1;min-height:auto}
+.modal-close:hover,.ops-close:hover{color:var(--text-1);background:none}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:1.35rem;padding-top:1.1rem;border-top:1px solid var(--border-hair)}
 
 /* Progress / traffic bars */
-.progress-track{height:8px;background:var(--bg4);border:0.5px solid var(--border);border-radius:999px;overflow:hidden;margin:14px 0 7px}
-.progress-track span{display:block;height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));border-radius:inherit}
+.progress-track{height:8px;background:var(--surface-3);border:1px solid var(--border-hair);border-radius:var(--r-pill);overflow:hidden;margin:14px 0 8px}
+.progress-track span{display:block;height:100%;background:linear-gradient(90deg,var(--accent-dim),var(--accent-strong));border-radius:inherit}
 .large-progress{height:11px;margin:0 0 8px}
-.progress-legend{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--text2);font-size:11px}
-.traffic-bar{height:4px;background:var(--bg4);border-radius:2px;overflow:hidden;margin-top:6px}
-.traffic-fill{height:100%;background:var(--accent);border-radius:2px;transition:width 0.3s}
+.progress-legend{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--text-3);font:var(--text-meta)}
+.traffic-bar{height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden;margin-top:6px}
+.traffic-fill{height:100%;background:var(--accent);border-radius:2px;transition:width 0.3s var(--ease)}
 
 @media (max-width: 900px){
   .search-box{width:100%}
@@ -254,10 +263,6 @@ td:first-child,th:first-child{white-space:normal;min-width:180px}
 
 @media (max-width: 560px){
   .form-row{grid-template-columns:1fr}
-  /* Full-screen sheet instead of a centered box with 10px margins
-     (redesign plan section 11: modals go edge-to-edge below ~560px).
-     Anchored to the bottom, only the top corners rounded -- the
-     common mobile-sheet shape, not a literal 100%-height panel. */
   .modal-overlay,.ops-modal-overlay{align-items:flex-end}
   .modal,.ops-modal{width:100%;max-width:none;max-height:92vh;padding:1rem;border-radius:16px 16px 0 0}
   .modal-footer{justify-content:stretch}

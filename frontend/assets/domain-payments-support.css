@@ -4,50 +4,75 @@
    stars_legacy.js, legacy revenue channel). */
 
 .product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.5rem;margin:.75rem 0}
-.product-card{display:flex;flex-direction:column;gap:.15rem;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--bg3);color:var(--text);cursor:pointer;text-align:left}
-.product-card:hover{border-color:var(--border2)}
-.product-card.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent2)}
-.product-card small,.product-card span{color:var(--text2)}
+.product-card{display:flex;flex-direction:column;gap:.2rem;padding:.7rem .75rem;border:1px solid var(--border-subtle);border-radius:var(--r-md);background:var(--surface-2);color:var(--text-1);cursor:pointer;text-align:left;transition:border-color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease)}
+.product-card:hover{border-color:var(--border-strong);background:var(--surface-3)}
+.product-card.active{border-color:var(--accent);background:var(--accent-soft-bg);box-shadow:0 0 0 1px var(--accent-soft-border)}
+.product-card small,.product-card span{color:var(--text-2)}
 
 /* Previously undefined -- `.pay-status` had zero CSS rule anywhere,
    rendering as an unstyled inline run of amount + badge(es). */
 .pay-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 /* ADMIN_GRANT marker (redesign plan section 19.1: permanent semantic
-   badge, not a whole-row tint) -- a new badge color distinct from the
-   existing success/warning/error/info/neutral set, since this is a
-   classification (non-revenue), not a status. */
-.badge-purple{background:#2a1a4a;border-color:#6a3aaa;color:#c299ff}
+   badge, not a whole-row tint) -- .badge-purple itself now lives in
+   components.css alongside the rest of the badge palette. */
 
 /* Support tickets */
 .ticket-filter-row{display:flex;gap:8px;align-items:center}
 .ticket-filter-select{width:160px}
-.ticket-chat{max-height:360px;overflow-y:auto;padding:10px;background:var(--bg3);border-radius:6px;margin-bottom:12px}
+.ticket-chat{max-height:360px;overflow-y:auto;padding:12px;background:var(--surface-2);border:1px solid var(--border-hair);border-radius:var(--r-md);margin-bottom:12px}
 .ticket-reply-textarea{width:100%;resize:vertical;margin-bottom:8px}
 .ticket-close-btn{margin-left:8px}
-.ticket-col-updated{font-size:12px;color:var(--text2)}
-.ticket-col-created{font-size:12px;color:var(--text2)}
-.ticket-message{margin-bottom:8px;padding:8px;border-radius:6px}
-.ticket-message--user{background:var(--bg4)}
-.ticket-message--ai{background:var(--green2)}
-.ticket-message--operator{background:var(--amber2)}
-.ticket-message-meta{font-size:11px;color:var(--text2);margin-bottom:3px}
+.ticket-col-updated{font:var(--text-meta);color:var(--text-3)}
+.ticket-col-created{font:var(--text-meta);color:var(--text-3)}
+.ticket-message{margin-bottom:8px;padding:9px 11px;border-radius:var(--r-md);border:1px solid var(--border-hair)}
+.ticket-message--user{background:var(--surface-3)}
+.ticket-message--ai{background:var(--success-soft-bg);border-color:var(--success-soft-border)}
+.ticket-message--operator{background:var(--accent-soft-bg);border-color:var(--accent-soft-border)}
+.ticket-message-meta{font:var(--text-caption);color:var(--text-3);margin-bottom:4px;text-transform:none;letter-spacing:0}
 .ticket-message-text{white-space:pre-wrap;font-size:13px}
-.ticket-empty-chat{color:var(--text3);font-size:13px}
-.ticket-reply-status--ok{color:var(--green)}
+.ticket-empty-chat{color:var(--text-3);font-size:13px}
+.ticket-reply-status--ok{color:var(--success)}
 
-/* Telegram Stars (legacy revenue channel) */
-.stars-toggle{width:auto}
-.stars-toggle-row{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-.stars-hint{font-size:12px;color:var(--text3)}
+/* Telegram Stars (legacy revenue channel) -- Admin V2: a financial
+   product/ledger surface, not a generic settings-form-plus-CRUD-table
+   screen. Tariffs read as pricing-plan cards; the toggle above them is
+   a real switch, not a bare checkbox in a labelled row. */
+.stars-toggle-card{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.stars-toggle-main{min-width:0}
+.stars-hint{font-size:12px;color:var(--text-3)}
 .stars-hint--tight{margin-top:8px}
+
+.tariff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:16px}
+.tariff-card{
+  position:relative;display:flex;flex-direction:column;gap:6px;
+  background:var(--surface-1);border:1px solid var(--border-subtle);border-radius:var(--r-lg);
+  padding:1.1rem 1.1rem 1rem;transition:border-color var(--dur-base) var(--ease),transform var(--dur-base) var(--ease);
+}
+.tariff-card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+.tariff-card--inactive{opacity:.5}
+.tariff-card--best{border-color:var(--success-soft-border);background:linear-gradient(165deg,var(--success-soft-bg),var(--surface-1) 60%)}
+.tariff-best-tag{
+  align-self:flex-start;font:var(--text-caption);letter-spacing:.04em;
+  color:var(--success-strong);background:var(--success-soft-bg);border:1px solid var(--success-soft-border);
+  border-radius:var(--r-pill);padding:2px 9px;margin-bottom:2px;text-transform:none;
+}
+.tariff-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.tariff-name{font:var(--text-body-strong);font-size:14px}
+.tariff-price{display:flex;align-items:baseline;gap:5px;font-variant-numeric:tabular-nums;margin-top:2px}
+.tariff-price-value{font:var(--text-metric);font-size:26px}
+.tariff-price-unit{font-size:16px}
+.tariff-price-rub{font:var(--text-caption);color:var(--text-4);text-transform:none;letter-spacing:0}
+.tariff-duration{display:flex;align-items:center;justify-content:space-between;gap:8px;font:var(--text-meta);color:var(--text-3);margin-top:6px;padding-top:8px;border-top:1px solid var(--border-hair)}
+.tariff-status-tag{font-size:10.5px;color:var(--text-4)}
+.tariff-delete-btn{align-self:flex-start;margin-top:6px;color:var(--text-3)}
+.tariff-add-card .card-title{margin-bottom:.85rem}
+
 .stars-add-row{margin-top:14px}
 .stars-add-btn{margin-top:10px}
-.stars-reason-cell{font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.stars-reason-cell{font-size:11px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .stars-actions-cell{white-space:nowrap}
-.stars-filter-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
-.stars-filter-select{width:220px}
-.stars-orphan-hint{font-size:12px;color:var(--text3);margin-bottom:10px}
+.stars-orphans-card .card-title{margin-bottom:.6rem}
 
 /* Priority-column-hiding for the Stars payments/orphans tables
    (redesign plan section 11/19.7: Payments/Stars get column-hiding
@@ -56,5 +81,6 @@
    shared .col-hide-mobile utility itself lives in components.css. */
 @media (max-width: 560px){
   .product-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
-  .stars-filter-select{width:100%}
+  .tariff-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .stars-toggle-card{flex-direction:column;align-items:flex-start}
 }
