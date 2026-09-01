@@ -39,10 +39,7 @@ function setAllUsers(list){allUsers=list;}
 function getAllNodes(){return allNodes;}
 function setAllNodes(list){allNodes=list;}
 let nodeFilters = {};
-let dragIdx = null;
-let perUserConfigs = {};
 let userDeviceCounts = {};
-let inboundClientExtras = {};
 let accountUi = null;
 let routingUi = null;
 let nodesUi = null;
@@ -78,6 +75,16 @@ const OPS_HEALTH_READY = (async()=>{
     formatTimestamp:opsCore.formatTimestamp,formatDuration:opsCore.formatDuration});
   return opsHealthUi;
 })();
+let configsUi=null;
+const CONFIGS_UI_READY = import(`./admin/technical/configs.js${_MODULE_VERSION}`).then(module=>{
+  configsUi=module.createConfigsUi({html,renderHtml,toast,api,proxyApi,getAllInbounds,setAllInbounds});
+  return configsUi;
+});
+let settingsUi=null;
+const SETTINGS_UI_READY = import(`./admin/settings.js${_MODULE_VERSION}`).then(module=>{
+  settingsUi=module.createSettingsUi({html,renderHtml,toast,proxyApi});
+  return settingsUi;
+});
 let promoOps=null;
 const PROMO_OPS_READY = (async()=>{
   const promoCore=await import(`./admin/core.js${_MODULE_VERSION}`);
@@ -216,8 +223,8 @@ function showPage(name){
   if(name==='nodes')NODES_UI_READY.then(()=>nodesUi&&nodesUi.loadNodes());
   if(name==='ops-health')OPS_HEALTH_READY.then(()=>opsHealthUi&&opsHealthUi.loadOpsHealth());
   if(name==='legacy-transitions')LEGACY_TRANSITIONS_READY.then(()=>legacyTransitionsUi&&legacyTransitionsUi.loadQueue());
-  if(name==='configs'){loadGlobalConfigs();loadPerUserConfigs();loadInboundExtras();}
-  if(name==='settings'){loadSettings();loadBotSettings();loadSupportSettings();}
+  if(name==='configs')CONFIGS_UI_READY.then(()=>configsUi&&configsUi.loadConfigsPage());
+  if(name==='settings')SETTINGS_UI_READY.then(()=>settingsUi&&settingsUi.loadSettingsPage());
   if(name==='tickets'){loadTickets();}
   if(name==='stars'){loadStarsTariffs();loadStarsSettings();loadStarsPayments();loadStarsOrphans();}
   if(name==='routing')ROUTING_UI_READY.then(()=>routingUi&&routingUi.loadRouting());
@@ -647,211 +654,12 @@ async function createUser(){
   else{const e=await r.json();toast(e.detail||'Ошибка','err');}
 }
 
-// GLOBAL CONFIGS
-async function loadGlobalConfigs(){
-  const r=await proxyApi('/admin/configs');
-  const configs=await r.json();
-  const list=document.getElementById('cfg-list');
-  document.getElementById('cfg-count').textContent='('+configs.length+')';
-  if(!configs.length){renderHtml(list,html`<p style="color:var(--text3);font-size:13px;padding:1rem 0">Нет конфигов</p>`);return}
-  renderHtml(list,html`${configs.map((c,i)=>html`
-    <div class="config-row" draggable="true" id="cfg-${i}" data-config-index="${i}">
-      <span class="drag-handle">⠿</span>
-      <div class="config-info">
-        <div class="config-name-text">${c.name}</div>
-        <div class="config-uri-text">${c.uri}</div>
-      </div>
-      <span class="badge ${c.enabled?'badge-green':'badge-red'}" style="cursor:pointer" data-action="toggle-config" data-config-index="${i}">${c.enabled?'вкл':'выкл'}</span>
-      <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-config" data-config-index="${i}">×</button>
-    </div>
-  `)}`);
-  window._cfgs=configs;
-}
-async function addGlobalConfig(){
-  const name=document.getElementById('cfg-name').value.trim();
-  const uri=document.getElementById('cfg-uri').value.trim();
-  const enabled=document.getElementById('cfg-enabled').value==='true';
-  if(!uri){toast('URI обязателен','err');return}
-  const r=await proxyApi('/admin/configs',{method:'POST',body:JSON.stringify({name:name||uri.slice(0,30),uri,enabled})});
-  if(r.ok){toast('Добавлен');document.getElementById('cfg-name').value='';document.getElementById('cfg-uri').value='';loadGlobalConfigs();}
-  else toast('Ошибка','err');
-}
-async function deleteConfig(idx){
-   if(!confirm('Удалить?'))return;
-   const cfg = window._cfgs[idx];
-   if (!cfg || !cfg.id) {
-       toast('Ошибка: конфиг не найден','err');
-       return;
-   }
-   await proxyApi('/admin/configs/'+cfg.id,{method:'DELETE'});
-   toast('Удалён');loadGlobalConfigs();
- }
-async function toggleConfig(idx){
-  const cfgs=window._cfgs||[];
-  cfgs[idx].enabled=!cfgs[idx].enabled;
-  await proxyApi('/admin/configs/reorder',{method:'POST',body:JSON.stringify(cfgs)});
-  loadGlobalConfigs();
-}
-let _dragIdx=null;
-function dragStart(i){_dragIdx=i;document.getElementById('cfg-'+i).style.opacity='0.4'}
-function dragOver(e){e.preventDefault()}
-function drop(i){
-  if(_dragIdx===null||_dragIdx===i)return;
-  const cfgs=window._cfgs||[];
-  const moved=cfgs.splice(_dragIdx,1)[0];
-  cfgs.splice(i,0,moved);
-  proxyApi('/admin/configs/reorder',{method:'POST',body:JSON.stringify(cfgs)}).then(()=>loadGlobalConfigs());
-}
-function dragEnd(){_dragIdx=null;document.querySelectorAll('.config-row').forEach(r=>r.style.opacity='')}
-
-// PER USER CONFIGS
-async function loadPerUserConfigs(){
-  const r=await proxyApi('/admin/per-user-configs');
-  if(r.ok)perUserConfigs=await r.json();
-  const username=document.getElementById('pu-user').value;
-  renderPerUserConfigs(username);
-}
-document.getElementById('pu-user').addEventListener('change',e=>renderPerUserConfigs(e.target.value));
-function renderPerUserConfigs(username){
-  const configs=perUserConfigs[username]||[];
-  const el=document.getElementById('per-user-configs');
-  if(!configs.length){renderHtml(el,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет индивидуальных конфигов</p>`);return}
-  renderHtml(el,html`${configs.map((c,i)=>html`
-    <div class="per-user-config">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:500">${c.name}</div>
-        <div style="font-size:11px;color:var(--text3);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.uri}</div>
-      </div>
-      <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-per-user-config" data-username="${username}" data-config-index="${i}">×</button>
-    </div>
-  `)}`);
-}
-async function addPerUserConfig(){
-  const username=document.getElementById('pu-user').value;
-  const uri=document.getElementById('pu-uri').value.trim();
-  const name=document.getElementById('pu-name').value.trim();
-  if(!uri){toast('URI обязателен','err');return}
-  if(!perUserConfigs[username])perUserConfigs[username]=[];
-  perUserConfigs[username].push({name:name||uri.slice(0,30),uri,enabled:true});
-  await proxyApi('/admin/per-user-configs',{method:'POST',body:JSON.stringify(perUserConfigs)});
-  toast('Добавлен');document.getElementById('pu-uri').value='';document.getElementById('pu-name').value='';
-  renderPerUserConfigs(username);
-}
-async function deletePerUserConfig(username,idx){
-  perUserConfigs[username].splice(idx,1);
-  await proxyApi('/admin/per-user-configs',{method:'POST',body:JSON.stringify(perUserConfigs)});
-  toast('Удалён');renderPerUserConfigs(username);
-}
-
-// INBOUND EXTRAS
-async function loadInboundExtras(){
-  if(!allInbounds||!Object.keys(allInbounds).length){
-    try{const r=await api('/inbounds');allInbounds=await r.json();}catch{}
-  }
-  const dl=document.getElementById('ie-inbounds-list');
-  const tags=[];
-  Object.values(allInbounds).forEach(items=>items.forEach(i=>tags.push(i.tag)));
-  renderHtml(dl,html`${tags.map(t=>html`<option value="${t}"></option>`)}`);
-
-  try{
-    const r=await proxyApi('/admin/settings');
-    const data=await r.json();
-    inboundClientExtras=data.inbound_client_extras||{};
-  }catch{}
-  renderInboundExtras();
-}
-
-function renderInboundExtras(){
-  const list=document.getElementById('inbound-extra-list');
-  const entries=Object.entries(inboundClientExtras);
-  if(!entries.length){renderHtml(list,html`<p style="font-size:13px;color:var(--text3);padding:0.5rem 0">Нет добавленных параметров</p>`);return;}
-  renderHtml(list,html`${entries.map(([tag,extra])=>html`
-    <div style="background:var(--bg3);padding:10px;border-radius:8px;margin-bottom:10px;border:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div style="font-weight:500;font-size:14px">${tag}</div>
-        <button class="danger" style="padding:4px 10px;font-size:12px" data-action="delete-inbound-extra" data-inbound-tag="${tag}">Удалить</button>
-      </div>
-      <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Параметры (URL query) или чистый JSON:</div>
-      <textarea style="width:100%;height:100px;font-family:monospace;font-size:12px" data-inbound-value="${tag}" placeholder="extra=... или { &quot;xmux&quot;: ... }">${extra}</textarea>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <button data-action="format-inbound-extra" data-inbound-tag="${tag}">Сжать и закодировать JSON (если введён чистый JSON)</button>
-        <button class="primary" data-action="update-inbound-extra" data-inbound-tag="${tag}">Сохранить</button>
-      </div>
-    </div>
-  `)}`);
-}
-
-function inboundExtraField(tag){
-  return [...document.querySelectorAll('[data-inbound-value]')].find(el=>el.dataset.inboundValue===tag);
-}
-
-async function addInboundExtra(){
-  const input=document.getElementById('ie-inbound-select');
-  const tag=input.value.trim();
-  if(!tag){toast('Введите строку (например: type=xhttp или vless-xhttp)','err');return;}
-  if(inboundClientExtras[tag]){toast('Уже добавлен','err');return;}
-  inboundClientExtras[tag]='';
-  input.value='';
-  renderInboundExtras();
-  await saveInboundExtras();
-}
-
-function formatInboundExtraJson(tag){
-  const el=inboundExtraField(tag);
-  if(!el)return;
-  let val=el.value.trim();
-  if(!val)return;
-  // If it starts with { it might be raw JSON
-  try{
-    if(val.startsWith('{')){
-      const j=JSON.parse(val);
-      const str=JSON.stringify(j);
-      val='extra='+encodeURIComponent(str);
-      el.value=val;
-      toast('JSON успешно закодирован');
-    }else{
-      toast('Не похоже на сырой JSON','err');
-    }
-  }catch(e){
-    toast('Ошибка парсинга JSON: '+e.message,'err');
-  }
-}
-
-async function updateInboundExtra(tag){
-  const el=inboundExtraField(tag);
-  if(!el)return;
-  let val=el.value.trim();
-  
-  // auto-encode if user forgot and it's valid JSON
-  if(val.startsWith('{')){
-     try{
-       const str=JSON.stringify(JSON.parse(val));
-       val='extra='+encodeURIComponent(str);
-       el.value=val;
-       toast('JSON был автоматически закодирован');
-     }catch(e){
-       toast('Ошибка в JSON: '+e.message,'err');
-       return;
-     }
-  }
-  
-  inboundClientExtras[tag]=val;
-  await saveInboundExtras();
-  toast('Сохранено');
-}
-
-async function deleteInboundExtra(tag){
-  delete inboundClientExtras[tag];
-  renderInboundExtras();
-  await saveInboundExtras();
-  toast('Удалено');
-}
-
-async function saveInboundExtras(){
-  await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({inbound_client_extras:inboundClientExtras})});
-}
-
 let allInbounds={};
+// PH7-16 Wave 4: shared with admin/technical/configs.js's Inbound Extras
+// tab, same accessor-DI discipline as allNodes/allUsers -- one cache, not
+// a second independently-fetched copy.
+function getAllInbounds(){return allInbounds;}
+function setAllInbounds(list){allInbounds=list;}
 export async function bootstrap(){
   await ACCOUNT_UI_READY;
   loadDashboard();
@@ -865,153 +673,6 @@ export async function bootstrap(){
 }
 
 function loadAccountsSafely(){accountUi?.loadAccounts().catch(error=>console.warn('accounts',error));}
-
-// SETTINGS
-async function loadSettings(){
-  const status=document.getElementById('settings-status');
-  status.textContent='Загрузка...';
-  try{
-    const r=await proxyApi('/admin/settings');
-    const data=await r.json();
-    document.getElementById('set-sub-interval').value=data.sub_update_interval!=null?data.sub_update_interval:'';
-    document.getElementById('set-block-contact').value=data.block_contact||'';
-    document.getElementById('set-sub-title').value=data.sub_custom_title||'';
-    document.getElementById('set-sub-desc').value=data.sub_custom_desc||'';
-    status.textContent='';
-  }catch(e){
-    status.textContent='Ошибка загрузки настроек';
-  }
-}
-async function saveSettings(){
-  const status=document.getElementById('settings-status');
-  const raw=document.getElementById('set-sub-interval').value.trim();
-  const val=raw===''?null:parseInt(raw);
-  if(val!==null&&(isNaN(val)||val<1||val>168)){
-    status.textContent='Введите число от 1 до 168';
-    return;
-  }
-  const contact=document.getElementById('set-block-contact').value.trim();
-  const subTitle=document.getElementById('set-sub-title').value.trim();
-  const subDesc=document.getElementById('set-sub-desc').value.trim();
-  status.textContent='Сохранение...';
-  try{
-    await proxyApi('/admin/settings',{method:'POST',body:JSON.stringify({
-      sub_update_interval:val,
-      block_contact:contact||null,
-      sub_custom_title:subTitle||null,
-      sub_custom_desc:subDesc||null
-    })});
-    status.style.color='#6f6';
-    status.textContent='Сохранено';
-    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
-  }catch(e){
-    status.style.color='';
-    status.textContent='Ошибка сохранения';
-  }
-}
-
-// BOT SETTINGS
-function toggleBotProxy(){
-  const on=document.getElementById('bot-proxy-enabled').checked;
-  document.getElementById('bot-proxy-fields').style.display=on?'block':'none';
-}
-async function loadBotSettings(){
-  try{
-    const r=await proxyApi('/admin/bot-settings');
-    if(!r.ok)return;
-    const d=await r.json();
-    document.getElementById('bot-enabled').checked=!!d.enabled;
-    // Secrets are never sent back in plaintext — leave the field blank and
-    // show a masked hint via placeholder; only a newly-typed value is saved.
-    const tokenEl=document.getElementById('bot-token');
-    tokenEl.value='';
-    tokenEl.placeholder=d.token_set?'•••• настроено':'123456:ABCDEF...';
-    document.getElementById('bot-channel').value=d.channel_id||'@MGBoost_News';
-    document.getElementById('bot-proxy-enabled').checked=!!d.proxy_enabled;
-    document.getElementById('bot-proxy-host').value=d.proxy_host||'';
-    document.getElementById('bot-proxy-port').value=d.proxy_port||1080;
-    document.getElementById('bot-proxy-user').value=d.proxy_user||'socks';
-    const proxyPassEl=document.getElementById('bot-proxy-pass');
-    proxyPassEl.value='';
-    proxyPassEl.placeholder=d.proxy_pass_set?'•••• настроено':'telegram';
-    toggleBotProxy();
-  }catch(e){console.warn('loadBotSettings',e);}
-}
-async function saveBotSettings(){
-  const status=document.getElementById('bot-settings-status');
-  status.textContent='Сохранение...';
-  try{
-    const payload={
-      enabled:document.getElementById('bot-enabled').checked,
-      channel_id:document.getElementById('bot-channel').value.trim()||'@MGBoost_News',
-      proxy_enabled:document.getElementById('bot-proxy-enabled').checked,
-      proxy_host:document.getElementById('bot-proxy-host').value.trim(),
-      proxy_port:parseInt(document.getElementById('bot-proxy-port').value)||1080,
-      proxy_user:document.getElementById('bot-proxy-user').value.trim()||'socks',
-    };
-    // Only send secret fields if the admin actually typed a new value —
-    // omitting the key means "keep the existing secret as-is".
-    const newToken=document.getElementById('bot-token').value.trim();
-    if(newToken)payload.token=newToken;
-    const newProxyPass=document.getElementById('bot-proxy-pass').value.trim();
-    if(newProxyPass)payload.proxy_pass=newProxyPass;
-    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify(payload)});
-    if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
-    status.style.color='#6f6';status.textContent='Сохранено';
-    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
-    loadBotSettings();
-  }catch(e){status.style.color='';status.textContent='Ошибка';}
-}
-
-async function restartBot(){
-  const status=document.getElementById('bot-settings-status');
-  status.textContent='Перезапуск...';
-  try{
-    const r=await proxyApi('/admin/bot-restart',{method:'POST'});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok){status.textContent=d.error||'Ошибка';return;}
-    status.style.color='#6f6';
-    status.textContent=d.started?'Бот запущен':'Бот остановлен (токен не задан)';
-    setTimeout(()=>{status.textContent='';status.style.color='';},3000);
-  }catch(e){status.style.color='';status.textContent='Ошибка';}
-}
-
-// SUPPORT SETTINGS
-async function loadSupportSettings(){
-  try{
-    const r=await proxyApi('/admin/bot-settings');
-    if(!r.ok)return;
-    const d=await r.json();
-    document.getElementById('bot-support-enabled').checked=!!d.support_enabled;
-    const keyEl=document.getElementById('bot-openrouter-key');
-    keyEl.value='';
-    keyEl.placeholder=d.openrouter_api_key_set?'•••• настроено':'sk-or-v1-...';
-    document.getElementById('bot-openrouter-model').value=d.openrouter_model||'openai/gpt-4o-mini';
-    document.getElementById('bot-admin-tg-id').value=d.admin_tg_id||'';
-    document.getElementById('bot-support-faq').value=d.support_faq||'';
-  }catch(e){console.warn('loadSupportSettings',e);}
-}
-async function saveSupportSettings(){
-  const status=document.getElementById('support-settings-status');
-  status.textContent='Сохранение...';
-  try{
-    const payload={
-      support_enabled:document.getElementById('bot-support-enabled').checked,
-      openrouter_model:document.getElementById('bot-openrouter-model').value.trim()||'openai/gpt-4o-mini',
-      admin_tg_id:document.getElementById('bot-admin-tg-id').value.trim(),
-      support_faq:document.getElementById('bot-support-faq').value,
-    };
-    // Only send the key if the admin actually typed a new one — omitting
-    // it means "keep the existing key as-is".
-    const newKey=document.getElementById('bot-openrouter-key').value.trim();
-    if(newKey)payload.openrouter_api_key=newKey;
-    const r=await proxyApi('/admin/bot-settings',{method:'POST',body:JSON.stringify(payload)});
-    if(!r.ok){const e=await r.json().catch(()=>({}));status.textContent=e.error||'Ошибка';return;}
-    status.style.color='#6f6';status.textContent='Сохранено';
-    setTimeout(()=>{status.textContent='';status.style.color='';},2000);
-    loadSupportSettings();
-  }catch(e){status.style.color='';status.textContent='Ошибка';}
-}
 
 // TICKETS
 let _currentTicketId=null;
@@ -1299,19 +960,19 @@ document.addEventListener('click',event=>{
     case'toggle-nf-group':
       if(event.target.closest('input'))return;
       toggleNfGroup(el.dataset.target);break;
-    case'add-global-config':work=addGlobalConfig();break;
-    case'toggle-config':work=toggleConfig(parseInteger(el.dataset.configIndex));break;
-    case'delete-config':work=deleteConfig(parseInteger(el.dataset.configIndex));break;
-    case'add-per-user-config':work=addPerUserConfig();break;
-    case'delete-per-user-config':work=deletePerUserConfig(username,parseInteger(el.dataset.configIndex));break;
-    case'add-inbound-extra':work=addInboundExtra();break;
-    case'delete-inbound-extra':work=deleteInboundExtra(el.dataset.inboundTag);break;
-    case'format-inbound-extra':formatInboundExtraJson(el.dataset.inboundTag);break;
-    case'update-inbound-extra':work=updateInboundExtra(el.dataset.inboundTag);break;
-    case'save-settings':work=saveSettings();break;
-    case'save-bot-settings':work=saveBotSettings();break;
-    case'restart-bot':work=restartBot();break;
-    case'save-support-settings':work=saveSupportSettings();break;
+    case'add-global-config':work=configsUi?.addGlobalConfig();break;
+    case'toggle-config':work=configsUi?.toggleConfig(parseInteger(el.dataset.configIndex));break;
+    case'delete-config':work=configsUi?.deleteConfig(parseInteger(el.dataset.configIndex));break;
+    case'add-per-user-config':work=configsUi?.addPerUserConfig();break;
+    case'delete-per-user-config':work=configsUi?.deletePerUserConfig(username,parseInteger(el.dataset.configIndex));break;
+    case'add-inbound-extra':work=configsUi?.addInboundExtra();break;
+    case'delete-inbound-extra':work=configsUi?.deleteInboundExtra(el.dataset.inboundTag);break;
+    case'format-inbound-extra':configsUi?.formatInboundExtraJson(el.dataset.inboundTag);break;
+    case'update-inbound-extra':work=configsUi?.updateInboundExtra(el.dataset.inboundTag);break;
+    case'save-settings':work=settingsUi?.saveSettings();break;
+    case'save-bot-settings':work=settingsUi?.saveBotSettings();break;
+    case'restart-bot':work=settingsUi?.restartBot();break;
+    case'save-support-settings':work=settingsUi?.saveSupportSettings();break;
     case'open-ticket':work=openTicket(numericId);break;
     case'send-ticket-reply':work=sendTicketReply();break;
     case'close-ticket':work=closeTicket();break;
@@ -1349,7 +1010,7 @@ document.addEventListener('change',event=>{
     case'load-tickets':work=loadTickets(el.value||undefined);break;
     case'load-stars-payments':work=loadStarsPayments(el.value||undefined);break;
     case'save-stars-settings':work=saveStarsSettings();break;
-    case'toggle-bot-proxy':toggleBotProxy();break;
+    case'toggle-bot-proxy':settingsUi?.toggleBotProxy();break;
     case'nf-all-toggle':onNfAllToggle();break;
     case'nf-group-all-toggle':onNfGroupAllToggle(el);break;
     case'nf-cfg-toggle':onNfCfgToggle();break;
@@ -1363,19 +1024,6 @@ document.addEventListener('input',event=>{
   const el=event.target.closest('[data-input-action]');
   if(el?.dataset.inputAction==='filter-users')filterUsers();
 });
-
-document.addEventListener('dragstart',event=>{
-  const row=event.target.closest('.config-row[data-config-index]');
-  if(row)dragStart(parseInteger(row.dataset.configIndex));
-});
-document.addEventListener('dragover',event=>{
-  if(event.target.closest('.config-row[data-config-index]'))dragOver(event);
-});
-document.addEventListener('drop',event=>{
-  const row=event.target.closest('.config-row[data-config-index]');
-  if(row){event.preventDefault();drop(parseInteger(row.dataset.configIndex));}
-});
-document.addEventListener('dragend',dragEnd);
 
 // PH7-16 Wave 0B: the app-init trigger (restoreAdminSession()) moved to
 // admin/app/main.js -- the composition root now calls it explicitly after

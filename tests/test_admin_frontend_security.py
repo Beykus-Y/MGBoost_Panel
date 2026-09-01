@@ -206,7 +206,11 @@ def test_malicious_admin_api_values_are_escaped_by_real_render_path():
         r"const ACCOUNT_UI_READY = import\(`\./admin/accounts\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const ROUTING_UI_READY = import\(`\./admin/routing\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
         r"const NODES_UI_READY = import\(`\./admin/operations/nodes\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
-        r"const OPS_HEALTH_READY = \(async\(\)=>\{.*?\n\}\)\(\);",
+        r"const OPS_HEALTH_READY = \(async\(\)=>\{.*?\n\}\)\(\);\n"
+        r"let configsUi=null;\n"
+        r"const CONFIGS_UI_READY = import\(`\./admin/technical/configs\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);\n"
+        r"let settingsUi=null;\n"
+        r"const SETTINGS_UI_READY = import\(`\./admin/settings\.js\$\{_MODULE_VERSION\}`\)\.then\(module=>\{.*?\n\}\);",
         "const ACCOUNT_UI_READY=Promise.resolve(null);",
         js_source,
         flags=re.DOTALL,
