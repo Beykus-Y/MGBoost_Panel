@@ -96,7 +96,10 @@ def _try_browser_landing(handler, db, token) -> bool:
     try:
         desired = db.parent_sync.refresh_desired_state(credential["account_id"])
     except Exception:
-        _invalid_subscription_response(handler, started_at)
+        # Authentication already succeeded.  Keep the pre-auth 404 oracle
+        # protection for unknown/revoked credentials, but never mislabel an
+        # operational backend outage as a missing subscription.
+        _service_unavailable_response(handler, started_at)
         return True
     if desired["desired_status"] in ("EXPIRED", "DISABLED"):
         _invalid_subscription_response(handler, started_at)

@@ -34,6 +34,7 @@ def db(monkeypatch):
     monkeypatch.setenv("DATA_DIR", tmp)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_ACTOR_ID", PRIMARY)
     monkeypatch.setenv("PRIMARY_MGBOOST_ADMIN_LOGIN", PRIMARY_LOGIN)
+    monkeypatch.setenv("PARENT_SYNC_RECONCILIATION_MODE", "global")
     import src.config as config
     import src.database as database
     importlib.reload(config)
@@ -173,14 +174,12 @@ def test_w4_broker_failure_is_isolated_logged_and_recoverable(db, caplog):
     # The tick itself must not raise -- this is the whole point of the wiring:
     # a broker/Marzban outage on one child's repair must never propagate out
     # of run_reconciliation_tick and kill the worker's `while True` loop.
-    assert result["drift_audit"] is None
-    assert any("parent_sync_drift_audit_failed" in record.message for record in caplog.records)
+    assert result["drift_audit"] == {
+        "checked": 1, "verified": 0, "flagged": 1, "repaired": 0, "manual_review": 0,
+    }
+    assert not any("parent_sync_drift_audit_failed" in record.message for record in caplog.records)
     op = _op_for(db, fx["child_intent_id"])
-    # claim() already leased the op (IN_FLIGHT) before sync_fn blew up --
-    # durable state, not lost or corrupted (a stale IN_FLIGHT parent_sync
-    # lease's own re-surfacing path is pre-existing PH3-08 behaviour, not a
-    # wiring concern of this pass -- see KNOWN LIMITATIONS in the report).
-    assert op["state"] == "IN_FLIGHT"
+    assert op["state"] == "RETRY"
 
     # The two phases are independently isolated: the drift-audit phase's
     # broker failure must not stop the sweep phase from running (or from
@@ -190,9 +189,63 @@ def test_w4_broker_failure_is_isolated_logged_and_recoverable(db, caplog):
     result_next = child_worker_main.run_reconciliation_tick(db, marzban, worker_id="wiring-w4", now=122)
     assert result_next["sweep"] is not None
     assert result_next["sweep"]["accounts_swept"] == 0  # nothing newly due yet
-    # The IN_FLIGHT op is no longer APPLIED, so the audit query naturally has
+    # The RETRY op is no longer APPLIED, so the audit query naturally has
     # nothing to check -- a clean, exception-free empty pass, not a repeat
     # crash: the failure truly stayed contained to the one earlier tick.
     assert result_next["drift_audit"] == {
         "checked": 0, "verified": 0, "flagged": 0, "repaired": 0, "manual_review": 0,
     }
+
+
+def test_c1_canary_scope_never_touches_due_account_outside_allowlist(db, monkeypatch):
+    allowed = _build_applied_child(db, mapping="CANARY_A", tg=910010, alias="canary-a")
+    outside = _build_applied_child(db, mapping="CANARY_B", tg=910011, alias="canary-b")
+    _set_subscription(db, allowed["account"]["account_id"], status="ACTIVE", current_expiry=71_000)
+    _set_subscription(db, outside["account"]["account_id"], status="ACTIVE", current_expiry=72_000)
+    marzban = _StubMarzban(allowed["remote"])
+    monkeypatch.setenv("PARENT_SYNC_RECONCILIATION_MODE", "canary")
+    monkeypatch.setenv("PARENT_SYNC_ALLOWED_ACCOUNT_IDS", str(allowed["account"]["account_id"]))
+
+    result = child_worker_main.run_reconciliation_tick(db, marzban, worker_id="canary-c1", now=1_000)
+
+    assert result["mode"] == "canary"
+    assert result["sweep"]["accounts_swept"] == 1
+    assert db._conn.execute(
+        "SELECT 1 FROM mgboost_convergence_sweep_cursor WHERE account_id=?",
+        (outside["account"]["account_id"],),
+    ).fetchone() is None
+    assert db._conn.execute(
+        "SELECT 1 FROM mgboost_parent_sync_operations WHERE account_id=?",
+        (outside["account"]["account_id"],),
+    ).fetchone() is None
+
+
+def test_c2_explicit_global_mode_sweeps_all_due_accounts(db, monkeypatch):
+    first = _build_applied_child(db, mapping="GLOBAL_A", tg=910012, alias="global-a")
+    second = _build_applied_child(db, mapping="GLOBAL_B", tg=910013, alias="global-b")
+    _set_subscription(db, first["account"]["account_id"], status="ACTIVE", current_expiry=73_000)
+    _set_subscription(db, second["account"]["account_id"], status="ACTIVE", current_expiry=74_000)
+
+    class TwoRemoteMarzban:
+        def sync_child_user_state(self, payload):
+            remote = first["remote"] if payload["child_username"] == first["child_username"] else second["remote"]
+            return BrokerOperations(remote).dispatch("child.user.state.sync", payload)
+
+        def observe_child_user_state(self, payload):
+            remote = first["remote"] if payload["child_username"] == first["child_username"] else second["remote"]
+            return BrokerOperations(remote).dispatch("child.user.state.observe", payload)
+
+    monkeypatch.setenv("PARENT_SYNC_RECONCILIATION_MODE", "global")
+    result = child_worker_main.run_reconciliation_tick(db, TwoRemoteMarzban(), worker_id="global-c2", now=1_000)
+    assert result["mode"] == "global"
+    assert result["sweep"]["accounts_swept"] == 2
+
+
+def test_c3_disabled_mode_makes_no_reconciliation_remote_calls(db, monkeypatch):
+    fx = _build_applied_child(db, mapping="DISABLED_A", tg=910014)
+    marzban = _StubMarzban(fx["remote"])
+    monkeypatch.setenv("PARENT_SYNC_RECONCILIATION_MODE", "disabled")
+    result = child_worker_main.run_reconciliation_tick(db, marzban, worker_id="disabled-c3", now=1_000)
+    assert result == {"mode": "disabled", "sweep": None, "drift_audit": None}
+    assert marzban.sync_calls == 0
+    assert marzban.observe_calls == 0

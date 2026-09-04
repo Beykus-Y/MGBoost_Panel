@@ -131,6 +131,20 @@ def test_invalid_token_browser_gets_uniform_invalid_not_landing(db):
     assert handler.wfile.getvalue() == b"Subscription not found\n"
 
 
+def test_valid_token_browser_refresh_failure_is_safe_503(db, monkeypatch):
+    from src.routes import opaque_sub as mod
+    account, _alias_id, _slot = _account(db, mapping="BROWSER_REFRESH_FAILURE", tg=950500008)
+    token = _issue_active_credential(db, account["account_id"], idem_prefix="browser-landing-h")
+    monkeypatch.setattr(
+        db.parent_sync, "refresh_desired_state",
+        lambda _account_id: (_ for _ in ()).throw(ConnectionError("backend unavailable")),
+    )
+    handler = FakeHandler(db, user_agent=BROWSER_UA)
+    mod.handle_opaque_sub(handler, token)
+    assert handler.status == 503
+    assert handler.wfile.getvalue() == b"Subscription temporarily unavailable\n"
+
+
 def test_revoked_token_browser_gets_uniform_invalid(db):
     from src.routes import opaque_sub as mod
     account, _alias_id, _slot = _account(db, mapping="BROWSER_D", tg=950500004)

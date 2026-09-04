@@ -21,6 +21,36 @@ def _enabled(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parent_sync_scope() -> tuple[str, tuple[int, ...] | None]:
+    """Fail closed for the newly wired reconciliation mechanism.
+
+    The child-worker ``op_*`` allowlist and parent-sync ``sy_*`` operation
+    IDs are different namespaces, so canary membership is explicitly account
+    scoped instead of guessing a cross-workflow mapping.
+    """
+    mode = os.getenv("PARENT_SYNC_RECONCILIATION_MODE", "disabled").strip().lower()
+    if mode == "disabled":
+        return mode, ()
+    if mode == "global":
+        return mode, None
+    if mode != "canary":
+        logger.error("parent_sync_reconciliation_invalid_mode")
+        return "disabled", ()
+    try:
+        account_ids = tuple(dict.fromkeys(
+            int(value.strip()) for value in
+            os.getenv("PARENT_SYNC_ALLOWED_ACCOUNT_IDS", "").split(",")
+            if value.strip()
+        ))
+    except ValueError:
+        logger.error("parent_sync_reconciliation_invalid_canary_scope")
+        return "disabled", ()
+    if not account_ids or any(account_id <= 0 for account_id in account_ids):
+        logger.error("parent_sync_reconciliation_empty_canary_scope")
+        return "disabled", ()
+    return mode, account_ids
+
+
 def build_worker():
     if not _enabled(os.getenv("CHILD_WORKER_ENABLED", "0")):
         raise RuntimeError("CHILD_WORKER_ENABLED is not enabled")
@@ -60,7 +90,13 @@ def run_reconciliation_tick(db, marzban, *, worker_id: str, now: int) -> dict:
     `run_drift_audit_cycle` already treat all of their DB state (sweep
     cursor, verify_after) as the durable due-work boundary, so a skipped
     tick here is simply retried on the next one."""
-    summary = {"sweep": None, "drift_audit": None}
+    mode, account_ids = _parent_sync_scope()
+    summary = {"mode": mode, "sweep": None, "drift_audit": None}
+    if mode == "disabled":
+        return summary
+    max_attempts = int(os.getenv("CHILD_WORKER_MAX_ATTEMPTS", "8"))
+    retry_base_seconds = int(os.getenv("CHILD_WORKER_RETRY_BASE_SECONDS", "5"))
+    retry_cap_seconds = int(os.getenv("CHILD_WORKER_RETRY_CAP_SECONDS", "300"))
     try:
         summary["sweep"] = sweep_convergence(
             db, sync_fn=marzban.sync_child_user_state, worker_id=worker_id,
@@ -68,6 +104,8 @@ def run_reconciliation_tick(db, marzban, *, worker_id: str, now: int) -> dict:
             sweep_interval_seconds=int(
                 os.getenv("PARENT_SYNC_SWEEP_INTERVAL_SECONDS", "120")
             ),
+            max_attempts=max_attempts, retry_base_seconds=retry_base_seconds,
+            retry_cap_seconds=retry_cap_seconds, account_ids=account_ids,
         )
     except Exception:
         logger.exception("parent_sync_convergence_sweep_failed")
@@ -79,6 +117,8 @@ def run_reconciliation_tick(db, marzban, *, worker_id: str, now: int) -> dict:
             audit_interval_seconds=int(
                 os.getenv("PARENT_SYNC_DRIFT_AUDIT_INTERVAL_SECONDS", "300")
             ),
+            max_attempts=max_attempts, retry_base_seconds=retry_base_seconds,
+            retry_cap_seconds=retry_cap_seconds, account_ids=account_ids,
         )
     except Exception:
         logger.exception("parent_sync_drift_audit_failed")
