@@ -293,24 +293,61 @@ def validate_sync_operation_id(value) -> str:
     return value
 
 
+class ChildStateSyncValidationError(ValueError):
+    """Safe, typed local contract failure for parent state-sync requests."""
+
+    def __init__(self, error_class: str):
+        super().__init__(error_class)
+        self.error_class = error_class
+
+
+def _is_unlimited_expiry(value) -> bool:
+    return value is None or (
+        isinstance(value, int) and not isinstance(value, bool) and value == 0
+    )
+
+
+def expiry_semantically_matches(desired_status: str, desired_expire, observed_expire) -> bool:
+    """Compare state-sync expiry with Marzban's unlimited representation.
+
+    Expiry is deliberately irrelevant for disabled children.  For active
+    children, both ``None`` and ``0`` mean unlimited; finite values must
+    match exactly.
+    """
+    if desired_status == "disabled":
+        return True
+    if desired_status != "active":
+        return False
+    if _is_unlimited_expiry(desired_expire):
+        return _is_unlimited_expiry(observed_expire)
+    return (
+        isinstance(desired_expire, int) and not isinstance(desired_expire, bool)
+        and isinstance(observed_expire, int) and not isinstance(observed_expire, bool)
+        and desired_expire == observed_expire
+    )
+
+
 def validate_child_state_sync_request(data: dict) -> dict:
     required = {"operation_id", "child_username", "desired_status", "desired_expire", "uuid_verifier"}
     if not isinstance(data, dict) or set(data) != required:
-        raise ValueError("invalid child state-sync fields")
-    child_username = validate_child_username(data["child_username"])
-    operation_id = validate_sync_operation_id(data["operation_id"])
+        raise ChildStateSyncValidationError("INVALID_CHILD_SYNC_CONTRACT")
+    try:
+        child_username = validate_child_username(data["child_username"])
+        operation_id = validate_sync_operation_id(data["operation_id"])
+    except ValueError as exc:
+        raise ChildStateSyncValidationError("INVALID_CHILD_SYNC_CONTRACT") from exc
     desired_status = data["desired_status"]
     if not isinstance(desired_status, str) or not _SYNC_STATUS_RE.fullmatch(desired_status):
-        raise ValueError("invalid desired status")
+        raise ChildStateSyncValidationError("INVALID_CHILD_SYNC_CONTRACT")
     desired_expire = data["desired_expire"]
     if desired_expire is not None:
         if isinstance(desired_expire, bool) or not isinstance(desired_expire, int) or desired_expire < 0:
-            raise ValueError("invalid desired expire")
+            raise ChildStateSyncValidationError("INVALID_CHILD_SYNC_CONTRACT")
         if desired_status != "active":
-            raise ValueError("desired expire is only meaningful for an active child")
+            raise ChildStateSyncValidationError("INVALID_CHILD_SYNC_CONTRACT")
     uuid_verifier = data["uuid_verifier"]
     if not isinstance(uuid_verifier, str) or not _VERIFIER_RE.fullmatch(uuid_verifier):
-        raise ValueError("invalid child UUID verifier")
+        raise ChildStateSyncValidationError("INVALID_CHILD_UUID_VERIFIER")
     return {
         "operation_id": operation_id,
         "child_username": child_username,
@@ -334,9 +371,8 @@ def verify_synced_child(user: dict, child_username: str, desired_status: str, de
         raise ValueError("remote child identity mismatch")
     if user.get("status") != desired_status:
         raise ValueError("remote child status did not converge")
-    if desired_status == "active" and desired_expire is not None:
-        if int(user.get("expire") or 0) != int(desired_expire):
-            raise ValueError("remote child expiry did not converge")
+    if not expiry_semantically_matches(desired_status, desired_expire, user.get("expire")):
+        raise ValueError("remote child expiry did not converge")
     return {"username": child_username, "status": desired_status}
 
 

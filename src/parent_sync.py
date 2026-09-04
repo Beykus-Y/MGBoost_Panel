@@ -31,7 +31,11 @@ import sqlite3
 import time
 from urllib.error import HTTPError, URLError
 
-from .child_contract import derive_sync_operation_id
+from .child_contract import (
+    ChildStateSyncValidationError,
+    derive_sync_operation_id,
+    expiry_semantically_matches,
+)
 
 
 class ParentSyncError(RuntimeError):
@@ -47,6 +51,8 @@ _DESIRED_STATUSES = frozenset({"ACTIVE", "DISABLED", "EXPIRED", "UNLIMITED"})
 
 def _safe_sync_error_class(exc: Exception) -> str:
     """Return an audit-safe class for a failed broker/Marzban dispatch."""
+    if isinstance(exc, ChildStateSyncValidationError):
+        return exc.error_class
     if isinstance(exc, HTTPError):
         return f"BROKER_HTTP_{int(exc.code)}"
     if isinstance(exc, (URLError, TimeoutError, ConnectionError, OSError)):
@@ -218,7 +224,9 @@ class ParentSyncStore:
                     "FROM mgboost_child_user_intents AS ci "
                     "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
                     "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
-                    "WHERE ci.account_id=? AND g.status='ACTIVE' AND ci.desired_state!='REVOKED'",
+                    "WHERE ci.account_id=? AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+                    "AND ci.observed_state IN ('ACTIVE','DISABLED') "
+                    "AND ci.uuid_verifier IS NOT NULL",
                     (account_id,),
                 ).fetchall()
                 results = []
@@ -530,7 +538,8 @@ class ParentSyncStore:
             "JOIN mgboost_child_user_intents AS ci ON ci.id=so.child_intent_id "
             "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
             "WHERE so.account_id=? AND so.parent_revision=? "
-            "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED'",
+            "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+            "AND ci.observed_state IN ('ACTIVE','DISABLED') AND ci.uuid_verifier IS NOT NULL",
             (int(account_id), state["revision"]),
         ).fetchall()
         if not rows:
@@ -564,6 +573,7 @@ class ParentSyncStore:
             "WHERE so.state='APPLIED' AND so.verify_after IS NOT NULL AND so.verify_after<=? "
             "AND so.parent_revision=es.revision "
             "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+            "AND ci.observed_state IN ('ACTIVE','DISABLED') AND ci.uuid_verifier IS NOT NULL "
             f"{scope_sql} ORDER BY so.verify_after ASC LIMIT ?",
             (int(now), *scope_params, int(limit)),
         ).fetchall()
@@ -691,6 +701,7 @@ class ParentSyncStore:
             "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
             "WHERE so.state IN ('PENDING','RETRY') AND so.next_attempt_at<=? "
             "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+            "AND ci.observed_state IN ('ACTIVE','DISABLED') AND ci.uuid_verifier IS NOT NULL "
             f"{scope_sql} ORDER BY so.next_attempt_at ASC LIMIT ?",
             (int(now), *scope_params, int(limit)),
         ).fetchall()
@@ -731,6 +742,11 @@ def process_sync(
     try:
         result = sync_fn(claimed["payload"])
     except Exception as exc:
+        if isinstance(exc, ChildStateSyncValidationError):
+            db.parent_sync.record_error(
+                operation_id, error_class=_safe_sync_error_class(exc), now=now,
+            )
+            return None
         db.parent_sync.retry_sync_exception(
             operation_id, error_class=_safe_sync_error_class(exc), now=now,
             max_attempts=max_attempts, retry_base_seconds=retry_base_seconds,
@@ -782,7 +798,9 @@ def run_drift_audit_cycle(
         observed_expire = None if remote_missing else observed.get("observed_expire")
         matches = (not remote_missing) and (
             observed_status == op["desired_status"]
-            and (op["desired_status"] == "disabled" or observed_expire == op["desired_expire"])
+            and expiry_semantically_matches(
+                op["desired_status"], op["desired_expire"], observed_expire,
+            )
         )
         if matches:
             db.parent_sync.confirm_stable(

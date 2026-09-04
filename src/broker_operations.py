@@ -14,6 +14,7 @@ from .child_contract import (
     build_revoke_payload,
     build_state_sync_payload,
     credential_verifier,
+    expiry_semantically_matches,
     source_contract_hash,
     validate_child_ensure_request,
     validate_child_observe_request,
@@ -349,7 +350,9 @@ class BrokerOperations:
                     raise
                 already_active_expiry = (
                     desired_status == "active"
-                    and (desired_expire is None or int(current.get("expire") or 0) == int(desired_expire))
+                    and expiry_semantically_matches(
+                        desired_status, desired_expire, current.get("expire"),
+                    )
                 )
                 if current.get("status") == desired_status and (
                     desired_status == "disabled" or already_active_expiry
