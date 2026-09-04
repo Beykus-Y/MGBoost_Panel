@@ -34,6 +34,7 @@ from .child_workflow_schema import apply_child_workflow_schema
 from .child_lifecycle_schema import apply_child_lifecycle_schema
 from .child_lifecycle import ChildLifecycleStore
 from .parent_sync_schema import apply_parent_sync_schema
+from .parent_sync_schema_v2 import apply_parent_sync_schema_v2
 from .parent_sync import ParentSyncStore
 from .device_slot_admin import DeviceSlotAdminStore
 from .subscription_admin_ops import SubscriptionAdminOpsStore
@@ -511,6 +512,7 @@ class Database:
         apply_child_workflow_schema(self._conn)
         apply_child_lifecycle_schema(self._conn)
         apply_parent_sync_schema(self._conn)
+        apply_parent_sync_schema_v2(self._conn)
         apply_stars_purchase_schema(self._conn)
         apply_commercial_signup_schema(self._conn)
         apply_admin_grant_schema(self._conn)

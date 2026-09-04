@@ -74,6 +74,23 @@ class BrokerOperations:
     def _admin_token(self):
         return self.marzban.get_admin_token_from_env()
 
+    def _authoritative_child(self, child_username: str, uuid_verifier: str, token) -> tuple[dict, str]:
+        """Authoritative reread + identity/UUID-verifier check shared by
+        every PH3-08 state-touching and state-observing operation. Raises
+        HTTPError(404) if the remote child is absent, ValueError on identity
+        or UUID drift -- callers must never blindly patch a possibly-wrong
+        remote user."""
+        current = self.marzban.get_user(child_username, token)
+        if current.get("username") != child_username:
+            raise ValueError("remote child identity mismatch")
+        try:
+            current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("remote child UUID is invalid") from exc
+        if not hmac.compare_digest(credential_verifier(current_uuid), uuid_verifier):
+            raise ValueError("remote child UUID verifier mismatch")
+        return current, current_uuid
+
     def dispatch(self, operation: str, data: dict):
         if operation not in BROKER_OPERATIONS:
             raise ValueError("Unknown broker operation")
@@ -286,6 +303,32 @@ class BrokerOperations:
                     "headers": {str(k): str(v) for k, v in headers.items()},
                 }
 
+        if operation == "child.user.state.observe":
+            # Read-only counterpart to child.user.state.sync: authoritative
+            # reread + identity/UUID-verifier check, but never calls
+            # modify_user. This is what the PH3-08 drift audit uses to
+            # detect a post-ACK rollback (or any other remote drift) before
+            # deciding whether a repair mutation is actually needed --
+            # detection is separated from mutation so a periodic audit tick
+            # never blindly writes to Marzban.
+            request = validate_child_state_sync_request(data)
+            child_username = request["child_username"]
+            with self._lock_for(child_username):
+                token = self._admin_token()
+                try:
+                    current, _ = self._authoritative_child(
+                        child_username, request["uuid_verifier"], token,
+                    )
+                except HTTPError as exc:
+                    if exc.code == 404:
+                        return {"outcome": "REMOTE_MISSING"}
+                    raise
+                return {
+                    "outcome": "OBSERVED",
+                    "observed_status": current.get("status"),
+                    "observed_expire": current.get("expire"),
+                }
+
         if operation == "child.user.state.sync":
             request = validate_child_state_sync_request(data)
             child_username = request["child_username"]
@@ -294,7 +337,9 @@ class BrokerOperations:
             with self._lock_for(child_username):
                 token = self._admin_token()
                 try:
-                    current = self.marzban.get_user(child_username, token)
+                    current, current_uuid = self._authoritative_child(
+                        child_username, request["uuid_verifier"], token,
+                    )
                 except HTTPError as exc:
                     if exc.code == 404:
                         # PH3-08 never (re)creates a remote child -- that is
@@ -302,18 +347,6 @@ class BrokerOperations:
                         # back for reconciliation, not silently ignored.
                         return {"outcome": "REMOTE_MISSING"}
                     raise
-                if current.get("username") != child_username:
-                    raise ValueError("remote child identity mismatch")
-                try:
-                    current_uuid = str(uuid.UUID(current["proxies"]["vless"]["id"])).lower()
-                except (KeyError, TypeError, ValueError, AttributeError) as exc:
-                    raise ValueError("remote child UUID is invalid") from exc
-                if not hmac.compare_digest(
-                    credential_verifier(current_uuid), request["uuid_verifier"]
-                ):
-                    # Contract drift / ambiguous remote state -- fail closed,
-                    # never blindly patch a possibly-wrong remote user.
-                    raise ValueError("remote child UUID verifier mismatch")
                 already_active_expiry = (
                     desired_status == "active"
                     and (desired_expire is None or int(current.get("expire") or 0) == int(desired_expire))

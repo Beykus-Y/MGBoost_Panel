@@ -325,9 +325,23 @@ class ParentSyncStore:
              remote_effect_verifier, safe_error_class, now),
         )
 
+    def _verification_event(self, sync_id, account_id, event_type, *,
+                             remote_effect_verifier=None, safe_error_class=None, now):
+        # A separate, freely-recurring audit trail (see schema v2) -- unlike
+        # `_event` this is never bounded by the dispatch `attempts` counter,
+        # since a stable child can be legitimately re-verified any number of
+        # times between real repairs.
+        self._conn.execute(
+            "INSERT INTO mgboost_parent_sync_verification_events "
+            "(sync_operation_id,account_id,event_type,remote_effect_verifier,"
+            "safe_error_class,created_at) VALUES (?,?,?,?,?,?)",
+            (sync_id, account_id, event_type, remote_effect_verifier, safe_error_class, now),
+        )
+
     def acknowledge(
         self, operation_id: str, *, worker_id: str, outcome: str, now: int,
         observed_status=None, observed_expire=None,
+        stabilization_grace_seconds: int = 20,
     ) -> dict:
         if outcome not in {"SYNCED", "ALREADY_IN_SYNC"}:
             raise ParentSyncError("invalid sync outcome")
@@ -348,11 +362,18 @@ class ParentSyncStore:
                     "WHERE id=? AND desired_state!='REVOKED'",
                     (local_status, local_status, now, row["child_intent_id"]),
                 )
+                # A successful, verified ACK only attests to *this instant* --
+                # it is never treated as a permanent fact. Schedule the first
+                # (short) stabilization re-check so a post-ACK rollback (e.g.
+                # a remote scheduler racing this write) gets caught instead
+                # of silently living forever as a local-ACTIVE/remote-drifted
+                # ghost state.
+                verify_after = now + max(1, int(stabilization_grace_seconds))
                 self._conn.execute(
                     "UPDATE mgboost_parent_sync_operations SET state='APPLIED',"
                     "lease_owner=NULL,lease_expires_at=NULL,last_error_class=NULL,updated_at=?,"
-                    "row_version=row_version+1 WHERE id=?",
-                    (now, row["id"]),
+                    "verify_after=?,stabilized_at=NULL,row_version=row_version+1 WHERE id=?",
+                    (now, verify_after, row["id"]),
                 )
                 child_username = json.loads(row["payload_json"]).get("child_username")
                 self._event(
@@ -448,6 +469,170 @@ class ParentSyncStore:
             return "PARTIAL"
         return "PENDING"
 
+    # --- post-ACK stabilization + periodic drift audit (BUG A/A2/B) ----------
+
+    def due_for_drift_audit(self, *, now: int, limit: int = 50) -> list[dict]:
+        """Current (non-terminal, live-generation) children whose last
+        successful sync is due for an authoritative re-observation -- either
+        the short post-ACK stabilization check or a later periodic audit.
+        Only ops still stamped with the account's *live* revision are ever
+        selected: once a newer parent transition supersedes an op, that op
+        stops being "the" applied state for the child and naturally falls
+        out of this query without any extra bookkeeping."""
+        rows = self._conn.execute(
+            "SELECT so.* FROM mgboost_parent_sync_operations AS so "
+            "JOIN mgboost_child_user_intents AS ci ON ci.id=so.child_intent_id "
+            "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
+            "JOIN mgboost_entitlement_state AS es ON es.account_id=so.account_id "
+            "WHERE so.state='APPLIED' AND so.verify_after IS NOT NULL AND so.verify_after<=? "
+            "AND so.parent_revision=es.revision "
+            "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+            "ORDER BY so.verify_after ASC LIMIT ?",
+            (int(now), int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def confirm_stable(
+        self, operation_id: str, *, observed_status, observed_expire, now: int,
+        audit_interval_seconds: int = 300,
+    ) -> None:
+        """Authoritative re-observation matched the target: no mutation,
+        just push the next audit out and record the audit-trail event so the
+        operator can see this was actively re-verified, not merely assumed."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mgboost_parent_sync_operations WHERE operation_id=? AND state='APPLIED'",
+                    (operation_id,),
+                ).fetchone()
+                if not row:
+                    self._conn.rollback()
+                    return
+                next_verify = now + max(1, int(audit_interval_seconds))
+                self._conn.execute(
+                    "UPDATE mgboost_parent_sync_operations SET verify_after=?,stabilized_at=?,"
+                    "row_version=row_version+1,updated_at=? WHERE id=?",
+                    (next_verify, now, now, row["id"]),
+                )
+                child_username = json.loads(row["payload_json"]).get("child_username")
+                self._verification_event(
+                    row["id"], row["account_id"], "STABILIZATION_VERIFIED",
+                    remote_effect_verifier=_remote_effect_verifier(
+                        child_username, "STABILIZATION_VERIFIED", observed_status, observed_expire,
+                    ),
+                    now=now,
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def flag_drift_for_retry(
+        self, operation_id: str, *, safe_reason: str, now: int, max_attempts: int = 8,
+        retry_delay_seconds: int = 10,
+    ) -> str:
+        """Authoritative re-observation found the remote child no longer
+        matches the target it was last ACKed for (a post-ACK rollback, or
+        any other later drift). Demotes the *existing* op straight back into
+        the existing RETRY state -- no new state enum, no new operation row
+        -- so the ordinary claim()/dispatch()/acknowledge() pipeline (with
+        its staleness fencing against a newer parent revision) performs the
+        actual repair. Bounded by the op's own `attempts` counter, exactly
+        like every other retry path in this codebase; once exhausted the op
+        goes terminal (`ERROR`), never looping on a remote that keeps
+        rolling itself back.
+
+        Returns "RETRY" or "ERROR" (the state it ended up in)."""
+        safe_reason = (safe_reason or "").strip()[:128] or "REMOTE_POST_ACK_DRIFT"
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM mgboost_parent_sync_operations WHERE operation_id=? AND state='APPLIED'",
+                    (operation_id,),
+                ).fetchone()
+                if not row:
+                    self._conn.rollback()
+                    return "APPLIED"
+                self._verification_event(row["id"], row["account_id"], "STABILIZATION_DRIFTED",
+                                          safe_error_class=safe_reason, now=now)
+                if row["attempts"] >= max(1, int(max_attempts)):
+                    self._conn.execute(
+                        "UPDATE mgboost_parent_sync_operations SET state='ERROR',"
+                        "last_error_class=?,verify_after=NULL,row_version=row_version+1,updated_at=? "
+                        "WHERE id=?",
+                        ("STABILIZATION_RETRY_EXHAUSTED", now, row["id"]),
+                    )
+                    self._event(row["id"], row["account_id"], row["attempts"], "FAILED",
+                                safe_error_class="STABILIZATION_RETRY_EXHAUSTED", now=now)
+                    self._conn.commit()
+                    return "ERROR"
+                self._conn.execute(
+                    "UPDATE mgboost_parent_sync_operations SET state='RETRY',"
+                    "next_attempt_at=?,last_error_class=?,verify_after=NULL,"
+                    "row_version=row_version+1,updated_at=? WHERE id=?",
+                    (now + max(0, int(retry_delay_seconds)), safe_reason, now, row["id"]),
+                )
+                self._conn.commit()
+                return "RETRY"
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    # --- durable per-account convergence sweep (BUG G) ------------------------
+
+    def due_convergence_accounts(self, *, now: int, limit: int = 50) -> list[int]:
+        """Every account with a subscription that is due for an independent
+        full re-derivation of desired state + child convergence, regardless
+        of whether anything actually changed and regardless of whether the
+        entitlement mutation that changed it remembered to trigger a sync.
+        An account with no cursor row yet (never swept) is always due."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT s.account_id FROM mgboost_subscriptions AS s "
+            "LEFT JOIN mgboost_convergence_sweep_cursor AS c ON c.account_id=s.account_id "
+            "WHERE COALESCE(c.next_check_at,0)<=? "
+            "ORDER BY COALESCE(c.next_check_at,0) ASC, s.account_id ASC LIMIT ?",
+            (int(now), int(limit)),
+        ).fetchall()
+        return [int(row["account_id"]) for row in rows]
+
+    def due_for_dispatch(self, *, now: int, limit: int = 50) -> list[dict]:
+        """Every current (non-terminal, live-generation) child's sync op
+        that is claimable right now -- freshly enqueued (`PENDING`) or
+        previously flagged for repair by the drift audit (`RETRY`). This is
+        what lets a repair flagged with a non-zero backoff still get picked
+        up on a later tick, without the caller having to separately re-run
+        `enqueue_current_children` for its account."""
+        rows = self._conn.execute(
+            "SELECT so.* FROM mgboost_parent_sync_operations AS so "
+            "JOIN mgboost_child_user_intents AS ci ON ci.id=so.child_intent_id "
+            "JOIN mgboost_device_slot_generations AS g ON g.id=ci.slot_generation_id "
+            "WHERE so.state IN ('PENDING','RETRY') AND so.next_attempt_at<=? "
+            "AND g.status='ACTIVE' AND ci.desired_state!='REVOKED' "
+            "ORDER BY so.next_attempt_at ASC LIMIT ?",
+            (int(now), int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_swept(self, account_id: int, *, now: int, interval_seconds: int = 120) -> None:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                next_check = now + max(1, int(interval_seconds))
+                self._conn.execute(
+                    "INSERT INTO mgboost_convergence_sweep_cursor "
+                    "(account_id,next_check_at,last_swept_at,updated_at) VALUES (?,?,?,?) "
+                    "ON CONFLICT(account_id) DO UPDATE SET "
+                    "next_check_at=excluded.next_check_at,last_swept_at=excluded.last_swept_at,"
+                    "updated_at=excluded.updated_at",
+                    (int(account_id), next_check, now, now),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
 
 # --- orchestration: refresh desired state -> enqueue -> claim+dispatch -------
 
@@ -469,6 +654,95 @@ def process_sync(db, operation_id: str, *, worker_id: str, sync_fn, now: int) ->
         observed_status=result.get("observed_status"),
         observed_expire=result.get("observed_expire"),
     )
+
+
+def run_drift_audit_cycle(
+    db, *, observe_fn, sync_fn, worker_id: str, now: int, limit: int = 50,
+    audit_interval_seconds: int = 300, max_attempts: int = 8,
+    repair_retry_delay_seconds: int = 0,
+) -> dict:
+    """One periodic tick of the post-ACK stabilization + drift audit
+    (BUG A/A2/B). `observe_fn(payload) -> {"outcome": "OBSERVED"|"REMOTE_MISSING",
+    "observed_status":..., "observed_expire":...}` is the typed read-only
+    `child.user.state.observe` broker call -- detection never mutates
+    anything. `sync_fn` is the same mutating `child.user.state.sync` call
+    `process_sync` uses; when a drift is found it is durably flagged
+    (`flag_drift_for_retry`, surviving a crash right here) and then, if the
+    flag left the op immediately claimable, repaired within this same tick
+    via the ordinary claim()/acknowledge() pipeline -- staleness fencing and
+    bounded-attempts exhaustion apply exactly as they do to any other sync.
+    A broker/Marzban failure during the read-only check is never treated as
+    a drift finding: the op's existing verify_after is left untouched so a
+    later tick simply re-checks it."""
+    due = db.parent_sync.due_for_drift_audit(now=now, limit=limit)
+    checked = verified = flagged = manual_review = repaired = 0
+    for op in due:
+        payload = json.loads(op["payload_json"])
+        try:
+            observed = observe_fn(payload)
+        except Exception:
+            continue
+        checked += 1
+        remote_missing = observed.get("outcome") == "REMOTE_MISSING"
+        observed_status = None if remote_missing else observed.get("observed_status")
+        observed_expire = None if remote_missing else observed.get("observed_expire")
+        matches = (not remote_missing) and (
+            observed_status == op["desired_status"]
+            and (op["desired_status"] == "disabled" or observed_expire == op["desired_expire"])
+        )
+        if matches:
+            db.parent_sync.confirm_stable(
+                op["operation_id"], observed_status=observed_status,
+                observed_expire=observed_expire, now=now,
+                audit_interval_seconds=audit_interval_seconds,
+            )
+            verified += 1
+            continue
+        reason = "REMOTE_MISSING_POST_ACK" if remote_missing else "REMOTE_POST_ACK_DRIFT"
+        outcome_state = db.parent_sync.flag_drift_for_retry(
+            op["operation_id"], safe_reason=reason, now=now,
+            max_attempts=max_attempts, retry_delay_seconds=repair_retry_delay_seconds,
+        )
+        flagged += 1
+        if outcome_state != "RETRY":
+            manual_review += 1
+    # Dispatch phase: anything now claimable for a current child -- freshly
+    # flagged repairs above (if their backoff already elapsed) as well as
+    # any earlier tick's repair that only became due just now.
+    for op in db.parent_sync.due_for_dispatch(now=now, limit=limit):
+        result = process_sync(db, op["operation_id"], worker_id=worker_id, sync_fn=sync_fn, now=now)
+        if result is not None:
+            repaired += 1
+    return {
+        "checked": checked, "verified": verified, "flagged": flagged,
+        "repaired": repaired, "manual_review": manual_review,
+    }
+
+
+def sweep_convergence(
+    db, *, sync_fn, worker_id: str, now: int, limit: int = 50,
+    sweep_interval_seconds: int = 120, lease_seconds: int = 30,
+) -> dict:
+    """Durable per-account convergence sweep (BUG G): independently
+    re-derives desired state + converges current children for every account
+    due for a check, regardless of which entitlement mutation path last
+    touched it (or whether the process crashed between that mutation's
+    commit and its caller remembering to trigger a sync). Safe to call on
+    any cadence from any worker -- `refresh_desired_state`/
+    `enqueue_current_children`/`claim()` are all idempotent already."""
+    accounts = db.parent_sync.due_convergence_accounts(now=now, limit=limit)
+    swept = []
+    for account_id in accounts:
+        try:
+            summary = run_account_sync_cycle(
+                db, account_id, sync_fn=sync_fn, worker_id=worker_id,
+                now=now, lease_seconds=lease_seconds,
+            )
+        except ParentSyncError as exc:
+            summary = {"error": str(exc)}
+        db.parent_sync.mark_swept(account_id, now=now, interval_seconds=sweep_interval_seconds)
+        swept.append({"account_id": account_id, **summary})
+    return {"accounts_swept": len(accounts), "results": swept}
 
 
 def run_account_sync_cycle(db, account_id: int, *, sync_fn, worker_id: str, now: int, lease_seconds: int = 30) -> dict:

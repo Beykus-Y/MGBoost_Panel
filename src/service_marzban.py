@@ -238,6 +238,17 @@ class ServiceMarzbanClient:
             return BrokerOperations(self.direct).dispatch("child.user.state.sync", normalized)
         return self._broker().call("child.user.state.sync", normalized)
 
+    def observe_child_user_state(self, request):
+        """Read-only authoritative reread of a child's status/expire, used
+        by the PH3-08 drift audit to detect a post-ACK rollback (or any
+        other remote drift) before a repair mutation is enqueued. Never
+        calls modify_user."""
+        normalized = validate_child_state_sync_request(request)
+        if self.mode == "direct":
+            from .broker_operations import BrokerOperations
+            return BrokerOperations(self.direct).dispatch("child.user.state.observe", normalized)
+        return self._broker().call("child.user.state.observe", normalized)
+
     def set_child_wl_state(self, request):
         """PH6-06 exact inbound-only WL enforcement mutation; the broker
         recomputes the target from live state plus the static PH0-05
