@@ -76,13 +76,22 @@ class DeviceTelemetryStore:
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                owner = self._conn.execute(
-                    "SELECT account_id FROM mgboost_device_slot_generations WHERE id=?",
+                generation = self._conn.execute(
+                    "SELECT account_id, hwid_verifier FROM mgboost_device_slot_generations "
+                    "WHERE id=?",
                     (slot_generation_id,),
                 ).fetchone()
-                if owner is None or int(owner["account_id"]) != account_id:
+                if generation is None or int(generation["account_id"]) != account_id:
                     raise DeviceTelemetryError(
                         "slot_generation_id does not belong to account_id"
+                    )
+                if generation["hwid_verifier"] != hwid_verifier:
+                    # Authoritative proof, checked by the store itself and not
+                    # merely trusted from the caller: a generation is 1:1 with
+                    # exactly one hwid_verifier for its whole lifetime. Exact
+                    # equality only -- never fuzzy/prefix matching.
+                    raise DeviceTelemetryError(
+                        "hwid_verifier does not match this generation's authoritative verifier"
                     )
                 existing = self._conn.execute(
                     "SELECT * FROM mgboost_device_telemetry WHERE slot_generation_id=?",

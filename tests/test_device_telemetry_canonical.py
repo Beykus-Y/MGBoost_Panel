@@ -208,3 +208,64 @@ def test_store_refuses_a_slot_generation_that_belongs_to_another_account(db):
             hwid_verifier="hmac-sha256:" + "0" * 64, model="x", platform=None,
             client_name=None, client_version=None, now=100,
         )
+
+
+# --- corrective hardening pass: store proves the verifier itself --------------
+
+def _authoritative_hwid_verifier(db, generation_id):
+    return db._conn.execute(
+        "SELECT hwid_verifier FROM mgboost_device_slot_generations WHERE id=?",
+        (generation_id,),
+    ).fetchone()["hwid_verifier"]
+
+
+def test_store_allows_the_exact_authoritative_account_and_verifier_pair(db):
+    account, _alias_id, slot = _account(db, mapping="TEL_VERIFY_OK", alias="tel-verify-ok", tg=920010)
+    verifier = _authoritative_hwid_verifier(db, slot["generation_id"])
+
+    row = db.device_telemetry.record_observation(
+        account_id=account["account_id"], slot_generation_id=slot["generation_id"],
+        hwid_verifier=verifier, model="SM-A536E", platform="android",
+        client_name="Happ", client_version="4.3.0", now=100,
+    )
+    assert row["hwid_verifier"] == verifier
+    assert row["model"] == "SM-A536E"
+
+
+def test_store_rejects_correct_account_with_wrong_verifier(db):
+    account, _alias_id, slot = _account(db, mapping="TEL_VERIFY_WRONG", alias="tel-verify-wrong", tg=920011)
+    wrong_verifier = "hmac-sha256:" + "f" * 64
+    assert wrong_verifier != _authoritative_hwid_verifier(db, slot["generation_id"])
+
+    with pytest.raises(DeviceTelemetryError):
+        db.device_telemetry.record_observation(
+            account_id=account["account_id"], slot_generation_id=slot["generation_id"],
+            hwid_verifier=wrong_verifier, model="spoofed-model", platform=None,
+            client_name=None, client_version=None, now=100,
+        )
+    # No row created and no legitimate future row polluted by the rejected call.
+    row = db._conn.execute(
+        "SELECT * FROM mgboost_device_telemetry WHERE slot_generation_id=?",
+        (slot["generation_id"],),
+    ).fetchone()
+    assert row is None
+
+
+def test_store_rejects_wrong_account_even_with_the_correct_verifier(db):
+    """The account/verifier pair must BOTH be authoritative-exact; a correct
+    verifier borrowed for the wrong account_id must still fail closed."""
+    account_a, _alias_a, slot_a = _account(db, mapping="TEL_VERIFY_XACC_A", alias="tel-vx-a", tg=920012)
+    account_b, _alias_b, _slot_b = _account(db, mapping="TEL_VERIFY_XACC_B", alias="tel-vx-b", tg=920013)
+    real_verifier = _authoritative_hwid_verifier(db, slot_a["generation_id"])
+
+    with pytest.raises(DeviceTelemetryError):
+        db.device_telemetry.record_observation(
+            account_id=account_b["account_id"], slot_generation_id=slot_a["generation_id"],
+            hwid_verifier=real_verifier, model=None, platform=None,
+            client_name=None, client_version=None, now=100,
+        )
+    row = db._conn.execute(
+        "SELECT * FROM mgboost_device_telemetry WHERE slot_generation_id=?",
+        (slot_a["generation_id"],),
+    ).fetchone()
+    assert row is None

@@ -89,10 +89,20 @@ def _clean_idempotency_key(idempotency_key) -> str:
     return idempotency_key
 
 
-def _audit(db, *, account_id, actor_ref, reason, idem_hash, before, after, now) -> int:
+_AUDIT_SAVEPOINT = "child_recovery_audit"
+
+
+def _insert_audit_row_locked(db, *, account_id, actor_ref, reason, idem_hash,
+                              before, after, now) -> int:
     """Append one immutable evidence row to the existing entitlement
-    mutations ledger. A repeated client key never steals the UNIQUE hash
-    slot (mirrors the device-slot admin store's honest-repeat pattern)."""
+    mutations ledger. Assumes ``db._lock`` is already held and a transaction
+    is already open (``BEGIN IMMEDIATE`` already issued by the caller) --
+    this function never begins, commits or rolls back the outer transaction
+    itself. It uses its own SAVEPOINT only to retry past a UNIQUE
+    idempotency-key collision (a repeated client key never steals the
+    UNIQUE hash slot, mirroring the device-slot admin store's honest-repeat
+    pattern) without disturbing whatever the caller already did in the same
+    transaction."""
 
     def _insert(idem_column_value):
         return db._conn.execute(
@@ -113,22 +123,65 @@ def _audit(db, *, account_id, actor_ref, reason, idem_hash, before, after, now) 
             ),
         )
 
+    db._conn.execute(f"SAVEPOINT {_AUDIT_SAVEPOINT}")
+    try:
+        cursor = _insert(idem_hash)
+        db._conn.execute(f"RELEASE SAVEPOINT {_AUDIT_SAVEPOINT}")
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        db._conn.execute(f"ROLLBACK TO SAVEPOINT {_AUDIT_SAVEPOINT}")
+        db._conn.execute(f"RELEASE SAVEPOINT {_AUDIT_SAVEPOINT}")
+        cursor = _insert(None)
+        return cursor.lastrowid
+    except Exception:
+        db._conn.execute(f"ROLLBACK TO SAVEPOINT {_AUDIT_SAVEPOINT}")
+        db._conn.execute(f"RELEASE SAVEPOINT {_AUDIT_SAVEPOINT}")
+        raise
+
+
+def _audit(db, *, account_id, actor_ref, reason, idem_hash, before, after, now) -> int:
+    """Standalone commit boundary for the non-mutating refuse path
+    (``_refuse``): one immutable evidence row, its own transaction. The
+    mutating REPAIRED path never calls this -- it uses
+    ``_insert_audit_row_locked`` inside the same transaction as the local
+    completion mutation so the two can never durably diverge."""
     with db._lock:
         try:
             db._conn.execute("BEGIN IMMEDIATE")
-            cursor = _insert(idem_hash)
+            mutation_id = _insert_audit_row_locked(
+                db, account_id=account_id, actor_ref=actor_ref, reason=reason,
+                idem_hash=idem_hash, before=before, after=after, now=now,
+            )
             db._conn.commit()
-            return cursor.lastrowid
-        except sqlite3.IntegrityError:
+            return mutation_id
+        except Exception:
             db._conn.rollback()
-            try:
-                db._conn.execute("BEGIN IMMEDIATE")
-                cursor = _insert(None)
-                db._conn.commit()
-                return cursor.lastrowid
-            except Exception:
-                db._conn.rollback()
-                raise
+            raise
+
+
+def _repair_and_audit_atomic(
+    db, *, operation_id, outcome, child_uuid, remote_result_verifier,
+    account_id, actor_ref, reason, idem_hash, before, after, now,
+) -> tuple[dict, int]:
+    """The one durable transaction boundary for a successful repair: the
+    local CAS completion mutation and the mandatory immutable audit row
+    commit together or not at all. If the audit insert fails for any
+    reason, the completion mutation is rolled back with it -- there is no
+    state in which the child comes out of ERROR without durable
+    actor+reason+audit evidence of exactly that."""
+    with db._lock:
+        try:
+            db._conn.execute("BEGIN IMMEDIATE")
+            repaired = db.child_provisioning._recovery_acknowledge_locked(
+                operation_id, outcome=outcome, child_uuid=child_uuid,
+                remote_result_verifier=remote_result_verifier, now=now,
+            )
+            mutation_id = _insert_audit_row_locked(
+                db, account_id=account_id, actor_ref=actor_ref, reason=reason,
+                idem_hash=idem_hash, before=before, after=after, now=now,
+            )
+            db._conn.commit()
+            return repaired, mutation_id
         except Exception:
             db._conn.rollback()
             raise
@@ -249,15 +302,24 @@ def repair_child_ensure(
     if observed.get("protocols") != ["vless"]:
         raise ChildProvisioningError("unexpected child protocol credentials")
 
-    # --- local completion (CAS from ERROR, full evidence) -------------------
+    # --- local completion + mandatory audit, ONE atomic transaction --------
+    # Invariant: no successful recovery without durable actor+reason+audit
+    # evidence. If the audit insert fails for any reason, the whole
+    # transaction (including the CAS completion mutation) rolls back: the
+    # child stays ERROR, the outbox stays ERROR/not APPLIED, and no
+    # uuid_verifier is persisted. There is no partially-applied recovery.
     before = _snapshot(outbox, intent)
     observation_verifier = _sha(_canonical(
         {k: v for k, v in observed.items() if k != "uuid"}
     ))
+    after = dict(before)
+    after.update({"outbox_state": "APPLIED", "intent_observed_state": "ACTIVE"})
     try:
-        repaired = db.child_provisioning.recovery_acknowledge(
-            operation_id, outcome="EXISTING", child_uuid=remote_uuid,
-            remote_result_verifier=observation_verifier, now=timestamp,
+        repaired, mutation_id = _repair_and_audit_atomic(
+            db, operation_id=operation_id, outcome="EXISTING", child_uuid=remote_uuid,
+            remote_result_verifier=observation_verifier, account_id=account_id,
+            actor_ref=actor_ref, reason=reason, idem_hash=idem_hash,
+            before=before, after=after, now=timestamp,
         )
     except Exception as exc:
         refreshed = db._conn.execute(
@@ -266,10 +328,6 @@ def repair_child_ensure(
         if refreshed is not None and refreshed["state"] == "APPLIED":
             return _finish("ALREADY_APPLIED")
         raise ChildRecoveryError("recovery completion failed") from exc
-    after = dict(before)
-    after.update({"outbox_state": "APPLIED", "intent_observed_state": "ACTIVE"})
-    mutation_id = _audit(db, account_id=account_id, actor_ref=actor_ref, reason=reason,
-                         idem_hash=idem_hash, before=before, after=after, now=timestamp)
     return {
         "status": "REPAIRED", "operation_id": operation_id,
         "child_username": repaired["child_username"], "mutation_id": mutation_id,
