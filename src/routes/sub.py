@@ -81,6 +81,32 @@ def _invalid_subscription_response(handler, started_at: float):
     _plain_response(handler, 404, _INVALID_SUB_BODY)
 
 
+_SERVICE_UNAVAILABLE_BODY = b"Subscription temporarily unavailable\n"
+
+
+def _service_unavailable_response(handler, started_at: float, *, retry_after: int | None = None):
+    """A credential that resolved successfully hit a transient internal/
+    operational condition (remote provisioning drift, broker/Marzban
+    unavailable, provisioning still pending) -- this is never the same
+    external signal as an unknown/malformed/revoked bearer.  The body
+    intentionally carries no account/child/HWID/internal-state detail; the
+    real reason lives only in server-side logs under a safe reason code."""
+    remaining = _INVALID_RESPONSE_FLOOR_SECONDS - (time.monotonic() - started_at)
+    if remaining > 0:
+        time.sleep(remaining)
+    handler.send_response(503)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    if retry_after is not None:
+        handler.send_header("Retry-After", str(int(retry_after)))
+    handler.send_header("Content-Length", str(len(_SERVICE_UNAVAILABLE_BODY)))
+    handler.end_headers()
+    handler.wfile.write(_SERVICE_UNAVAILABLE_BODY)
+
+
 def _rate_limited_response(handler, retry_after: int):
     """PH2-06: a distinct, expected-visible signal -- never a token-validity
     oracle (issued identically regardless of whether any token in the

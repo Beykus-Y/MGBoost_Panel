@@ -31,17 +31,40 @@ import time
 
 from ..config import DEVICE_SLOT_HMAC_KEY, OPAQUE_SUBSCRIPTION_ENABLED
 from ..device_headers import extract_device_metadata
-from ..opaque_resolver import OUTCOME_OK, resolve_opaque_subscription
+from ..opaque_resolver import (
+    OUTCOME_INTERNAL_ERROR,
+    OUTCOME_OK,
+    OUTCOME_PROVISIONING_FAILED_PERMANENT,
+    OUTCOME_PROVISIONING_PENDING,
+    OUTCOME_PROVISIONING_UNAVAILABLE,
+    resolve_opaque_subscription,
+)
 from ..service_marzban import ServiceMarzbanClient
 from ..subscription import process_subscription
 from .sub import (
     _invalid_subscription_response,
     _observe_compatibility_fail_open,
     _observe_grace_activity_fail_open,
+    _service_unavailable_response,
     check_subscription_rate_limit,
     is_browser_request,
     send_browser_landing,
 )
+
+# BUG D corrective fix: a credential that resolved successfully (the token
+# itself is valid, known, ACTIVE) must never be told "Subscription not
+# found" for a purely internal/operational condition -- that response is
+# reserved for the pre-auth security posture (unknown/malformed/revoked
+# bearer, denied HWID/parent), where uniformity prevents a validity oracle.
+# Once a real credential is in hand, these outcomes are ordinary transient
+# backend states and get a distinct, retryable 503 instead.
+_OPERATIONAL_RETRYABLE_OUTCOMES = frozenset({
+    OUTCOME_PROVISIONING_UNAVAILABLE,
+    OUTCOME_PROVISIONING_PENDING,
+    OUTCOME_PROVISIONING_FAILED_PERMANENT,
+    OUTCOME_INTERNAL_ERROR,
+})
+_PROVISIONING_PENDING_RETRY_AFTER_SECONDS = 3
 
 _client = ServiceMarzbanClient()
 
@@ -114,7 +137,14 @@ def handle_opaque_sub(handler, token):
     )
 
     if result.outcome != OUTCOME_OK:
-        _invalid_subscription_response(handler, started_at)
+        if result.outcome in _OPERATIONAL_RETRYABLE_OUTCOMES:
+            retry_after = (
+                _PROVISIONING_PENDING_RETRY_AFTER_SECONDS
+                if result.outcome == OUTCOME_PROVISIONING_PENDING else None
+            )
+            _service_unavailable_response(handler, started_at, retry_after=retry_after)
+        else:
+            _invalid_subscription_response(handler, started_at)
         return
 
     try:

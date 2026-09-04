@@ -14,6 +14,11 @@ from urllib.parse import urlsplit
 TOKEN_REF_PREFIX = "sha256:"
 _TOKEN_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SUB_PATH_RE = re.compile(r"^(/sub/)[^/?]+(?P<suffix>/info)?$")
+# PH2-01 opaque subscription bearer: a root-level 43-char base64url token
+# (see src/routes/opaque_sub.py / generate_opaque_token()) -- this IS the
+# bearer itself, unlike /sub/{token} it has no distinguishing path prefix,
+# so it must be matched and redacted the same way.
+_OPAQUE_ROOT_TOKEN_RE = re.compile(r"^/[A-Za-z0-9_-]{43}$")
 
 
 def subscription_token_ref(raw_token: str) -> str:
@@ -40,6 +45,8 @@ def redact_request_target(target: str) -> str:
     if match:
         suffix = match.group("suffix") or ""
         path = f"{match.group(1)}<redacted>{suffix}"
+    elif _OPAQUE_ROOT_TOKEN_RE.match(path):
+        path = "/<redacted>"
     if "?" in value:
         path += "?<redacted>"
     return path

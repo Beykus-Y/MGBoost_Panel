@@ -321,7 +321,14 @@ class BrokerOperations:
                 if current.get("status") == desired_status and (
                     desired_status == "disabled" or already_active_expiry
                 ):
-                    return {"outcome": "ALREADY_IN_SYNC"}
+                    # `current` IS the authoritative already-converged
+                    # snapshot -- surface it so the caller's audit verifier
+                    # reflects real remote state, not just this outcome label.
+                    return {
+                        "outcome": "ALREADY_IN_SYNC",
+                        "observed_status": current.get("status"),
+                        "observed_expire": current.get("expire"),
+                    }
                 self.marzban.modify_user(
                     child_username,
                     build_state_sync_payload(desired_status, desired_expire),
@@ -336,7 +343,11 @@ class BrokerOperations:
                     raise RuntimeError(
                         "unexpected credential rotation on a reversible state sync"
                     )
-                return {"outcome": "SYNCED"}
+                return {
+                    "outcome": "SYNCED",
+                    "observed_status": after.get("status"),
+                    "observed_expire": after.get("expire"),
+                }
 
         if operation == "child.user.wl.set":
             # PH6-06: the only quota-enforcement mutation. Reread -> compute

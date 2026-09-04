@@ -52,6 +52,23 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _remote_effect_verifier(child_username: str, outcome: str, observed_status, observed_expire) -> str:
+    """A canonical, non-reversible fingerprint of the *authoritatively
+    observed* remote state after a state-sync attempt -- deliberately NOT a
+    hash of the outcome label alone (two different real remote
+    status/expire snapshots that both happen to finish "SYNCED" must never
+    collapse to the same verifier; that told an operator nothing had drifted
+    when it might have). No raw UUID/secret goes in here -- child_username
+    plus status/expire is exactly the audit-safe identity+state tuple this
+    verifier exists to attest to."""
+    return _sha(_canonical({
+        "child_username": child_username,
+        "outcome": outcome,
+        "observed_status": observed_status,
+        "observed_expire": observed_expire,
+    }))
+
+
 def compute_desired_status(account_status: str, subscription_status: str, current_expiry, now: int) -> str:
     """Pure policy: canonical parent desired state. Never reads a caller-
     supplied status/expiry -- only actual account/subscription fields."""
@@ -308,7 +325,10 @@ class ParentSyncStore:
              remote_effect_verifier, safe_error_class, now),
         )
 
-    def acknowledge(self, operation_id: str, *, worker_id: str, outcome: str, now: int) -> dict:
+    def acknowledge(
+        self, operation_id: str, *, worker_id: str, outcome: str, now: int,
+        observed_status=None, observed_expire=None,
+    ) -> dict:
         if outcome not in {"SYNCED", "ALREADY_IN_SYNC"}:
             raise ParentSyncError("invalid sync outcome")
         with self._lock:
@@ -334,9 +354,14 @@ class ParentSyncStore:
                     "row_version=row_version+1 WHERE id=?",
                     (now, row["id"]),
                 )
+                child_username = json.loads(row["payload_json"]).get("child_username")
                 self._event(
                     row["id"], row["account_id"], row["attempts"], "SUCCEEDED",
-                    outcome=outcome, remote_effect_verifier=_sha(outcome), now=now,
+                    outcome=outcome,
+                    remote_effect_verifier=_remote_effect_verifier(
+                        child_username, outcome, observed_status, observed_expire,
+                    ),
+                    now=now,
                 )
                 result = self._conn.execute(
                     "SELECT * FROM mgboost_parent_sync_operations WHERE id=?", (row["id"],)
@@ -440,7 +465,9 @@ def process_sync(db, operation_id: str, *, worker_id: str, sync_fn, now: int) ->
         db.parent_sync.record_error(operation_id, error_class="REMOTE_MISSING", now=now)
         return None
     return db.parent_sync.acknowledge(
-        operation_id, worker_id=worker_id, outcome=result["outcome"], now=now
+        operation_id, worker_id=worker_id, outcome=result["outcome"], now=now,
+        observed_status=result.get("observed_status"),
+        observed_expire=result.get("observed_expire"),
     )
 
 

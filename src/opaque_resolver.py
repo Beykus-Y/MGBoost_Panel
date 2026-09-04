@@ -129,7 +129,27 @@ def resolve_account_device(
         # provision a child that would start out disabled.
         return OpaqueResolveResult(OUTCOME_PARENT_UNAVAILABLE)
 
-    if existing_intent is not None and existing_intent["observed_state"] == "ACTIVE":
+    if existing_intent is not None and existing_intent["observed_state"] == "ERROR":
+        # Terminal provisioning failure: recovery goes through the explicit
+        # audited repair primitive, never through re-resolution/re-ensure.
+        return OpaqueResolveResult(OUTCOME_PROVISIONING_FAILED_PERMANENT)
+
+    if existing_intent is not None and existing_intent["observed_state"] in ("ACTIVE", "DISABLED"):
+        # A child identity already exists remotely (it reached ACTIVE at
+        # least once, or was reversibly suspended to DISABLED) -- ENSURE is
+        # for provisioning an ABSENT identity only. Reversible status/expire
+        # drift for an existing, authoritative identity belongs to
+        # STATE_SYNC/reconciliation (src/parent_sync.py), never to a second
+        # CHILD_USER_ENSURE: that idempotency key is stable per
+        # slot_generation_id, but its payload embeds the *current* expire,
+        # so re-provisioning here after any parent expiry change raises
+        # ChildProvisioningConflict for a case that isn't actually a
+        # conflict -- it's an ordinary reactivation. The child's current
+        # status is whatever `subscription_fn` below authoritatively
+        # observes; a still-stale remote DISABLED/expired child surfaces
+        # here as OUTCOME_PROVISIONING_UNAVAILABLE, which is exactly the
+        # signal that must drive convergence, not a false OK or a masked
+        # INTERNAL_ERROR.
         child_username = existing_intent["child_username"]
         source_contract_hash = existing_intent["source_contract_hash"]
         uuid_verifier = existing_intent["uuid_verifier"]
