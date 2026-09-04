@@ -47,6 +47,8 @@ from .ownership_rebind import OwnershipRebindStore
 from .shadow_resolver_schema import apply_shadow_resolver_schema
 from .shadow_resolver import ShadowResolverBindingStore
 from .device_slot_schema import apply_device_slot_schema
+from .device_telemetry_schema import apply_device_telemetry_schema
+from .device_telemetry import DeviceTelemetryStore
 from .device_slots import DeviceSlotStore, InvalidHWID, privacy_safe_hwid
 from .internal_entitlement_schema import apply_internal_entitlement_schema
 from .internal_entitlements import InternalEntitlementStore
@@ -162,6 +164,7 @@ class Database:
         )
         self.accounts = AccountStore(self._conn, self._lock)
         self.device_slots = DeviceSlotStore(self._conn, self._lock)
+        self.device_telemetry = DeviceTelemetryStore(self._conn, self._lock)
         self.primary_admin_authority = PrimaryAdminAuthority(
             PRIMARY_MGBOOST_ADMIN_ACTOR_ID, PRIMARY_MGBOOST_ADMIN_LOGIN
         )
@@ -496,6 +499,7 @@ class Database:
         apply_parent_account_schema(self._conn)
         apply_account_consolidation_schema(self._conn)
         apply_device_slot_schema(self._conn)
+        apply_device_telemetry_schema(self._conn)
         apply_internal_entitlement_schema(self._conn)
         apply_plan_catalog_schema(self._conn)
         apply_wl_period_lifecycle_schema(self._conn)

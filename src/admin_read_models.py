@@ -17,6 +17,7 @@ from .internal_entitlements import InternalEntitlementError
 from .legacy_grace_observability import account_grace_snapshot, classify_action
 from .legacy_grace_migration import is_genesis_hwid_verifier
 from .device_real_projection import project_real_device
+from .child_recovery import RECOVERABLE_ERROR_CLASSES
 
 
 _MIGRATED_STATES = ("MIGRATED", "LEGACY_REVOKE_PENDING", "LEGACY_REVOKED")
@@ -164,16 +165,21 @@ def _credential_summary(connection, account_id: int) -> dict | None:
 
 
 def _telemetry_observations(db, account_id: int, aliases: list[dict]) -> list[dict]:
-    """PH7-05 internal-only evidence feed for `project_real_device` -- never
-    returned directly. Every observation is tagged with THIS account's own
-    `account_id` (never another account's, by construction: telemetry is
-    only ever pulled for this account's own reviewed legacy aliases), so a
-    cross-account HWID can never even be considered a candidate. Rows
-    without a stamped `hwid_verifier` yet (no live request since the PH7-05
-    telemetry bridge shipped, or the HMAC key was unavailable at write time)
-    are simply not evidence -- excluded, never treated as a weak match.
+    """PH8-06 internal-only evidence feed for `project_real_device` -- never
+    returned directly. Canonical PH8-06 opaque telemetry (keyed by CURRENT
+    slot generation, `device_telemetry.record_observation`) is always
+    preferred; the PH7-05 legacy `user_devices` evidence is included ONLY
+    for a `hwid_verifier` that canonical telemetry does not already cover,
+    so a slot with a canonical row is decided purely on that canonical
+    evidence -- never a timestamp/similarity contest between the two
+    sources. Every observation is tagged with THIS account's own
+    `account_id` (never another account's), so a cross-account HWID can
+    never even be considered a candidate.
     """
-    observations = []
+    canonical = db.device_telemetry.list_for_account(account_id)
+    canonical_verifiers = {row["hwid_verifier"] for row in canonical}
+
+    legacy = []
     for alias in aliases:
         username = alias.get("legacy_username")
         if not username:
@@ -181,7 +187,9 @@ def _telemetry_observations(db, account_id: int, aliases: list[dict]) -> list[di
         for row in db.get_user_devices_with_verifier(username):
             if not row.get("is_active") or not row.get("hwid_verifier"):
                 continue
-            observations.append({
+            if row["hwid_verifier"] in canonical_verifiers:
+                continue
+            legacy.append({
                 "account_id": account_id,
                 "hwid_verifier": row["hwid_verifier"],
                 "observed_id": row.get("id"),
@@ -191,7 +199,14 @@ def _telemetry_observations(db, account_id: int, aliases: list[dict]) -> list[di
                 "client_version": row.get("client_version") or None,
                 "last_seen_at": row.get("last_seen"),
             })
-    return observations
+    return [
+        {
+            **row,
+            "platform": _humanize_platform(row.get("platform")),
+            "client_name": _humanize_client_name(row.get("client_name")),
+        }
+        for row in canonical
+    ] + legacy
 
 
 def _device_summaries(
@@ -330,11 +345,27 @@ def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
         row["slot_number"]: row
         for row in connection.execute(
             "SELECT s.slot_number,c.id AS child_intent_id,c.observed_state,"
-            "s.desired_state AS slot_desired "
+            "c.desired_state AS child_desired,c.uuid_verifier,"
+            "s.desired_state AS slot_desired,s.observed_state AS slot_observed "
             "FROM mgboost_device_slots s "
             "JOIN mgboost_device_slot_generations g ON g.slot_id=s.id AND g.status='ACTIVE' "
             "JOIN mgboost_child_user_intents c ON c.slot_generation_id=g.id "
             "WHERE s.account_id=?", (int(account_id),),
+        ).fetchall()
+    }
+    # Recoverable poisoned CHILD_USER_ENSURE outbox per slot (child_recovery
+    # module's own narrowed RECOVERABLE_ERROR_CLASSES allowlist) -- this is
+    # presentation-only, the recovery route re-validates everything fresh.
+    recoverable_ops = {
+        row["slot_number"]: row
+        for row in connection.execute(
+            "SELECT s.slot_number,o.operation_id,o.last_error_class "
+            "FROM mgboost_outbox o "
+            "JOIN mgboost_child_user_intents c ON c.id=o.child_intent_id "
+            "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id AND g.status='ACTIVE' "
+            "JOIN mgboost_device_slots s ON s.id=g.slot_id "
+            "WHERE o.account_id=? AND o.operation_kind='CHILD_USER_ENSURE' AND o.state='ERROR'",
+            (int(account_id),),
         ).fetchall()
     }
     result = {}
@@ -403,6 +434,35 @@ def _device_action_availability(connection, account_id: int) -> dict[int, dict]:
         last_error = next((r["last_error_class"] for r in rows if r["last_error_class"]), None)
         if last_error:
             entry["last_error_class"] = last_error
+        # Sync (normal STATE_SYNC convergence) vs Recover (audited broken-
+        # child repair, `child_recovery.repair_child_ensure`) are disjoint
+        # by construction: Sync is only ever offered for the exact identity
+        # `parent_sync.enqueue_current_children` itself would select
+        # (live generation, non-REVOKED, observed ACTIVE/DISABLED, a proven
+        # `uuid_verifier`); Recover is only ever offered for a durably
+        # ERROR'd CHILD_USER_ENSURE whose `last_error_class` is in the
+        # child_recovery module's own narrowed recoverable-class allowlist.
+        # A slot can show at most one of the two.
+        recover_op = recoverable_ops.get(slot_number)
+        if recover_op is not None and recover_op["last_error_class"] in RECOVERABLE_ERROR_CLASSES:
+            entry["recover"] = "available"
+        else:
+            entry["recover"] = "unavailable"
+        sync_eligible = (
+            intent_row is not None
+            and child_observed in ("ACTIVE", "DISABLED")
+            and intent_row["child_desired"] != "REVOKED"
+            and intent_row["uuid_verifier"] is not None
+            and entry["recover"] != "available"
+        )
+        if sync_eligible:
+            mismatch = (
+                intent_row["slot_desired"] != intent_row["slot_observed"]
+                or intent_row["child_desired"] != child_observed
+            )
+            entry["sync"] = "available" if mismatch else "not_needed"
+        else:
+            entry["sync"] = "unavailable"
         result[slot_number] = entry
     return result
 

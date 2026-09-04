@@ -101,6 +101,57 @@ export function createDeviceOps({html,toast,confirmFlow,formatTimestamp}){
     ctx.reload&&ctx.reload();
   }
 
+  const RECOVERY_REASON_LABELS={
+    ALREADY_APPLIED:'Уже восстановлено ранее.',
+    NOT_ERROR_STATE:'Операция не в терминальном состоянии ошибки.',
+    GENERATION_NOT_ACTIVE:'Поколение слота больше не активно.',
+    OWNER_ALIAS_MISSING:'Не найден проверенный владелец legacy-алиаса.',
+    ERROR_CLASS_NOT_RECOVERABLE:'Класс ошибки не входит в список безопасно восстановимых.',
+    POLICY_STILL_FORBIDS_WL:'Текущая политика тарифа всё ещё запрещает точный WL-доступ.',
+    REMOTE_OBSERVE_FAILED:'Не удалось прочитать удалённое состояние (transient).',
+    REMOTE_MISSING:'Удалённый пользователь отсутствует — восстановление невозможно.',
+    REMOTE_MISMATCH:'Удалённый пользователь не совпадает с ожидаемым контрактом.',
+    UUID_VERIFIER_MISMATCH:'Удалённый UUID не совпадает с уже сохранённым verifier.',
+  };
+
+  async function openDeviceRecovery(slot,ctx){
+    const previewResp=await ctx.adminFetch(`/admin/accounts/${ctx.accountId}/devices/${slot}/recover`,{method:'GET'});
+    const preview=await previewResp.json().catch(()=>({}));
+    if(!previewResp.ok){toast(preview.error||'recovery preview failed','err');return;}
+    const factRow=(label,value)=>html`<div class="detail-line"><span>${label}</span><strong>${value===null||value===undefined?'—':String(value)}</strong></div>`;
+    const modal=confirmFlow({
+      title:`Восстановить дочернюю конфигурацию · Слот ${slot}`,
+      body:html`<div class="ops-form">
+        ${factRow('Слот / generation',`${preview.slot_number??'—'} / ${preview.generation??'—'}`)}
+        ${factRow('Дочерний username',preview.child_username_masked)}
+        ${factRow('Локальное состояние',preview.local_state)}
+        ${factRow('Состояние миграции',preview.migration_state)}
+        ${factRow('Удалённый пользователь существует',preview.remote_exists)}
+        ${factRow('Совпадение username',preview.username_match)}
+        ${factRow('Совпадение контракта',preview.contract_match)}
+        ${factRow('UUID-идентичность доказана',preview.uuid_identity_provable)}
+        ${preview.recoverable
+          ?html`<div class="notice notice-success">Восстановление возможно: будет сохранён только UUID verifier существующего удалённого child. Новый remote-пользователь НЕ создаётся, UUID/generation/username не меняются.</div>`
+          :html`<div class="notice notice-amber">Восстановление недоступно: ${RECOVERY_REASON_LABELS[preview.reason_class]||preview.reason_class||'причина не определена'}</div>`}
+        ${preview.recoverable?html`<label>Причина (обязательно, попадёт в immutable audit)
+          <input type="text" id="ops-recover-reason" maxlength="300"/></label>`:''}
+      </div>`,
+      confirmLabel:preview.recoverable?'Восстановить':'Закрыть',
+      onConfirm:async m=>{
+        if(!preview.recoverable){m.close();return;}
+        const reason=m.el.querySelector('#ops-recover-reason').value.trim();
+        if(reason.length<3){toast('Причина минимум 3 символа','err');return false;}
+        const response=await ctx.adminFetch(`/admin/accounts/${ctx.accountId}/devices/${slot}/recover`,
+          {method:'POST',body:JSON.stringify({reason,confirm:true})});
+        const data=await response.json().catch(()=>({}));
+        if(!response.ok){toast(data.error||'recovery failed','err');return false;}
+        toast(data.status==='REPAIRED'?'Дочерняя конфигурация восстановлена':`Статус: ${data.status}`);
+        m.close();
+        ctx.reload&&ctx.reload();
+      }});
+    return modal;
+  }
+
   function deviceActionButtons(device,ctx){
     const actions=device.actions||{};
     const buttons=[];
@@ -114,8 +165,11 @@ export function createDeviceOps({html,toast,confirmFlow,formatTimestamp}){
     if(actions.rebind==='available')buttons.push(html`<button class="small" data-device-op="rebind" data-slot="${device.slot_number}">Rebind…</button>`);
     else if(actions.rebind==='done')buttons.push(html`<span class="badge badge-gray">Rebind применён</span>`);
     else if(String(actions.rebind||'').startsWith('PENDING'))buttons.push(html`<span class="badge badge-amber">Rebind: ${actions.rebind.slice(8)}</span>`);
-    const mismatch=device.desired_state&&device.observed_state&&device.desired_state!==device.observed_state;
-    if(mismatch&&ctx)buttons.push(html`<button class="small" data-device-sync="${device.slot_number}" title="Повторить детскую сходимость по durable-операциям">Sync…</button>`);
+    // Sync vs Recover are server-authoritative and mutually exclusive
+    // (backend `_device_action_availability`) -- never a raw
+    // desired!=observed guess computed here.
+    if(actions.sync==='available'&&ctx)buttons.push(html`<button class="small" data-device-sync="${device.slot_number}" title="Повторить детскую сходимость по durable-операциям">Sync…</button>`);
+    if(actions.recover==='available'&&ctx)buttons.push(html`<button class="danger small" data-device-recover="${device.slot_number}" title="Аудируемое восстановление поломанной дочерней конфигурации">Восстановить…</button>`);
     if(!buttons.length)return html``;
     return html`<div class="device-actions">${buttons}</div>
       ${actions.last_error_class?html`<div class="cell-sub">Последняя ошибка операции: <code>${actions.last_error_class}</code></div>`:''}`;
@@ -151,5 +205,5 @@ export function createDeviceOps({html,toast,confirmFlow,formatTimestamp}){
     </div>`;
   }
 
-  return {openDeviceAction,openDeviceSync,deviceActionButtons,ownershipTab};
+  return {openDeviceAction,openDeviceSync,openDeviceRecovery,deviceActionButtons,ownershipTab};
 }

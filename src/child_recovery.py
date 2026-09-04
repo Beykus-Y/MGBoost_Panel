@@ -276,6 +276,130 @@ def repair_child_ensure(
     }
 
 
+def preview_child_ensure_recovery(
+    db, *, operation_id: str, observe_fn, now: int | None = None,
+) -> dict:
+    """Read-only, non-mutating, non-audited preview of the exact proof
+    `repair_child_ensure` requires. Mirrors that function's checks in the
+    same order and never diverges on what counts as proof -- but never
+    writes an audit row (only a real repair attempt is audited) and never
+    calls anything but the injected read-only ``observe_fn``. The raw
+    remote UUID never leaves this function's stack frame; only a bounded
+    safe-fact dict is returned."""
+    timestamp = int(time.time()) if now is None else int(now)
+    if not callable(observe_fn):
+        raise ChildRecoveryError("a read-only observe_fn is required")
+
+    outbox = db._conn.execute(
+        "SELECT * FROM mgboost_outbox "
+        "WHERE operation_id=? AND operation_kind='CHILD_USER_ENSURE'",
+        (operation_id,),
+    ).fetchone()
+    if outbox is None:
+        raise ChildRecoveryError("unknown CHILD_USER_ENSURE operation_id")
+    account_id = int(outbox["account_id"])
+    intent = db._conn.execute(
+        "SELECT * FROM mgboost_child_user_intents WHERE id=? AND account_id=?",
+        (outbox["child_intent_id"], account_id),
+    ).fetchone()
+    if intent is None:
+        raise ChildRecoveryError("child intent does not belong to the operation's account")
+    generation = db._conn.execute(
+        "SELECT g.status,g.generation,g.slot_number,g.hwid_verifier "
+        "FROM mgboost_device_slot_generations g WHERE g.id=? AND g.account_id=?",
+        (intent["slot_generation_id"], account_id),
+    ).fetchone()
+    alias = db._conn.execute(
+        "SELECT id FROM mgboost_legacy_account_aliases "
+        "WHERE id=? AND account_id=? AND alias_role='PRIMARY'",
+        (intent["source_alias_id"], account_id),
+    ).fetchone()
+    migration = None
+    if generation is not None:
+        migration = db._conn.execute(
+            "SELECT state FROM mgboost_migration_bindings "
+            "WHERE account_id=? AND hwid_verifier=?",
+            (account_id, generation["hwid_verifier"]),
+        ).fetchone()
+
+    def _result(*, recoverable: bool, reason_class: str | None = None,
+                remote_exists=None, username_match=None, contract_match=None,
+                uuid_identity_provable=None) -> dict:
+        return {
+            "operation_id": operation_id,
+            "slot_number": generation["slot_number"] if generation else None,
+            "generation": generation["generation"] if generation else None,
+            "child_username_masked": _mask_username(intent["child_username"]),
+            "local_state": outbox["state"],
+            "migration_state": migration["state"] if migration else None,
+            "recoverable": recoverable,
+            "reason_class": reason_class,
+            "remote_exists": remote_exists,
+            "username_match": username_match,
+            "contract_match": contract_match,
+            "uuid_identity_provable": uuid_identity_provable,
+            "expected_action": "REPAIR" if recoverable else "NONE",
+        }
+
+    if outbox["state"] == "APPLIED":
+        return _result(recoverable=False, reason_class="ALREADY_APPLIED")
+    if outbox["state"] != "ERROR":
+        return _result(recoverable=False, reason_class="NOT_ERROR_STATE")
+    if generation is None or generation["status"] != "ACTIVE":
+        return _result(recoverable=False, reason_class="GENERATION_NOT_ACTIVE")
+    if alias is None:
+        return _result(recoverable=False, reason_class="OWNER_ALIAS_MISSING")
+    error_class = (outbox["last_error_class"] or "").strip()
+    if error_class not in RECOVERABLE_ERROR_CLASSES:
+        return _result(recoverable=False, reason_class="ERROR_CLASS_NOT_RECOVERABLE")
+
+    try:
+        wl_allowed = exact_wl_allowed_for_delivery(db, account_id=account_id, now=timestamp)
+    except Exception:
+        wl_allowed = False
+    if not wl_allowed:
+        return _result(recoverable=False, reason_class="POLICY_STILL_FORBIDS_WL")
+
+    payload = validate_child_ensure_request(json.loads(outbox["payload_json"]))
+    try:
+        observed = observe_fn(payload)
+    except Exception:
+        return _result(recoverable=False, reason_class="REMOTE_OBSERVE_FAILED")
+    presence = (observed or {}).get("presence")
+    if presence == "ABSENT":
+        return _result(recoverable=False, reason_class="REMOTE_MISSING", remote_exists=False)
+    if presence != "MATCH":
+        return _result(recoverable=False, reason_class="REMOTE_MISMATCH",
+                       remote_exists=True, username_match=False)
+    try:
+        remote_uuid = str(uuid.UUID(observed.get("uuid"))).lower()
+    except (ValueError, TypeError, AttributeError):
+        return _result(recoverable=False, reason_class="REMOTE_MISMATCH", remote_exists=True)
+    verifier = "sha256:" + _sha(remote_uuid)
+    del remote_uuid  # never retained past this point
+    if intent["uuid_verifier"] is not None and intent["uuid_verifier"] != verifier:
+        return _result(recoverable=False, reason_class="UUID_VERIFIER_MISMATCH",
+                       remote_exists=True, username_match=True, contract_match=True,
+                       uuid_identity_provable=False)
+    observed_tags = set((observed.get("inbounds") or {}).get("vless") or [])
+    if (observed_tags & set(WL_INBOUND_TAGS)) and not wl_allowed:
+        return _result(recoverable=False, reason_class="POLICY_STILL_FORBIDS_WL",
+                       remote_exists=True, username_match=True, contract_match=True)
+    if observed.get("protocols") != ["vless"]:
+        return _result(recoverable=False, reason_class="REMOTE_MISMATCH",
+                       remote_exists=True, username_match=True, contract_match=False)
+    return _result(recoverable=True, remote_exists=True, username_match=True,
+                   contract_match=True, uuid_identity_provable=True)
+
+
+def _mask_username(username: str | None) -> str | None:
+    if not username:
+        return None
+    if len(username) <= 4:
+        return "***"
+    return username[:2] + "***" + username[-2:]
+
+
 def _refuse(db, account_id, actor_ref, reason, idem_hash, outbox, intent,
             reason_class: str, *, now: int, status: str = "REFUSED") -> dict:
     """Audit-and-refuse: no local state mutation, one honest evidence row."""

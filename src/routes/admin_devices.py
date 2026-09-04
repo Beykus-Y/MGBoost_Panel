@@ -21,8 +21,10 @@ from ..child_lifecycle import (
     process_rebind,
     process_revoke,
 )
+from ..child_recovery import ChildRecoveryError, preview_child_ensure_recovery, repair_child_ensure
 from ..device_slot_admin import SlotAdminConflict, SlotAdminError
 from ..http_utils import error_response, json_response
+from ..migration_lifecycle import MigrationLifecycleError
 from ..parent_sync import run_account_sync_cycle
 from ..security import require_admin_auth
 
@@ -449,6 +451,149 @@ def handle_device_sync(handler, account_id, slot_number):
         "slot": slot,
         "aligned": bool(slot) and slot["slot_desired_state"] == slot["slot_observed_state"],
     })
+
+
+# --- broken-child recovery (audited, fail-closed, never a normal Sync) -------
+
+def _recovery_operation_id_or_error(handler, db, account_id: int, slot_number: int):
+    """The ERROR CHILD_USER_ENSURE outbox operation_id for this slot's
+    CURRENT ACTIVE generation, or None (with an error response already
+    sent). Scoped to the live generation exactly like every other device
+    route here -- recovery must never target a superseded generation."""
+    row = db._conn.execute(
+        "SELECT o.operation_id FROM mgboost_outbox o "
+        "JOIN mgboost_child_user_intents c ON c.id=o.child_intent_id "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id AND g.status='ACTIVE' "
+        "JOIN mgboost_device_slots s ON s.id=g.slot_id "
+        "WHERE s.account_id=? AND s.slot_number=? AND o.operation_kind='CHILD_USER_ENSURE'",
+        (int(account_id), int(slot_number)),
+    ).fetchone()
+    if row is None:
+        # Not found: either no CHILD_USER_ENSURE was ever prepared for the
+        # slot's CURRENT generation, or (TOCTOU-safety) the generation that
+        # was ACTIVE a moment ago (e.g. at preview time) no longer is --
+        # a superseded generation's operation_id is never resolved here,
+        # so `repair_child_ensure` can never be pointed at it.
+        error_response(handler, 409,
+                       "This slot has no CHILD_USER_ENSURE operation for its current "
+                       "generation to recover")
+        return None
+    return row["operation_id"]
+
+
+def handle_device_recovery_preview(handler, account_id, slot_number):
+    """Safe, read-only, non-mutating preview. Never returns raw UUID/HWID/
+    token; never appends an audit row (only a real apply is audited)."""
+    if not require_admin_auth(handler):
+        return
+    db = handler.server.db
+    account = account_or_404(handler, db, account_id)
+    if account is None:
+        return
+    operation_id = _recovery_operation_id_or_error(handler, db, account["id"], int(slot_number))
+    if operation_id is None:
+        return
+    try:
+        result = preview_child_ensure_recovery(
+            db, operation_id=operation_id, observe_fn=_observe_fn,
+        )
+    except ChildRecoveryError as exc:
+        error_response(handler, 400, str(exc))
+        return
+    json_response(handler, 200, result)
+
+
+def handle_device_recovery_apply(handler, account_id, slot_number):
+    """Audited, TOCTOU-safe apply. Re-resolves the operation_id fresh (never
+    trusts anything the preview call returned) and lets
+    `child_recovery.repair_child_ensure` re-prove everything from durable
+    state before it mutates anything. Never creates/deletes a remote user,
+    never rotates a UUID, never changes generation."""
+    if not require_admin_auth(handler):
+        return
+    db = handler.server.db
+    account = account_or_404(handler, db, account_id)
+    if account is None:
+        return
+    capability = require_primary_capability(handler, db)
+    if capability is None:
+        return
+    data = read_json_body(handler)
+    if data is None:
+        return
+    reason, reason_error = _reason(data)
+    if reason_error:
+        error_response(handler, 400, reason_error)
+        return
+    if data.get("confirm") is not True:
+        error_response(handler, 409,
+                       "Confirmation required: resubmit with confirm: true")
+        return
+    operation_id = _recovery_operation_id_or_error(handler, db, account["id"], int(slot_number))
+    if operation_id is None:
+        return
+    idempotency_key = _deterministic_key("admin-device-recover-v1", account["id"],
+                                         slot_number, operation_id)
+    now = int(time.time())
+    try:
+        result = repair_child_ensure(
+            db, operation_id=operation_id, capability=capability, reason=reason,
+            idempotency_key=idempotency_key, observe_fn=_observe_fn, now=now,
+        )
+    except ChildRecoveryError as exc:
+        error_response(handler, 400, str(exc))
+        return
+    if result["status"] == "REPAIRED":
+        _reconcile_migration_binding_after_recovery(db, account["id"], operation_id,
+                                                     reason=reason, now=now)
+    status_code = 200 if result["status"] in ("REPAIRED", "ALREADY_APPLIED") else 409
+    json_response(handler, status_code, result)
+
+
+def _reconcile_migration_binding_after_recovery(db, account_id, operation_id, *, reason, now):
+    """Best-effort: move a matching ERROR_RECONCILE migration binding back
+    to MIGRATING so the existing PH4-02 reconciliation worker resumes
+    driving it forward. The recovery itself already fully succeeded and is
+    already durably audited regardless of this outcome -- a missing/foreign
+    migration binding (an account with no legacy migration lineage at all)
+    is not an error here."""
+    outbox = db._conn.execute(
+        "SELECT child_intent_id FROM mgboost_outbox WHERE operation_id=?",
+        (operation_id,),
+    ).fetchone()
+    if outbox is None:
+        return
+    row = db._conn.execute(
+        "SELECT g.hwid_verifier FROM mgboost_child_user_intents c "
+        "JOIN mgboost_device_slot_generations g ON g.id=c.slot_generation_id "
+        "WHERE c.id=?", (outbox["child_intent_id"],),
+    ).fetchone()
+    if row is None:
+        return
+    binding = db.migration_lifecycle.find_by_device(account_id, row["hwid_verifier"])
+    if binding is None or binding["state"] != "ERROR_RECONCILE":
+        return
+    try:
+        db.migration_lifecycle.reconcile_to_migrating(
+            binding["operation_id"], expected_revision=binding["revision"],
+            reason=reason, now=now,
+        )
+    except MigrationLifecycleError:
+        # The binding moved on its own (worker/another admin) between the
+        # recovery apply and this best-effort follow-up -- never fail the
+        # already-successful, already-audited recovery over this.
+        pass
+
+
+def _observe_fn(payload: dict) -> dict:
+    """The typed read-only `child.user.observe` broker call. Never invoked
+    outside `child_recovery` -- the raw remote UUID it can carry never
+    leaves that module's stack frame."""
+    from .admin_support import service_marzban
+    result = service_marzban().observe_child_user(payload)
+    if not isinstance(result, dict) or "presence" not in result:
+        raise ChildLifecycleError("invalid observe outcome contract")
+    return result
 
 
 # --- helpers -----------------------------------------------------------------

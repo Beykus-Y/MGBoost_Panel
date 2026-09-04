@@ -101,7 +101,7 @@ def resolve_account_device(
         }.get(decision.decision, OUTCOME_INTERNAL_ERROR))
 
     slot_row = db._conn.execute(
-        "SELECT g.id AS slot_generation_id FROM mgboost_device_slot_generations AS g "
+        "SELECT g.id AS slot_generation_id, g.hwid_verifier FROM mgboost_device_slot_generations AS g "
         "JOIN mgboost_device_slots AS s ON s.id=g.slot_id "
         "WHERE g.account_id=? AND s.slot_number=? AND g.generation=? AND g.status='ACTIVE'",
         (account_id, decision.slot_number, decision.generation),
@@ -109,6 +109,29 @@ def resolve_account_device(
     if slot_row is None:
         return OpaqueResolveResult(OUTCOME_INTERNAL_ERROR)
     slot_generation_id = slot_row["slot_generation_id"]
+
+    # Canonical PH8-06 telemetry: recorded here and only here, because this
+    # is the exact point the gate has already proven BOTH proofs section 5
+    # requires -- credential -> account_id (caller's own authority) and
+    # HWID -> this CURRENT slot_generation_id (`hwid_gate.evaluate()` just
+    # returned an ALLOW decision). Recorded unconditionally from this point
+    # on, even if downstream provisioning/subscription-body assembly later
+    # fails operationally (PENDING/UNAVAILABLE/FAILED_PERMANENT): ownership
+    # of the slot is already proven regardless of what happens next, and a
+    # write failure here is itself fail-open -- observability must never
+    # turn an otherwise-successful/pending resolution into an error.
+    try:
+        db.device_telemetry.record_observation(
+            account_id=account_id, slot_generation_id=slot_generation_id,
+            hwid_verifier=slot_row["hwid_verifier"],
+            model=device_metadata.get("device_name"),
+            platform=device_metadata.get("platform"),
+            client_name=device_metadata.get("client_name"),
+            client_version=device_metadata.get("client_version"),
+            now=now,
+        )
+    except Exception:
+        pass
 
     alias = db._conn.execute(
         "SELECT id, legacy_username FROM mgboost_legacy_account_aliases "
