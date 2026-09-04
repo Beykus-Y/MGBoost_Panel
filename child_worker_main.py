@@ -10,7 +10,11 @@ import time
 
 from src.child_worker import ChildProvisioningWorker
 from src.database import Database
+from src.parent_sync import run_drift_audit_cycle, sweep_convergence
 from src.service_marzban import ServiceMarzbanClient
+
+
+logger = logging.getLogger(__name__)
 
 
 def _enabled(value: str) -> bool:
@@ -46,6 +50,41 @@ def build_worker():
     )
 
 
+def run_reconciliation_tick(db, marzban, *, worker_id: str, now: int) -> dict:
+    """One PH3-08 tick: durable entitlement convergence sweep (BUG G) first,
+    so any account's desired state/revision is current, then the post-ACK
+    stabilization + periodic drift audit (BUG A/A2/B) against that now-live
+    revision. Each phase is independently try/excepted -- a broker/Marzban
+    outage or an unexpected error on one account must never stop the other
+    phase or kill the caller's loop; `sweep_convergence`/
+    `run_drift_audit_cycle` already treat all of their DB state (sweep
+    cursor, verify_after) as the durable due-work boundary, so a skipped
+    tick here is simply retried on the next one."""
+    summary = {"sweep": None, "drift_audit": None}
+    try:
+        summary["sweep"] = sweep_convergence(
+            db, sync_fn=marzban.sync_child_user_state, worker_id=worker_id,
+            now=now, limit=int(os.getenv("PARENT_SYNC_SWEEP_LIMIT", "50")),
+            sweep_interval_seconds=int(
+                os.getenv("PARENT_SYNC_SWEEP_INTERVAL_SECONDS", "120")
+            ),
+        )
+    except Exception:
+        logger.exception("parent_sync_convergence_sweep_failed")
+    try:
+        summary["drift_audit"] = run_drift_audit_cycle(
+            db, observe_fn=marzban.observe_child_user_state,
+            sync_fn=marzban.sync_child_user_state, worker_id=worker_id,
+            now=now, limit=int(os.getenv("PARENT_SYNC_DRIFT_AUDIT_LIMIT", "50")),
+            audit_interval_seconds=int(
+                os.getenv("PARENT_SYNC_DRIFT_AUDIT_INTERVAL_SECONDS", "300")
+            ),
+        )
+    except Exception:
+        logger.exception("parent_sync_drift_audit_failed")
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
@@ -56,8 +95,12 @@ def main():
     try:
         while True:
             summary = worker.run_once()
+            reconciliation = run_reconciliation_tick(
+                db, worker.marzban, worker_id=worker.worker_id, now=int(time.time()),
+            )
             if args.json:
                 print(json.dumps(summary, sort_keys=True))
+                print(json.dumps(reconciliation, sort_keys=True))
             else:
                 logging.getLogger(__name__).info(
                     "child_worker_cycle examined=%d reconciled=%d provisioned=%d "
@@ -68,6 +111,8 @@ def main():
                     summary["metrics"]["pending_outbox_count"],
                     summary["metrics"]["desired_observed_divergence_count"],
                 )
+                if reconciliation["sweep"] is not None or reconciliation["drift_audit"] is not None:
+                    logger.info("parent_sync_reconciliation_tick %s", json.dumps(reconciliation, sort_keys=True))
             if args.once:
                 break
             time.sleep(max(5, int(os.getenv("CHILD_WORKER_POLL_SECONDS", "15"))))
