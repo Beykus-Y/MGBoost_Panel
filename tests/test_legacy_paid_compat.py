@@ -54,6 +54,166 @@ def _reviewed_account(db, *, username, tg, legacy_status="ACTIVE", legacy_expiry
 
 # --- device limit derivation -----------------------------------------------
 
+def test_active_unknown_expiry_is_rejected(db):
+    from src import legacy_paid_compat as compat
+    account, capability = _reviewed_account(
+        db, username="ambiguous", tg=929000001, legacy_expiry=None,
+    )
+    with pytest.raises(compat.AmbiguousLegacyExpiry):
+        compat.ensure_legacy_paid_compat_entitlement(
+            db, capability=capability, account_id=account["account_id"],
+            decision_ref="review-ambiguity", now=200,
+        )
+    assert db._conn.execute("SELECT count(*) FROM mgboost_subscriptions").fetchone()[0] == 0
+
+
+def _malformed(db):
+    from src import legacy_paid_compat as compat
+    account, cap = _reviewed_account(db, username="old-ambiguous", tg=929000002, legacy_expiry=None)
+    plan = compat._ensure_plan_version(db, device_limit=None, unlimited=True, now=100)
+    db._conn.execute(
+        "INSERT INTO mgboost_subscriptions (account_id,current_plan_version_id,status,started_at,"
+        "current_expiry,created_at,updated_at) VALUES (?,?,'ACTIVE',100,NULL,100,100)",
+        (account["account_id"], plan["id"]),
+    )
+    db._conn.commit()
+    return dict(capability=cap, account_id=account["account_id"], decision_ref="owner-review-123",
+                evidence={"review_ref": "review-123", "owner_confirmed": True})
+
+
+@pytest.mark.parametrize("resolution,expiry,status,active", [
+    ("FINITE_EXPIRY", 1000, "ACTIVE", True),
+    ("FINITE_EXPIRY", 199, "EXPIRED", False),
+    ("FINITE_EXPIRY", 200, "EXPIRED", False),
+    ("NON_EXPIRING", None, "UNLIMITED", True),
+])
+def test_reviewed_expiry_resolution(db, resolution, expiry, status, active):
+    from src import legacy_paid_compat as compat
+    from src.entitlement_engine import EntitlementEngine, exact_wl_allowed_for_delivery
+    args = _malformed(db)
+    violations = compat.detect_legacy_expiry_ambiguities(db._conn)
+    assert len(violations) == 1
+    assert set(violations[0]) == {"account_id", "subscription_id", "plan_code", "violation_class"}
+    result = compat.resolve_legacy_expiry_ambiguity(db, **args, resolution=resolution, expiry=expiry, now=200)
+    assert result["status"] == status
+    assert result["current_expiry"] == expiry
+    entitlement = EntitlementEngine(db).calculate(account_id=args["account_id"], now=200)
+    assert entitlement["subscription"]["effective_status"] == status
+    assert entitlement["subscription"]["active"] == active
+    assert exact_wl_allowed_for_delivery(db, account_id=args["account_id"], now=200) == active
+    assert compat.detect_legacy_expiry_ambiguities(db._conn) == []
+    assert compat.resolve_legacy_expiry_ambiguity(
+        db, **args, resolution=resolution, expiry=expiry, now=201,
+    )["already_applied"]
+    ensured = compat.ensure_legacy_paid_compat_entitlement(
+        db, **args, device_limit_exempt=True, now=201,
+    )
+    assert ensured["id"] == result["id"]
+    assert not ensured["_is_new"]
+    assert db._conn.execute("SELECT count(*) FROM mgboost_subscriptions").fetchone()[0] == 1
+    alias = db._conn.execute("SELECT legacy_status,legacy_expiry FROM mgboost_legacy_account_aliases").fetchone()
+    assert tuple(alias) == ("ACTIVE", None)
+
+
+def test_expiry_resolution_audit_failure_is_atomic_and_retryable(db):
+    import sqlite3
+    from src import legacy_paid_compat as compat
+    args = _malformed(db)
+    db._conn.execute(
+        "CREATE TEMP TRIGGER fail_expiry_audit BEFORE INSERT ON mgboost_entitlement_mutations "
+        "WHEN NEW.operation='LEGACY_PAID_COMPAT_EXPIRY_RESOLVED' "
+        "BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END"
+    )
+    before = dict(db._conn.execute("SELECT * FROM mgboost_subscriptions").fetchone())
+    with pytest.raises(sqlite3.IntegrityError, match="injected audit failure"):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="FINITE_EXPIRY", expiry=1000, now=200)
+    assert dict(db._conn.execute("SELECT * FROM mgboost_subscriptions").fetchone()) == before
+    assert compat._expiry_correction(db, args["account_id"]) is None
+    db._conn.execute("DROP TRIGGER fail_expiry_audit")
+    compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="FINITE_EXPIRY", expiry=1000, now=200)
+    assert compat._expiry_correction(db, args["account_id"]) is not None
+
+
+@pytest.mark.parametrize("change", [
+    {"decision_ref": ""}, {"evidence": {}}, {"evidence": None},
+    {"evidence": {"review_ref": "review-123", "owner_confirmed": False}},
+    {"evidence": {"token": "secret"}}, {"capability": None},
+    {"resolution": "UNLIMITED"}, {"expiry": None}, {"expiry": True},
+])
+def test_expiry_resolution_requires_explicit_review(db, change):
+    from src import legacy_paid_compat as compat
+    args = {**_malformed(db), "resolution": "FINITE_EXPIRY", "expiry": 1000, **change}
+    with pytest.raises(compat.LegacyPaidCompatError):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, now=200)
+    assert len(compat.detect_legacy_expiry_ambiguities(db._conn)) == 1
+
+
+@pytest.mark.parametrize("status,expiry", [("ACTIVE", 1000), ("DISABLED", None), ("EXPIRED", None), ("UNLIMITED", None)])
+def test_expiry_resolution_refuses_other_subscription_states(db, status, expiry):
+    from src import legacy_paid_compat as compat
+    args = _malformed(db)
+    db._conn.execute("UPDATE mgboost_subscriptions SET status=?,current_expiry=?", (status, expiry))
+    db._conn.commit()
+    with pytest.raises(compat.SubscriptionConflict):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="NON_EXPIRING", now=200)
+
+
+def test_expiry_resolution_stale_and_changed_retry_refused(db):
+    from src import legacy_paid_compat as compat
+    args = _malformed(db)
+    compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="NON_EXPIRING", now=200)
+    with pytest.raises(compat.SubscriptionConflict):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="FINITE_EXPIRY", expiry=1000, now=200)
+    db._conn.execute("UPDATE mgboost_subscriptions SET row_version=row_version+1")
+    db._conn.commit()
+    with pytest.raises(compat.SubscriptionConflict):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="NON_EXPIRING", now=200)
+
+
+@pytest.mark.parametrize("kind,billed,code", [
+    ("COMMERCIAL", False, "ORDINARY_CATALOG"),
+    ("INTERNAL", False, "LEGACY_PAID_COMPAT_V1_TEST_INTERNAL"),
+    ("COMMERCIAL", True, "LEGACY_PAID_COMPAT_V1_TEST_BILLED"),
+])
+def test_expiry_resolution_refuses_other_plans(db, kind, billed, code):
+    from src import legacy_paid_compat as compat
+    args = _malformed(db)
+    plan = db.accounts.create_plan_version({
+        "plan_code": code, "version": 1, "display_name": "Test incompatible plan",
+        "plan_kind": kind, "billing_required": billed, "device_limit_mode": "LIMITED",
+        "device_limit": 3, "wl_mode": "NONE", "terms": {},
+    }, now=100)
+    db._conn.execute("UPDATE mgboost_subscriptions SET current_plan_version_id=?", (plan["id"],))
+    db._conn.commit()
+    with pytest.raises(compat.SubscriptionConflict):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="NON_EXPIRING", now=200)
+    assert compat._expiry_correction(db, args["account_id"]) is None
+
+
+@pytest.mark.parametrize("source", ["DIRECT", "INTERNAL"])
+def test_expiry_resolution_refuses_unreviewed_account(db, source):
+    from src import legacy_paid_compat as compat
+    args = _malformed(db)
+    args["account_id"] = db.accounts.create_account(source, now=100)["id"]
+    with pytest.raises(compat.PrerequisiteMissing):
+        compat.resolve_legacy_expiry_ambiguity(db, **args, resolution="NON_EXPIRING", now=200)
+
+
+@pytest.mark.parametrize("legacy_status,expiry,status", [
+    ("ACTIVE", 1000, "ACTIVE"), ("ACTIVE", 199, "EXPIRED"),
+    ("UNLIMITED", None, "UNLIMITED"), ("DISABLED", None, "DISABLED"),
+    ("EXPIRED", None, "EXPIRED"),
+])
+def test_valid_legacy_expiry_contracts(db, legacy_status, expiry, status):
+    from src import legacy_paid_compat as compat
+    account, cap = _reviewed_account(db, username="valid-expiry", tg=929000003,
+                                     legacy_status=legacy_status, legacy_expiry=expiry)
+    result = compat.ensure_legacy_paid_compat_entitlement(
+        db, capability=cap, account_id=account["account_id"], decision_ref="valid-review", now=200,
+    )
+    assert result["status"] == status
+    assert result["current_expiry"] == expiry
+
 def test_default_legacy_paid_gets_d3(db):
     from src.legacy_paid_compat import ensure_legacy_paid_compat_entitlement
     account, capability = _reviewed_account(db, username="compat-user-a", tg=920000001)

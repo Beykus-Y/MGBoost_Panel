@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import json
+import hashlib
+import re
 
 from .admin_authority import PrimaryAdminAuthorizationError
 from .device_slots import PAID_BASELINE_LIMITS
@@ -47,6 +50,10 @@ _PLAN_KIND = "COMMERCIAL"
 
 
 class LegacyPaidCompatError(RuntimeError):
+    pass
+
+
+class AmbiguousLegacyExpiry(LegacyPaidCompatError):
     pass
 
 
@@ -236,6 +243,18 @@ def ensure_legacy_paid_compat_entitlement(
     with db._lock:
         try:
             db._conn.execute("BEGIN IMMEDIATE")
+            correction = _expiry_correction(db, account_id)
+            if correction is not None:
+                resolved = _resolved_subscription(db, account_id, correction)
+                if resolved["current_plan_version_id"] != plan["id"]:
+                    raise SubscriptionConflict("resolved subscription has a different plan")
+                db._conn.commit()
+                return {**resolved, "_plan": plan, "_is_new": False}
+            if subscription_status == "ACTIVE" and legacy_expiry is None and plan["plan_kind"] == "COMMERCIAL":
+                raise AmbiguousLegacyExpiry(
+                    "ACTIVE legacy commercial entitlement requires an explicit expiry "
+                    "or an explicitly reviewed non-expiring status"
+                )
             existing_sub = db._conn.execute(
                 "SELECT * FROM mgboost_subscriptions WHERE account_id=? "
                 "AND status IN ('PENDING','ACTIVE','DISABLED','UNLIMITED','UNKNOWN_LEGACY')",
@@ -298,6 +317,148 @@ def ensure_legacy_paid_compat_entitlement(
     result["_plan"] = plan
     result["_is_new"] = is_new
     return result
+
+
+_EXPIRY_OPERATION = "LEGACY_PAID_COMPAT_EXPIRY_RESOLVED"
+
+
+def _expiry_correction(db, account_id):
+    return db._conn.execute(
+        "SELECT * FROM mgboost_entitlement_mutations WHERE account_id=? AND operation=?",
+        (account_id, _EXPIRY_OPERATION),
+    ).fetchone()
+
+
+def _resolved_subscription(db, account_id, correction):
+    """Immutable correction supersedes alias evidence only for its pinned subscription.
+
+    Never recreate an expired subscription or overwrite subsequent admin changes.
+    """
+    after = json.loads(correction["after_json"])["after"]
+    sub = db._conn.execute(
+        "SELECT * FROM mgboost_subscriptions WHERE account_id=? ORDER BY id DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if sub is None or any(sub[key] != after[key] for key in (
+        "id", "status", "current_expiry", "row_version", "current_plan_version_id",
+    )):
+        raise SubscriptionConflict("reviewed expiry resolution is stale")
+    return dict(sub)
+
+
+def resolve_legacy_expiry_ambiguity(
+    db, *, capability, account_id: int, resolution: str, decision_ref: str,
+    evidence: dict, expiry: int | None = None, now: int | None = None,
+) -> dict:
+    """Owner-reviewed correction, with immutable provenance in the same transaction.
+
+    Evidence is deliberately restricted to an external review reference and explicit
+    owner confirmation. Put sensitive supporting material in the referenced review,
+    never in this ledger. An identical retry returns the pinned result; a changed
+    decision or subsequent subscription mutation conflicts.
+    """
+    actor = _require_primary(db, capability)
+    safe_ref = r"[A-Za-z0-9_.:/-]{3,128}"
+    if not isinstance(decision_ref, str) or not re.fullmatch(safe_ref, decision_ref):
+        raise LegacyPaidCompatError("a bounded decision reference is required")
+    if (not isinstance(evidence, dict)
+        or set(evidence) != {"review_ref", "owner_confirmed"}
+        or evidence["owner_confirmed"] is not True
+        or not isinstance(evidence["review_ref"], str)
+        or not re.fullmatch(safe_ref, evidence["review_ref"])):
+        raise LegacyPaidCompatError("evidence requires review_ref and owner_confirmed=true")
+    # Reject UUIDs even when accidentally supplied as a review reference.
+    if any(re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", ref)
+           for ref in (decision_ref, evidence["review_ref"])):
+        raise LegacyPaidCompatError("review references must not contain raw UUIDs")
+    if resolution not in {"FINITE_EXPIRY", "NON_EXPIRING"}:
+        raise LegacyPaidCompatError("explicit expiry resolution required")
+    if resolution == "FINITE_EXPIRY":
+        if isinstance(expiry, bool) or not isinstance(expiry, int) or not 0 <= expiry <= 2**63 - 1:
+            raise LegacyPaidCompatError("finite resolution requires an exact timestamp")
+    elif expiry is not None:
+        raise LegacyPaidCompatError("non-expiring resolution requires NULL expiry")
+    account_id = int(account_id)
+    timestamp = int(time.time()) if now is None else int(now)
+    request = dict(resolution=resolution, expiry=expiry, evidence=evidence)
+    with db._lock:
+        try:
+            db._conn.execute("BEGIN IMMEDIATE")
+            source = db._conn.execute(
+                "SELECT al.id FROM mgboost_accounts a "
+                "JOIN mgboost_direct_account_reviews r ON r.account_id=a.id "
+                "JOIN mgboost_legacy_account_aliases al ON al.account_id=a.id AND al.alias_role='PRIMARY' "
+                "WHERE a.id=? AND a.account_source='DIRECT' AND a.status='ACTIVE' "
+                "AND al.legacy_status='ACTIVE' AND al.legacy_expiry IS NULL "
+                "AND EXISTS (SELECT 1 FROM mgboost_owner_attested_legacy_payments p WHERE p.account_id=a.id)",
+                (account_id,),
+            ).fetchone()
+            if source is None:
+                raise PrerequisiteMissing("requires reviewed DIRECT paid ACTIVE/NULL PRIMARY evidence")
+            prior = _expiry_correction(db, account_id)
+            if prior is not None:
+                if (prior["actor_ref"] != actor or prior["reason"] != decision_ref
+                    or json.loads(prior["after_json"])["request"] != request):
+                    raise SubscriptionConflict("expiry decision already recorded")
+                result = _resolved_subscription(db, account_id, prior)
+                db._conn.commit()
+                return {**result, "already_applied": True}
+            sub = db._conn.execute(
+                "SELECT s.*, p.plan_code, p.plan_kind, p.billing_required "
+                "FROM mgboost_subscriptions s JOIN mgboost_plan_versions p "
+                "ON p.id=s.current_plan_version_id WHERE s.account_id=? ORDER BY s.id DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+            if (sub is None or sub["status"] != "ACTIVE" or sub["current_expiry"] is not None
+                or sub["plan_kind"] != "COMMERCIAL" or sub["billing_required"]
+                or not sub["plan_code"].startswith("LEGACY_PAID_COMPAT_V1_")):
+                raise SubscriptionConflict("current subscription is not an ambiguous legacy commercial entitlement")
+            status = "UNLIMITED" if resolution == "NON_EXPIRING" else (
+                "ACTIVE" if expiry > timestamp else "EXPIRED"
+            )
+            before = {key: sub[key] for key in (
+                "id", "status", "current_expiry", "row_version", "current_plan_version_id",
+            )}
+            after = {**before, "status": status, "current_expiry": expiry,
+                     "row_version": sub["row_version"] + 1}
+            updated = db._conn.execute(
+                "UPDATE mgboost_subscriptions SET status=?,current_expiry=?,updated_at=?,"
+                "row_version=row_version+1 WHERE id=? AND row_version=? AND status='ACTIVE' AND current_expiry IS NULL",
+                (status, expiry, timestamp, sub["id"], sub["row_version"]),
+            )
+            if updated.rowcount != 1:
+                raise SubscriptionConflict("concurrent subscription modification")
+            db._conn.execute(
+                "INSERT INTO mgboost_entitlement_mutations "
+                "(account_id,subscription_id,operation,payment_channel,mutation_source,actor_type,"
+                "actor_ref,reason,idempotency_key_hash,before_json,after_json,created_at) "
+                "VALUES (?,?,?,'NOT_APPLICABLE','ADMIN','PRIMARY_ADMIN',?,?,?,?,?,?)",
+                (account_id, sub["id"], _EXPIRY_OPERATION, actor, decision_ref,
+                 hashlib.sha256(f"legacy-expiry-resolution-v1:{account_id}".encode()).hexdigest(),
+                 json.dumps(before, sort_keys=True), json.dumps({
+                     "after": after, "request": request, "primary_alias_id": source["id"],
+                 }, sort_keys=True), timestamp),
+            )
+            result = _resolved_subscription(db, account_id, _expiry_correction(db, account_id))
+            db._conn.commit()
+            return {**result, "already_applied": False}
+        except Exception:
+            db._conn.rollback()
+            raise
+
+
+def detect_legacy_expiry_ambiguities(connection) -> list[dict]:
+    """Read-only global verification; accepts an existing SQLite connection."""
+    rows = connection.execute(
+        "SELECT s.account_id,s.id,p.plan_code FROM mgboost_subscriptions s "
+        "JOIN mgboost_plan_versions p ON p.id=s.current_plan_version_id "
+        "WHERE s.status='ACTIVE' AND s.current_expiry IS NULL AND p.plan_kind='COMMERCIAL' "
+        "AND p.plan_code GLOB 'LEGACY_PAID_COMPAT_V1_*' "
+        "AND s.id=(SELECT max(s2.id) FROM mgboost_subscriptions s2 WHERE s2.account_id=s.account_id) "
+        "ORDER BY s.account_id"
+    ).fetchall()
+    return [dict(account_id=row[0], subscription_id=row[1], plan_code=row[2],
+                 violation_class="CROSS_MODULE_INVARIANT_GAP") for row in rows]
 
 
 def increase_device_limit(
