@@ -197,13 +197,13 @@ class ChildWorkflowStore:
                 if state in {"REMOTE_MISSING", "REMOTE_MISMATCH", "REMOTE_AMBIGUOUS", "MANUAL_REVIEW"}:
                     self._conn.execute(
                         "UPDATE mgboost_child_user_intents SET observed_state='ERROR',"
-                        "updated_at=?,row_version=row_version+1 WHERE id=?",
+                        "updated_at=?,row_version=row_version+1 WHERE id=? AND desired_state!='REVOKED'",
                         (now, operation["child_intent_id"]),
                     )
                 elif state == "IN_SYNC":
                     self._conn.execute(
                         "UPDATE mgboost_child_user_intents SET observed_state='ACTIVE',"
-                        "updated_at=?,row_version=row_version+1 WHERE id=?",
+                        "updated_at=?,row_version=row_version+1 WHERE id=? AND desired_state!='REVOKED'",
                         (now, operation["child_intent_id"]),
                     )
                 self._event(
@@ -240,7 +240,7 @@ class ChildWorkflowStore:
                     )
                 self._conn.execute(
                     "UPDATE mgboost_child_user_intents SET observed_state='ERROR',"
-                    "updated_at=?,row_version=row_version+1 WHERE id=?",
+                    "updated_at=?,row_version=row_version+1 WHERE id=? AND desired_state!='REVOKED'",
                     (now, operation["child_intent_id"]),
                 )
                 self._conn.execute(

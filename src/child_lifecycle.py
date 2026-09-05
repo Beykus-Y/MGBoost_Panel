@@ -47,7 +47,7 @@ class ChildLifecycleStore:
 
     def _prepare(
         self, *, account_id: int, old_child_intent_id: int, operation_kind: str,
-        reason: str, idempotency_key: str, now: int,
+        reason: str, idempotency_key: str, now: int, guard_fn=None,
     ) -> dict:
         reason = str(reason or "").strip()
         if not reason or len(reason) > 300:
@@ -58,6 +58,8 @@ class ChildLifecycleStore:
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                if guard_fn is not None:
+                    guard_fn()
                 intent = self._conn.execute(
                     "SELECT id,account_id,child_username,uuid_verifier,slot_generation_id,"
                     "observed_state,desired_state FROM mgboost_child_user_intents "

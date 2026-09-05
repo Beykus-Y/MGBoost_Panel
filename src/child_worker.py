@@ -79,7 +79,7 @@ class ChildProvisioningWorker:
         for operation_id in self.allowed_operation_ids:
             now = int(self.clock())
             operation = self.db.child_workflow.get_operation(operation_id)
-            if not operation:
+            if not operation or operation.get("child_desired_state") == "REVOKED":
                 summary["skipped"] += 1
                 continue
             summary["examined"] += 1

@@ -30,7 +30,7 @@ import hmac
 import time
 
 from .child_contract import source_contract_hash
-from .device_slots import privacy_safe_hwid
+from .device_slots import InvalidHWID, privacy_safe_hwid
 from .legacy_bridge import LegacyBridgeConflict
 
 
@@ -58,7 +58,10 @@ def is_genesis_hwid_verifier(
     """
     if not hwid_verifier or not hmac_key:
         return False
-    expected, _masked = privacy_safe_hwid(_genesis_hwid(int(account_id)), hmac_key)
+    try:
+        expected, _masked = privacy_safe_hwid(_genesis_hwid(int(account_id)), hmac_key)
+    except InvalidHWID:
+        return False
     return hmac.compare_digest(expected, hwid_verifier)
 
 
@@ -107,6 +110,24 @@ def migrate_bootstrapped_account(
             "account_id": account_id, "genesis_child_username": None,
             "bridge_enabled": True, "already_migrated": True,
         }
+
+    successful_migration = db._conn.execute(
+        "SELECT 1 FROM mgboost_migration_bindings WHERE account_id=? "
+        "AND state IN ('MIGRATED','LEGACY_REVOKE_PENDING','LEGACY_REVOKED') LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if successful_migration:
+        raise PrerequisiteMissing("successful migration exists; bootstrap must not be recreated")
+
+    # Historical genesis identity is terminal: a disabled bridge must never
+    # turn a retired bootstrap into a new synthetic claim on a retry.
+    historical = db._conn.execute(
+        "SELECT hwid_verifier FROM mgboost_device_slot_generations "
+        "WHERE account_id=? AND status!='ACTIVE'", (account_id,),
+    ).fetchall()
+    if any(is_genesis_hwid_verifier(account_id, row["hwid_verifier"], hmac_key)
+           for row in historical):
+        raise PrerequisiteMissing("historical bootstrap retired; bridge requires review")
 
     # --- genesis child on slot 1, synthetic placeholder HWID -------------
     genesis_hwid = _genesis_hwid(account_id)

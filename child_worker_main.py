@@ -125,6 +125,24 @@ def run_reconciliation_tick(db, marzban, *, worker_id: str, now: int) -> dict:
     return summary
 
 
+def run_bootstrap_retirement_tick(db, marzban, *, worker_id, now):
+    from src.bootstrap_retirement import preview, sweep
+    from src.config import DEVICE_SLOT_HMAC_KEY
+
+    mode = os.getenv("BOOTSTRAP_RETIREMENT_MODE", "preview").strip().lower()
+    if mode not in {"preview", "active"} or not DEVICE_SLOT_HMAC_KEY:
+        return {"mode": "disabled"}
+    try:
+        if mode == "preview":
+            return {"mode": mode, "candidates": preview(db._conn, hmac_key=DEVICE_SLOT_HMAC_KEY)}
+        return {"mode": mode, **sweep(
+            db, hmac_key=DEVICE_SLOT_HMAC_KEY, revoke_fn=marzban.revoke_child_user,
+            worker_id=worker_id, now=now)}
+    except Exception:
+        logger.error("bootstrap_retirement_tick_failed")
+        return {"mode": mode, "errors": 1}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
@@ -138,9 +156,13 @@ def main():
             reconciliation = run_reconciliation_tick(
                 db, worker.marzban, worker_id=worker.worker_id, now=int(time.time()),
             )
+            retirement = run_bootstrap_retirement_tick(
+                db, worker.marzban, worker_id=worker.worker_id, now=int(time.time()),
+            )
             if args.json:
                 print(json.dumps(summary, sort_keys=True))
                 print(json.dumps(reconciliation, sort_keys=True))
+                print(json.dumps(retirement, sort_keys=True))
             else:
                 logging.getLogger(__name__).info(
                     "child_worker_cycle examined=%d reconciled=%d provisioned=%d "

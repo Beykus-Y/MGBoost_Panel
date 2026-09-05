@@ -215,7 +215,7 @@ def _device_summaries(
 ) -> list[dict]:
     rows = connection.execute(
         "SELECT s.slot_number,s.slot_kind,s.desired_state,s.observed_state,s.created_at,s.updated_at,"
-        "g.status AS generation_status,g.claimed_at,g.ended_at,g.end_reason,g.hwid_masked,g.hwid_verifier,"
+        "g.id AS generation_id,g.status AS generation_status,g.claimed_at,g.ended_at,g.end_reason,g.hwid_masked,g.hwid_verifier,"
         "c.desired_state AS child_desired_state,c.observed_state AS child_observed_state,"
         "c.uuid_masked,m.state AS migration_state,m.updated_at AS migration_updated_at "
         "FROM mgboost_device_slots s "
@@ -233,6 +233,12 @@ def _device_summaries(
         item["proven_genesis_bootstrap"] = is_genesis_hwid_verifier(
             account_id, verifier, device_slot_hmac_key,
         )
+        if item["proven_genesis_bootstrap"]:
+            from .bootstrap_retirement import classify
+            item["bootstrap_retirement"] = classify(
+                connection, account_id=account_id, generation_id=item["generation_id"],
+                hmac_key=device_slot_hmac_key,
+            )
         item["migration_evidence"] = (
             "REAL_DEVICE_LINEAGE" if item["migration_state"] is not None
             else "NO_REAL_DEVICE_LINEAGE"
