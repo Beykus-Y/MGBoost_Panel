@@ -1,5 +1,32 @@
 # MGBoost Panel — canonical roadmap
 
+> **Current audit baseline — 2026-09-06:** local `main` and cached `origin/main`
+> are `98e27fe9e4ea72727dab36436e573d701c83c3b7`, divergence 0/0. No fetch or
+> production connection was made. The dated independent audit/matrix and execution
+> queue at the end supersede undated/current-state and historical completion claims
+> below. This was a static audit with five small local reproductions, **not** a fresh
+> full regression, browser or production acceptance run. Reopened verification gates
+> do not mean the implementation disappeared. See [BUGS.md](BUGS.md) and [RISKS.md](RISKS.md).
+
+> **Second independent review reconciliation — 2026-09-06 (documentation-only, no
+> re-audit, no tests, no runtime/production access):** the 2026-09-06 audit above
+> downgraded 55 previously-`[x]` items to `[~]` in one pass. A second independent
+> review of that specific downgrade found that most of it rested on a single
+> conflated rule -- "this session did not personally re-run production/tests, so a
+> historical `[x]` can no longer count" -- rather than on any found contradiction,
+> regression, or removed implementation. That rule is rejected below (see the
+> restored status legend). Applying it correctly: **29 of the 55** items are
+> restored to `[x]` (their historical production/test evidence stands unrefuted);
+> **24 of the 55** remain `[~]` (a real BUG-00x/RISK-0xx-confirmed gap directly
+> disproves a stated acceptance criterion, so the downgrade was correct); and
+> **2 of the 55** (PH2-01, PH2-05) are marked `MANUAL_REVIEW` -- not broken, but
+> genuinely ambiguous and requiring an explicit owner/technical decision. No
+> implementation, test, or runtime change accompanies this reconciliation; only
+> the roadmap's own bookkeeping is corrected. See the reconciled per-ID matrix and
+> updated counts near the end. [BUGS.md](BUGS.md) and [RISKS.md](RISKS.md) are
+> unchanged by this reconciliation.
+
+
 Статус: **главный источник истины для модернизации MGBoost Panel**.
 Production implementation commit: `70accb7` на 2026-08-24; исходный audited baseline: `ccc1b4d` на 2026-08-23.
 Владелец продуктовых решений: пользователь/владелец MGBoost Panel.
@@ -12,6 +39,19 @@ Production implementation commit: `70accb7` на 2026-08-24; исходный au
 - `[~]` — реализовано частично; обязательно описать остаток;
 - `[x]` — подтверждено в `main` тестами и документацией;
 - `[!]` — отменено/неактуально; сохранить причину и дату.
+
+**`[~]` называет remaining implementation gap — конкретный незакрытый acceptance
+criterion, disproved by BUGS.md/RISKS.md или самим roadmap-текстом ("Remaining
+before `[x]`", "reopened", "still open"). `[~]` НЕ означает "verification gate":
+отсутствие свежей re-verification/re-run тестов/production-доступа в текущей
+сессии само по себе НЕ снимает исторически подтверждённый `[x]`.** Разделяй три
+разных понятия при оценке любого пункта: (1) implemented in current main —
+реализация присутствует и не удалена; (2) historically verified — repository/
+roadmap/git содержат сохранённое evidence прохождения теста/staging/production
+gate на момент закрытия; (3) reverified this session — исполнитель лично
+перепроверил это сейчас. Отсутствие (3) не отменяет (1) и (2); только конкретное
+disproof (найденный bug, самим roadmap задокументированный open criterion,
+удалённая/замененная реализация) переводит `[x]` обратно в `[~]`.
 
 После каждой задачи:
 
@@ -211,20 +251,30 @@ Stars и RUB — независимые утверждённые retail price ta
 
 ## [x] PH0-01 — Repository/security inventory
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Repository inventory refreshed; live security inventory not independently reproduced. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Same-class inventory tasks PH0-02/03/06/08 were graded `VERIFIED_DONE` by the same first audit; PH0-01's own 2026-08-23 F-01-F16 review is equally valid historical verification and was singled out inconsistently. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Evidence:** main, Git history, routes, secrets classes, dependencies и production runtime проверены 2026-08-23; findings F-01–F-16 отражены ниже.
 **Проверка:** local main и deployed HEAD сопоставлены. Remediation этим пунктом не считается выполненной.
 
 ## [x] PH0-02 — Current/target architecture diagrams
+
+**Independent audit 2026-09-06:** `VERIFIED_DONE`. STALE corrected: root/direct-SUDO-only diagram is historical; current code graph below supersedes it. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Готово:** boundaries nginx/MGBoost/SQLite/Telegram/OpenRouter/Marzban/Xray и target parent/child/outbox приведены выше.
 **Правило:** diagram обновляется вместе с runtime change/changelog.
 
 ## [x] PH0-03 — Current DB gap analysis
 
+**Independent audit 2026-09-06:** `VERIFIED_DONE`. STALE corrected: canonical entities and v2 migrations exist and are wired; fresh synthetic bootstrap succeeded in harness. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Готово:** current tables и отсутствующие target entities зафиксированы.
 **Файл:** `src/database.py`. **Проверка:** schema diff при каждой migration.
 
 ## [~] PH0-04 — Production inventory/drift control
+
+**Independent audit 2026-09-06:** `PARTIAL`. Backup units exist; effective deploy manifest, volume/port matrix and runtime drift still absent (RISK-002/013). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Сделано:** HEAD/topology/permissions baseline и untracked JSON обнаружены; PH1-03 закрыл live sensitive-file modes; PH1-04 перевёл MGBoost на dedicated UID/GID и зафиксировал writable boundary.
 **Осталось:** versioned deploy manifest, полный volume/regular-backup/port matrix и policy для legacy JSON. На 2026-08-23 регулярных MGBoost/Marzban backup jobs/archives не обнаружено; их создание/retention относится к PH1-06/DL-042.
@@ -232,6 +282,10 @@ Stars и RUB — независимые утверждённые retail price ta
 **Migration:** log/DB-backup/token-evidence retention утверждена DL-042; cleanup только по controlled deletion после verified backup/restore и confirmed rotation/reissue strategy. Untracked legacy JSON требует отдельного ownership/content inventory и не удаляется автоматически.
 
 ## [x] PH0-05 — Exact versioned WL topology
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Exact versioned node/tag baseline present; present live topology is unknown (RISK-004). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was RISK-004 alone (a topology-drift risk), not a confirmed defect; the 2026-08-26 production-deployed exact versioned baseline stands unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Сделано (2026-08-26, production-deployed):** `src/wl_topology.py` — exact
 versioned baseline (`WL_TOPOLOGY_VERSION="2026-08-26-v1"`): 12 live WL
@@ -265,16 +319,22 @@ never auto-included, real-payload shaping helpers).
 
 ## [x] PH0-06 — Token/device/payment execution paths
 
+**Independent audit 2026-09-06:** `VERIFIED_DONE`. STALE corrected: canonical purchase and opaque/child callers now exist alongside legacy paths. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Готово:** legacy flow и Stars expire-only behavior зафиксированы.
 **Файлы:** `src/routes/sub.py`, `src/routes/lk.py`, `src/device_headers.py`, `src/bot_support.py`, `src/stars.py`.
 
 ## [~] PH0-07 — Regression baseline
+
+**Independent audit 2026-09-06:** `PARTIAL`. Cross-connection/crash tests now exist; missing combined failure paths demonstrated by BUG-001..004; current full regression UNVERIFIED_TEST. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Сделано:** есть tests management sessions, Stars durability/refunds, audit events, renew locks/support и single-process concurrency.
 **Добавлено PH1-01:** browser stored-XSS E2E под production CSP, JS render-path malicious-value test, admin session fixation/CSRF/expiry/logout/rotation tests и server-side Marzban broker negative tests.
 **Осталось:** token-log canary, общий malformed-input corpus вне admin broker, multi-process, Marzban contract, WL fault injection и end-to-end device/subscription revoke tests.
 
 ## [x] PH0-08 — Inventory manual payment and separate Filin automation flow
+
+**Independent audit 2026-09-06:** `VERIFIED_DONE`. STALE corrected: structured manual records exist; Filin remains a separate non-payment authority. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Сделано:** подтверждено, что «reseller» в исходной формулировке — ручное применение прямой внешней оплаты основным admin, а не отдельный tenant. Dedicated payment/order provenance сейчас отсутствует. Generic HMAC Filin API является другой integration: перечисляет/создаёт/продлевает/удаляет Marzban users с MGBoost SUDO; `add_days` 1..3650, отрицательные expire/data_limit отклоняются, renew сериализуется со Stars только process-local per-username lock.
 **Files:** `src/security.py`, `src/routes/internal.py`, `src/server.py`, `tests/test_internal_renew_lock.py`; внешний caller вне этого repo.
@@ -291,6 +351,10 @@ order and with the residual/dependency constraints recorded in
 
 ## [x] PH1-01 — Admin stored XSS и безопасная server session — P0
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Cookie/CSRF/server JWT and SafeMarkup exist; browser/current deployment gate unavailable. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "not reverified this session"; the 2026-08-24 production rollout with full regression and a Playwright browser pass is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Completed:** 2026-08-23; production rollout verified 2026-08-24. **Depends:** none; выполнена первой.
 **Files:** `frontend/assets/admin.js`, `frontend/index.html`, `src/config.py`, `src/http_utils.py`, `src/marzban.py`, `src/security.py`, `src/server.py`, `src/routes/admin_session.py`, `src/routes/admin_proxy.py`, `src/routes/panel.py`, `.env.example`, `README.md`, `tests/test_admin_sessions.py`, `tests/test_admin_proxy.py`, `tests/test_admin_frontend_security.py`, `tests/test_admin_browser_e2e.py`.
 **Implemented:** все admin API/user-controlled значения проходят через единый escaping `SafeMarkup`/DOM render path; inline event attributes удалены и заменены event delegation; Marzban JWT удалён из browser storage/API responses и хранится только в process-local server session; введены CSPRNG opaque session ID и CSRF token, hashed in-memory lookup, absolute TTL, Secure/HttpOnly/SameSite=Strict cookie, logout/revoke/rotation и fixation-safe login; mutation routes требуют constant-time CSRF check; cross-site-form-compatible login requests отклоняются; browser Marzban access переведён на explicit server-side path/method broker; upstream 401/403 отзывает local session; admin SPA получила strict script CSP, no-store/referrer/frame/nosniff headers. Текущий process-local store соответствует single-worker baseline и не разрешает multi-worker до PH8-02.
@@ -299,6 +363,10 @@ order and with the residual/dependency constraints recorded in
 **Migration/rollback:** admin asset получил новый cache-buster; SPA посылает `Clear-Site-Data: "storage"` и JS удаляет legacy `mz_token`. После deploy существующие browser JWT sessions потребуют новый login. Rollback допустим только к server-side session implementation и никогда не должен возвращать JWT в JavaScript/localStorage.
 
 ## [x] PH1-02 — Marzban SUDO CSPRNG rotation и login rate limit — P1
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Encoding/limiter code present; actual credential rotation and invalidation are production facts not reverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "not reverified this session"; the 2026-08-24 production credential-rotation gate (including a real outage/recovery) is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Completed and production verified:** 2026-08-24. **Depends:** выполненный PH1-05 external mutation boundary и maintenance coordination. Credential storage/caller cutover code завершён PH1-05; прежний circular dependency PH1-02↔PH1-05 устранён. **Files:** `src/marzban.py`, `src/security.py`, `src/http_utils.py`, `src/routes/admin_session.py`, broker/Marzban env, nginx exact-location config, `tests/test_admin_sessions.py`, `tests/test_marzban_auth.py`.
 **Scope:** service credential >=128-bit; correct form encoding; atomic rotation; rate limit; проверить JWT invalidation/lifetime.
@@ -310,6 +378,10 @@ order and with the residual/dependency constraints recorded in
 
 ## [x] PH1-03 — Minimum permissions для Marzban secrets/data — P1
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Actual file owner/modes and Marzban container privileges cannot be proven from repo config. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "cannot be proven from repo config"; the 2026-08-23 production chmod actions and their verification are unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Completed:** 2026-08-23. **Depends:** PH0-04 ownership matrix.
 **Applied production scope:** MGBoost active `/opt/MGBoost_Panel/.env` и `data/db.sqlite3` уже были `0600 root:root`, `data/` — `0700`; это сохранено. Marzban `/opt/marzban/.env`, live `/var/lib/marzban/db.sqlite3`, `xray_config.json` и три найденные Xray backup copies изменены с `0644` на `0600 root:root`; `/var/lib/marzban` изменён с `0755` на `0700`. Два repository-root placeholder DB (`db.sqlite3`, `panel.db`) подтверждены zero-byte и не являются active data.
 **Acceptance evidence:** Marzban container не privileged, но его Python/Xray processes сейчас root и сохраняют доступ к root-owned bind mount; container remained running; Marzban `/api/system` вернул expected unauthenticated `401`, MGBoost admin SPA — `200`; Compose config читает `.env`; все Xray JSON copies парсятся; unrelated `nobody` не читает MGBoost/Marzban env/DB/Xray; временный SQLite online backup открылся как restore copy и прошёл `PRAGMA quick_check=ok`, после теста temp data удалены автоматически.
@@ -318,12 +390,20 @@ order and with the residual/dependency constraints recorded in
 
 ## [x] PH1-04 — Dedicated MGBoost service user/systemd hardening — P1
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Dedicated mgboost UID sandbox configured; running UID/effective unit unknown. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "running UID unknown"; the 2026-08-23 systemd-analyze/security-score production evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Completed:** 2026-08-23. **Depends:** PH0-04, PH1-03. **Files:** `mgboost-panel.service`, `README.md`, production unit/ownership.
 **Implemented:** dedicated system identity `mgboost:mgboost` (UID/GID 999 on current production, no login/home); `.env` is `0640 root:mgboost`; `/opt/MGBoost_Panel/data` is `0700 mgboost:mgboost`, active files `0600`; source tree remains root-owned/read-only. Unit sets `UMask=0077`, `PYTHONDONTWRITEBYTECODE`, `NoNewPrivileges`, empty capability/ambient sets, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp/Devices`, bounded `ReadWritePaths=/opt/MGBoost_Panel/data`, kernel/control/proc/namespace/realtime/SUID/personality/memory hardening and only AF_UNIX/INET/INET6.
 **Acceptance evidence:** remote `systemd-analyze verify` accepted the unit (only unrelated host snapd warning); service MainPID runs as `mgboost`; `systemd-analyze security` improved from `9.6 UNSAFE` to `2.8 OK`; transient equivalent sandbox confirmed source non-writable/data writable; service-user SQLite `BEGIN IMMEDIATE`/rollback passed; MGBoost SPA returned `200`; service remained active after restart. `nobody` cannot read env/DB.
 **Migration/rollback:** previous unit saved root-only as `/etc/systemd/system/mgboost-panel.service.pre-ph1-04`; pre-change ownership was root:root (`0600` env/data files, `0700` data dir). Rollback may restore the previous unit and root ownership only for emergency compatibility, but must retain `0600/0700` and never broaden permissions. Rollback file contains unit configuration, not credentials.
 
 ## [x] PH1-05 — Narrow Marzban broker/allowlist — P1
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Typed operations and loopback/HMAC exist; full-SUDO remains broker-side and legacy operations remain reachable (RISK-006). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-006 concerns a different surface (legacy `internal.py` v1 / admin raw proxy), not this item's own narrow-broker/no-SUDO-in-main-process deliverable, which stands unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Completed locally/staged and deployed to production:** 2026-08-24. **Depends:** PH1-01 server-session boundary, PH0-08 caller inventory и обязательный no-user-impact gate DL-043; не зависит от завершённой rotation PH1-02. **Files:** `broker_main.py`, `src/broker_protocol.py`, `src/broker_operations.py`, `src/broker_server.py`, `src/service_marzban.py`, `src/legacy_contract.py`, `src/routes/internal.py`, `src/routes/lk.py`, `src/bot_support.py`, `src/routes/admin.py`, `mgboost-marzban-broker.service`, `mgboost-panel.service`, `broker.env.example`, `.env.example`, `README.md`, `docs/PHASE1_BACKWARD_COMPATIBILITY.md`, `scripts/verify_broker_against_staging.py`, `scripts/verify_legacy_sub_restart_staging.py`, `tests/test_marzban_broker.py`, `tests/test_phase1_legacy_compat.py`.
 **Выбранная topology (DL-043):** отдельный localhost broker-service хранит/получает Marzban service SUDO credential; основной MGBoost после cutover не содержит этот credential в environment. Broker не публикуется через nginx. Public Marzban `/sub/{legacy_token}` и `/sub/{legacy_token}/info` остаются direct non-SUDO paths, поэтому broker outage не должен останавливать legacy subscriptions. Browser admin использует только user-entered server-side Marzban session PH1-01, не service credential.
@@ -336,7 +416,9 @@ order and with the residual/dependency constraints recorded in
 **Known preserved legacy behavior:** Filin `data_limit=0` преобразуется старым кодом в JSON `null`; Marzban 0.8.4 при partial update оставляет прежнее значение. PH1-05 сохраняет это буквально. Filin add-days не имеет durable operation ID, поэтому blind retry после unknown response остаётся неоднозначным legacy contract; durable/shared idempotency относится к PH2-03 и не заменяет безопасный Stars recovery.
 **Migration/rollback:** production cutover выполнен без DB/user migration и user credential rotation. Root-only rollback bundle содержит pre-cutover code/unit/env и verified SQLite backups. Emergency rollback возвращает PH1-01 code/unit и текущий service credential только main process до его успешного старта, затем останавливает broker; user UUID/token/expiry/HWID не меняются. Подробный pre/post runbook — compatibility report.
 
-## [x] PH1-06 — Stop raw subscription leakage/controlled rotation — P1
+## [~] PH1-06 — Stop raw subscription leakage/controlled rotation — P1
+
+**Independent audit 2026-09-06:** `PARTIAL`. Redaction/hash references and backup implemented; retained production evidence/log settings and complete exceptional sinks remain unverified (RISK-002/007/014). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Completed and production verified:** 2026-08-24. **Depends:** PH2-01 for final reissue; backup/restore verification and confirmed rotation/reissue strategy before cleanup. Retention policy itself is fixed by DL-042. **Files:** `src/sensitive.py`, `src/server.py`, `src/database.py`, `src/marzban.py`, `src/routes/sub.py`, `src/routes/lk.py`, `frontend/assets/lk.js`, `scripts/secure_db_backup.py`, `scripts/create_legacy_quarantine.py`, backup systemd units, nginx/journal, `docs/PHASE1_RETENTION_AND_BACKUP.md`.
 **Scope:** redact sensitive paths; no new raw-token DB/query/log entries; inventory and classify legacy evidence before cleanup. По DL-043 Phase 1 не меняет legacy user subscription URL/token: controlled user-token rotation/reissue выполняется только staged migration Phase 4. Rotation service/admin credentials остаётся обязательной и не отменяется наличием credential в retained backup/quarantine snapshot.
@@ -349,6 +431,10 @@ order and with the residual/dependency constraints recorded in
 
 ## [x] PH1-07 — Patch applicable dependency DoS via staging — P2
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Pinned build present; no current advisory/build/integration/soak proof collected. No claim of zero current CVEs. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap ("no current CVE scan collected") is an ongoing monitoring concern properly owned by PH8-07, not evidence the 2026-08-24 patch/staging/production gate was undone. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Scope:** Marzban `python-multipart 0.0.7`, MGBoost `aiohttp 3.10.11`, transitive inventory.
 **Accept/tests:** patched immutable build; advisory payload/load/soak; Telegram/OpenRouter/proxy integration.
 **Migration/rollback:** staging only first; no production in-place package upgrade; previous image digest retained.
@@ -357,12 +443,20 @@ order and with the residual/dependency constraints recorded in
 
 ## [x] PH1-08 — Remove password from Marzban login notifications — P2
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. AST patch exists; installed image and live report sink unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "not reverified this session"; the 2026-08-24 production canary (redacted login report, 0 plaintext occurrences) is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Scope:** failed-login Telegram/Discord reports. **Accept:** password never enters report/log.
 **Tests:** canary password absent everywhere. **Rollback:** never restore password field.
 **Implemented/staging verified 2026-08-24:** PH1-08 builds as a narrow layer over the exact PH1-07 image and replaces only the failed-login `report.login` password argument with `🔒`; authentication validation and HTTP semantics are unchanged. The build patch is AST-validated, idempotent and fail-closed on unexpected/duplicate upstream call shapes. Built-image AST and direct report capture prove two redacted login-report calls and 0 plaintext report arguments. With `NOTIFY_LOGIN=true`, a real isolated failed login returned the same 401 and the canary appeared 0 times in report capture, HTTP response and container logs. All-10 broker operations, legacy `/sub` with broker up/down, MGBoost restart, Filin HMAC create/renew/delete, UUID/config continuity and full regressions passed (`401 passed, 1 skipped` locally; `400 passed, 2 skipped` on production Python 3.10). Staging verifier flakiness was corrected: timestamped Marzban `subscription_url` is verified as a preserved old alias rather than an immutable admin field, and only the randomly selected Reality `sid` value is normalized while UUID/proxy/inbound/endpoint/transport semantics stay strict. Runbook: `docs/PHASE1_LOGIN_NOTIFICATION_HARDENING.md`.
 **Production completed 2026-08-24:** exact candidate image/AST/report-capture gates passed before an image-only Marzban recreate. Valid admin login remained functional; a real failed-login canary returned 401 with `NOTIFY_LOGIN=true` and appeared 0 times in the report argument, response, container, application journal and nginx logs. The masked pre/post/final state matched for all 25 users/configs, 71 device rows and 71 HWID locks. Admin/LK, Stars durable state, Filin HMAC, broker, backup timer, nginx/systemd and permissions passed. Four broker error-signature messages occurred only at the Marzban recreate timestamp; the following stable 10-minute window contained 0. UUID, subscription URL/token, HWID, tariff, expiry and forced client reconfiguration changes: 0; unexpected effective config changes: 0. Final Phase 1 verdict and residual risks: `docs/PHASE1_COMPLETION_REPORT.md`.
 
 ## [x] PH1-09 — Minimum permissions for the MGBoost sensitive nginx log — P1
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. 0600 rotation config exists; actual inode/access denial unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "not reverified this session"; the 2026-08-25 production forced-rotation/permission-denial evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Discovered:** 2026-08-25, during the PH4-01 valid-legacy-`/sub` production gate (residual, pre-existing, not caused by PH4-01). **Depends:** none; standalone filesystem/nginx/logrotate hardening, does not reopen PH1-06 (whose own redaction/retention contract was never violated -- the sensitive log's *content* was already correctly redacted at the nginx layer; only its *file mode* was too permissive).
 **Scope:** `/var/log/nginx/mgboost-sensitive-access.log` was `0644 root:root` (world-readable) instead of minimum-necessary access. Fix file mode at the source (creation mechanism), not just the current inode, and prove it survives rotation/reload.
@@ -372,6 +466,10 @@ order and with the residual/dependency constraints recorded in
 **Residual risk (explicitly out of this task's scope):** the `logrotate` package/binary is not installed on this host at all, so no scheduled rotation currently runs for *any* nginx log (this predates this task and is a separate, larger gap than the file-mode issue it was asked to fix -- installing/enabling a rotation daemon for the first time is a distinct, more invasive change than "narrow existing permissions," and was therefore not done here). The logrotate config files added by this task are correct and ready for whenever a rotation mechanism is provisioned (manually, via a future explicitly-scoped task, or if `logrotate` is later installed); the one rotation performed here was executed manually, replicating the configured stanza's exact semantics.
 
 ## [x] PH1-10 — Scheduled nginx sensitive-log rotation and retention — P1
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Config separation exists; installed distro timer/forced rotation unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "not reverified this session"; the 2026-08-25 production logrotate install/forced-rotation evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Discovered:** 2026-08-25, as PH1-09's own documented residual (its "forced rotation" was a manual `mv`/`create`/reopen simulation, not a real `logrotate` invocation, because `logrotate` was not installed). **Depends:** PH1-09 (schema/config already correct; this closes the scheduler gap only).
 **Scope:** make the already-correct `/etc/logrotate.d/mgboost-sensitive-nginx` stanza actually run on a schedule, using the standard distro mechanism, without inventing a custom rotation daemon.
@@ -391,7 +489,11 @@ API/migration design is fixed, but implementation remains blocked by PH3 parent
 account identity and Phase 4 migration. Consequently PH2-05/06/07 remain open
 and are not eligible for completion.
 
-## [x] PH2-01 — Random 256-bit MGBoost opaque subscription tokens — P2
+## [~] PH2-01 — Random 256-bit MGBoost opaque subscription tokens — P2
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. CSPRNG/verifier/CAS/terminal triggers wired. Mixed-issuer delivery remains RISK-018; fresh DoD gate absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** `MANUAL_REVIEW`; status remains `[~]`. RISK-018 (delivery not atomically coupled to activation across concurrent issuers) is a real, code-confirmed multi-step design (`abandon_pending` -> `prepare` -> `deliver` -> `activate`) directly relevant to this item's own revoke/reissue safety guarantee, but concurrent multi-entrypoint issuance was never tested even at original closure. This is **not** classified as broken; it is genuinely ambiguous and needs an explicit owner/technical decision on acceptable concurrent-issuance behavior before a KEEP_X/PARTIAL verdict can be assigned. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH1-06, PH3 account identity, Phase 4 migration.
 **Never:** TG ID/hex/SHA256(TG_ID)/concatenated SHA. **Scope:** CSPRNG >=256-bit, hash/verifier DB, account binding/version, individual revoke/reissue; old token invalid after rotation; no full token logs.
@@ -409,6 +511,10 @@ and are not eligible for completion.
 
 ## [x] PH2-02 — LK device-name XSS и inline handlers — P2
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. DOM/text/CSP paths exist; browser evidence unavailable under audit constraint. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "browser evidence unavailable under audit constraint"; the 2026-08-24 production deployment evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH1-01 frontend conventions. **Files:** `frontend/assets/lk.js`, `frontend/lk.html`, весь frontend.
 **Scope:** `textContent`, opaque dataset IDs, `addEventListener`; no inline onclick.
 **Accept/tests:** quotes/entities/tags/backslashes остаются текстом; CSP без unsafe-inline; rename/delete E2E.
@@ -418,6 +524,8 @@ and are not eligible for completion.
 **Production completed 2026-08-24:** exact deploy commit was pulled and only `mgboost-panel` restarted. LK/admin/assets, authenticated Filin status, durable Stars tables, Telegram bot through the configured proxy, broker/nginx/Marzban health and token-safe journals passed. The post-deploy snapshot exactly matched the pre-state for 25 users/configs, 71 device rows and 71 HWID locks with zero config fetch errors. UUID, legacy subscription token/URL, HWID, expiry, tariff, forced client reconfiguration and unexpected effective config changes: 0.
 
 ## [~] PH2-03 — Shared durable Internal HMAC replay protection — P2
+
+**Independent audit 2026-09-06:** `PARTIAL`. Durable nonce and optional v2 exist; v1 mutation retries remain ambiguous; BLOCKED_EXTERNAL on Filin adoption. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Keep:** HMAC-SHA256, timestamp, nonce, body hash, constant-time. **Add:** atomic shared nonce consume+TTL, idempotency/CAS.
 **Accept/tests:** replay блокируется same/other worker и после restart/cache flood.
@@ -429,6 +537,10 @@ and are not eligible for completion.
 
 ## [x] PH2-04 — Headers/cache/error hardening — P3
 
+**Independent audit 2026-09-06:** `PARTIAL`. Headers implemented; repo nginx not a complete current route manifest; uniform operational 404 claims superseded by later authenticated 503 paths. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap (docs/nginx-example drift, RISK-013) is a documentation-currency concern, not evidence the 2026-08-24 production HSTS/CSP verification was undone. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH1-01, PH2-02 перед strict CSP.
 **Scope:** no-store, Referrer-Policy, HSTS, CSP, frame protection, uniform invalid subscription, hide unnecessary docs/version.
 **Tests:** header/frame/cache/referrer/status/body/timing. **Rollout:** CSP report-only first.
@@ -438,7 +550,11 @@ and are not eligible for completion.
 **Production completed 2026-08-24:** application report-only deployment passed before strict CSP enforcement. Nginx `server_tokens off` and HSTS were applied idempotently to the global config plus five child sensitive locations after root-only backup and `nginx -t`; active `panel.beykus.fun`/`sub.beykus.fun` externally return HSTS and no nginx version. Strict browser CSP was then enabled and externally verified on a valid legacy URL with no report-only header. Masked 25-user/config and 71-device/HWID state matched exactly; admin/LK/Stars/Filin/broker/Marzban/Telegram/support and token-safe logs passed. UUID, token/URL, HWID, expiry, tariff, forced reconfiguration and unexpected config changes: 0.
 **Operational residuals:** MGBoost/broker can report `systemd active` several seconds before their HTTP listeners are ready, so deploy/monitoring must retain a readiness loop (tracked with the availability redesign); legacy `mgboostmsk.ddns.net` did not resolve during the external gate, while its installed nginx block was hardened. Active product hostnames passed.
 
-## [x] PH2-05 — Admin/user session and ownership lifecycle
+## [~] PH2-05 — Admin/user session and ownership lifecycle
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Rotation-before-owner ordering and schema uniqueness present; actual recovery workflow/runtime unavailable (RISK-018). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** `MANUAL_REVIEW`; status remains `[~]`. The session/CSRF/rotation layer is solidly production-verified via PH1-01 reuse, but this item's own historical text already says the new rebind-specific capability was "Production dormant deploy... no real production Telegram identity was created, changed or rebound" -- only isolated-gate/crash-fault-injection tested, never live. Reasonable reviewers could call this either an accepted staged-rollout design or a genuine residual gap. This is **not** classified as broken; flagged for an explicit owner/dedicated decision. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH1-01, PH2-01.
 **Scope:** logout/revoke/rotation/TTL/scopes, CSRF/Origin, Telegram ownership recovery/rebind, authz after authn.
@@ -453,7 +569,9 @@ and are not eligible for completion.
 **Production dormant deploy 2026-08-25:** see the cardinality block below. No real production Telegram identity was created, changed or rebound; no synthetic Telegram ID was created in production for evidence -- all destructive evidence is from the isolated gate and test suite only.
 **COMPROMISE crash-boundary fault injection (2026-08-25):** a targeted point-in-time review found and fixed a real gap before it could ever reach production: the original `process_rebind()` ran the identity mutation before the PH2-01 credential rotation, each its own separately committed SQLite transaction, so a real crash between them left a durable, insecure resting state -- new Telegram owner active while the old (compromised) opaque credential was still valid -- until a manual retry closed it. Fixed by rotating the credential *first* for `COMPROMISE` (`ORDINARY` is unaffected, it has no credential step). `tests/test_ownership_rebind_compromise_crash.py` (5 passed) proves this with a real crash simulation -- the SQLite connection is closed mid-sequence and a *fresh* `Database()` opened against the same on-disk file inspects durable state -- across three crash points (before any step, between the two steps, after both steps before `finish()`), plus a fault injection directly inside the real `process_rebind()` function. Reverting the fix was confirmed to make the fault-injection test fail (verified by temporarily restoring the old order), proving the test actually catches the regression. Full regression after the fix: `792 passed, 3 skipped`; the real isolated Marzban 0.8.4 gate was re-run and passed all 12 checks unchanged (ownership rebind never calls Marzban, so this could not have affected that evidence, but it was re-confirmed rather than assumed). See `docs/PHASE2_OWNERSHIP_REBIND.md`.
 
-## [x] PH2-06 — Subscription/API abuse controls — P2
+## [~] PH2-06 — Subscription/API abuse controls — P2
+
+**Independent audit 2026-09-06:** `PARTIAL`. Rates/body/socket limits present; criterion one slow client cannot block others is not established by single-thread HTTPServer (RISK-011). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** trusted proxy + PH2-01.
 **Scope:** rate/body limits, malformed/oversized IDs, deadlines, uniform failures, trusted XFF only from nginx.
@@ -465,6 +583,10 @@ and are not eligible for completion.
 
 ## [x] PH2-07 — No persistent raw upstream token in new resolver
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. No persistent upstream bearer in canonical resolver chain found; current full regression and remote contract unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. The first review's own static scan found no persistent upstream bearer -- i.e. it confirmed the acceptance criterion -- yet still downgraded solely on "current full regression unverified". This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH2-01, PH1-05, PH3 children.
 **Scope:** opaque token -> account/slot -> child config without stored raw legacy token; если нужен recoverable upstream secret, отдельно design encryption/rotation.
 **Tests:** DB+source leak, revoke, broker outage. **Migration:** raw legacy exists only in marked bridge with retirement.
@@ -473,12 +595,18 @@ and are not eligible for completion.
 
 ## [!] PH2-08 — Reseller tenant authentication/capabilities — superseded 2026-08-23
 
+**Independent audit 2026-09-06:** `SUPERSEDED`. Separate reseller tenant superseded; no new reseller backlog. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Причина:** владелец уточнил, что отдельного reseller login/tenant нет; external payment применяет только основной MGBoost admin.
 **Сохранённые security requirements перенесены:** PH1-01/05 и PH2-05 защищают admin session/broker; PH5-09 проверяет account/catalog/price/idempotency; negative tests запрещают arbitrary username/price/GB/free entitlement и raw bearer export. Shared Filin HMAC не является payment/admin session.
 
 # Phase 3 — Parent account + child devices
 
 ## [x] PH3-01 — Parent account/identity/entitlement schema
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Schema/checksums/identity indexes installed by bootstrap; full migration/concurrency/current production data gate absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only a generic "full migration/concurrency gate absent" future-proofing note; the 2026-08-24 production migration/digest-match evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Inputs (approved):** six-plan Stars catalog, `RUB-2026-08-23-v1`, OPD-06 device limits and OPD-14 WL pool model. **Entities:** accounts, Telegram identity links, plan versions, subscriptions, entitlements/overrides. Telegram ID не credential. No open product decision blocks schema design.
 **Accept:** account независим от Marzban username; `billing_required`, WL quota и device limit вычисляются entitlement engine.
@@ -490,6 +618,10 @@ and are not eligible for completion.
 
 ## [x] PH3-02 — Atomic device slots with generation
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. BEGIN IMMEDIATE and account/generation FKs/unique HWID/capacity checks exist; multi-process contract not executed here. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "multi-process contract not executed here"; the 2026-08-24 production migration/checksum evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH3-01. **Entities:** BASE/ADDON/INTERNAL slot, stable number, generation, HWID verifier/masked form, desired/observed status, child mapping.
 **Capacity policy:** current paid limits строго 3/6/12; future commercial/technical cap 99; INTERNAL configurable/unlimited. Add-on purchase сейчас не запускается.
 **Accept:** DB atomically ограничивает entitlement capacity; один HWID -> тот же active slot/generation; не process `RLock`.
@@ -500,6 +632,10 @@ and are not eligible for completion.
 **Production completed 2026-08-24:** a fresh encrypted backup preceded the exact `1d0d120` pull and `mgboost-panel`-only restart. The migration checksum is present while all parent/slot/generation tables remain empty; legacy `user_devices`/`hwid_lock` remain 71/71 and authoritative. Exact pre/post masked digests match for all 25 Marzban identities and 25/25 fetched legacy configs with zero fetch errors. Admin/LK, invalid-sub uniform response, durable Stars state, signed Filin, localhost broker, Telegram proxy, nginx/systemd, SQLite quick/FK and token-safe journal/access-log gates passed. UUID, legacy subscription URL/token, HWID, expiry, tariff, child users, forced client reconfiguration and unexpected config changes caused by deployment: 0. Rollback remains application-only with no credential change. PH3-03 was not started.
 
 ## [x] PH3-03 — Lazy idempotent child Marzban creation
+
+**Independent audit 2026-09-06:** `PARTIAL`. Lazy intent/outbox and typed ensure exist; automatic coverage depends on explicit op allowlist (RISK-003); live orphan/retry guarantee unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-003 (worker reconciliation opt-in, disabled by default) restates the item's own already-documented "fail-closed reconcile_only, existing operation allowlisted" design, not a new gap; the real isolated-Marzban gate, SHADOW canary and real owner-device test are unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** PH1-05, PH3-02. **Scope:** child создаётся при первом занятии slot; отдельный UUID; не создавать 12 заранее.
 **Accept:** 2 занятых Family slots = 2 child users; retry/timeout не создаёт duplicate/orphan.
@@ -533,6 +669,10 @@ The first post-effect comparison intentionally stopped because Marzban 0.8.4 min
 
 ## [x] PH3-04 — HWID fail-closed compatibility gate
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Canonical gate fails closed; legacy behavior separately flag-gated; actual supported-client cohort unknown. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. The gate is intentionally OFF pending broader cohort rollout -- a known, accepted staged design, not a new gap; the 2026-08-25 production gate evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH3-02/03, PH3-07 telemetry, implementation readiness of fixed admin-only ownership recovery in PH2-05. Product policy OPD-39 закрыта.
 **Policy:** нет supported HWID -> config не выдавать; unknown+free -> assign; full -> clear refusal; known -> same slot/generation. HWID остаётся practical, не cryptographic identity.
 **Accept/tests:** compatibility list опубликован; каждый client/version, missing/spoofed/copied HWID, reinstall/device rebind; HWID не принимается как proof Telegram ownership.
@@ -542,7 +682,9 @@ The first post-effect comparison intentionally stopped because Marzban 0.8.4 min
 **Production completed 2026-08-25:** a verified encrypted backup (`encrypted_backup_create=PASS`/`encrypted_backup_restore=PASS`) preceded a clean fast-forward pull to `d6b86d1`; `extra_configs.json` was untouched. No new schema was needed (the gate reuses PH3-02 tables verbatim), so only `mgboost-panel` was restarted, reaching HTTP-ready in one check. `PRAGMA quick_check=ok`, zero FK violations, and every cardinality figure (parent accounts=1, aliases=3, active generation=1, child intents=1, outbox=1 `APPLIED`, shadow bindings=1 with 1 enabled, `user_devices`/`hwid_lock`=71/71, Marzban 26 total/26 VLESS/0 Shadowsocks) matched the pre-deploy snapshot exactly. Legacy `/sub` returned the same uniform `404` for an invalid token; admin/LK/signed-boundary Filin (`403` unsigned) all passed; broker remained loopback-only on `127.0.0.1:8002` with no nginx route; zero errors in the post-restart journal; zero raw HWID/token/bearer patterns in a targeted log scan. `PH3_04_ENFORCEMENT_MODE` remains `OFF` in production and no route imports the gate, so real legacy subscription responses, UUID, token/URL, HWID, expiry, tariff and client configuration are all unchanged: 0.
 **Residual/out of scope:** the compatibility registry's own live evidence is only ~1 day old for several tuples (single-observation entries are explicitly caveated in `docs/PHASE3_HWID_GATE.md`); actual fail-closed activation (`ENFORCE`/`CANARY`) and wiring the gate into any real resolver remain a separate, explicitly-approved future migration step and are not part of this closure. PH3-05 device revoke/rebind, PH3-08 and Phase 4 are unaffected and unstarted.
 
-## [x] PH3-05 — Real child revoke/disable/free/rebind
+## [~] PH3-05 — Real child revoke/disable/free/rebind
+
+**Independent audit 2026-09-06:** `PARTIAL`. Lifecycle/order/replay controls present; general retry dispatcher and rebind-current-expiry proof need RISK-003/017; remote all-node revoke unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-03, broker. **Scope:** revoke/free инвалидирует Marzban/Xray UUID; rebind увеличивает generation; old cached config не работает.
 **Deletion policy (DL-019/038):** немедленно revoke/disable, сохранить tombstone/history 180 дней; physical delete разрешён только после retention expiry, successful reconciliation и проверки отсутствия живых references. Immutable audit history сохраняется по своей policy.
@@ -557,6 +699,10 @@ Security/isolation evidence: a wrong-account (`account_id=999999`) revoke attemp
 
 ## [x] PH3-06 — Internal/god entitlements без username hardcode
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Versioned internal plans, capped expiring overrides and primary capability exist; current deployment/effective override convergence unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "current deployment/effective override convergence unverified"; the 2026-08-24 production migration/digest-match evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH3-01. **Fixed policy:** OPD-15/DL-032 — versioned internal plans плюс explicit per-account overrides с обязательными expiry/reason; `billing_required=false`, WL unlimited, configurable/unlimited devices. Только primary MGBoost admin может выдать unlimited.
 **Never hardcode:** `beykus*`, `megochel*`, `german`, `pensioner`, `client_buy_9`.
 **Accept/tests:** special access только plan/entitlement; ordinary/non-primary admin не получает или не выдаёт unlimited flags; override expiry возвращает вычисление к plan/AUTO; source scan hardcodes.
@@ -567,6 +713,10 @@ Security/isolation evidence: a wrong-account (`account_id=999999`) revoke attemp
 
 ## [x] PH3-07 — Privacy-safe HWID/client compatibility telemetry
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Request hooks and cleanup unit exist; effective runtime retention/coverage unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "effective runtime retention/coverage unverified"; the 2026-08-24 production evidence (including a caught/fixed migration race) is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH1-06. **Scope:** aggregate client/version/HWID-present без raw token/full HWID; retention/access control.
 **Accept:** supported/unsupported client share известна до fail-closed. **Tests:** redaction canary, aggregation, retention.
 **Rollout:** observe-only -> decision -> staged enforce.
@@ -576,6 +726,10 @@ Security/isolation evidence: a wrong-account (`account_id=999999`) revoke attemp
 **Latest observe-only snapshot after PH3-09 gate:** 9 live requests: 8 supported (88.89%) and one missing HWID (11.11%, HiddifyNext 2.5.7/Windows). Supported observations remain Happ 2.7.0/Windows and 3.26.3/Android, Incy 2.5.2/iOS, v2rayTun 2.4.7/iOS and 5.25.81/Android. The sample is still too small and biased for fail-closed; PH3-04 remains blocked.
 
 ## [x] PH3-08 — Parent expiry/status -> all children
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE narrative: autonomous sweep/post-ACK drift now wired by a4c8ef3..5f4f18c; default reconciliation disabled, current rollout gate unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-003 restates the same known-by-design disabled-reconciliation default as PH3-03; the item's own detailed real production ACTIVE->EXPIRED->RENEWED UUID-stable canary is unrefuted (the first review's own note here even says "more work wired since closure"). This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** PH3-01/03, outbox interface. **Scope:** idempotent child synchronization; expiry change не сбрасывает WL period.
 **Accept/tests:** 1/3/6/12 children converge; partial failure visible; concurrent Stars/admin updates.
@@ -589,7 +743,11 @@ Sequence and real evidence, masked child `mgc_hvc24kxaysfstgxcz7vef5lmvq`: (1) c
 Isolation evidence throughout: `account_id=1` was read-verified byte-identical at every checkpoint (`status=ACTIVE`, subscription `UNLIMITED`/`current_expiry=NULL`, child `desired_state`/`observed_state=ACTIVE`, UUID verifier unchanged, shadow binding `enabled=1`); its one `mgboost_parent_sync_operations` row from the prior dry-run stayed `PENDING` throughout this entire canary -- never claimed, never dispatched, zero broker calls ever made against account 1's child. All 3 slot-2 PH3-05 tombstones (`RELEASED`, generations 1-3) were read-verified unchanged and were never selected by any `enqueue_current_children` call (structural exclusion, not convention). Final masked cardinality delta, entirely attributable to the one throwaway parent: accounts 1->2, aliases 3->4, slots 2->3, generations 4->5 (the new one `RELEASED`), child intents 4->5 (the new one `REVOKED`), outbox 4->5, lifecycle operations 5->7 (+REVOKE/+FREE), PH3-08 sync operations 1->5 (+4, one per real revision transition), `mgboost_entitlement_mutations` +5 (create/expire/renew/resuspend/shutdown, all `NOT_APPLICABLE`/`ADMIN`/`INTERNAL`). Shadow bindings, `user_devices`/`hwid_lock`, and every pre-existing row are unchanged. A DB-wide scan for raw-VLESS-UUID-shaped values found zero matches inside any PH3-01/03/05/08 table (the 46 UUID-shaped matches found elsewhere in the DB are pre-existing, unrelated legacy `sub_requests.device_id`/`fingerprint` client-supplied request-correlation values, not PH3-08 credentials); zero raw UUID appeared in the panel/broker/worker journals. `PRAGMA quick_check=ok`, 0 FK violations, all services healthy throughout. A valid-token legacy `/sub` fetch was not independently reproduced this session (the raw production token was not available to this session and is never derived/stored by this task) -- treated as non-blocking per structural isolation: PH3-08 is imported by no route, `/sub`'s own code path is untouched, and prior sessions already hold valid `/sub` evidence pre-PH3-08.
 **Verdict: `[x]`.** Every completion criterion in the brief is met: dormant implementation, focused/regression/isolated-Marzban evidence, dormant deploy, read-only dry-run, and now a real owner-authorized production `ACTIVE->EXPIRED->RENEWED` transition with UUID stability proven at every step, terminal-generation exclusion proven, cross-account isolation proven, and the PH3-05-revoke-after-PH3-08-suspend fix proven live.
 
-## [x] PH3-09 — Account/payment/mutation provenance model
+## [~] PH3-09 — Account/payment/mutation provenance model
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Canonical provenance wired to money/grant paths; no username-derived payment inference. Cross-flow correctness limited by BUG-001/002. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL`; status remains `[~]`. Real confirmed BUG-001/BUG-002 constrain cross-flow correctness of this item's own provenance model; a genuine unclosed criterion, not mere non-reverification, so `PARTIAL` (not `UNVERIFIED_PRODUCTION`, not `[x]`) is the correct classification. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH3-01, PH0-08.
 **Model:** account ownership/source остаётся `DIRECT` или `INTERNAL`; payment channel отдельно хранит `TELEGRAM_STARS`, `EXTERNAL_PAYMENT`, `ADMIN_GRANT`; mutation source включает `MANUAL_PAYMENT`. VPN account/credentials принадлежат end user, MGBoost остаётся authority children/UUID/devices/enforcement.
@@ -603,6 +761,10 @@ Isolation evidence throughout: `account_id=1` was read-verified byte-identical a
 # Phase 4 — Legacy migration
 
 ## [x] PH4-01 — Legacy subscription alias bridge
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Shared resolver and per-account binding exist; live flag/cohort/fallback exposure unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Dormancy (flag off, zero bound rows) was the designed closure state for this staged-rollout primitive, not a new gap; the 2026-08-25 production dormant-deploy evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** PH2-01/07, PH3-01–05.
 **Flow:** legacy account -> supported HWID -> find/assign slot -> lazy child -> child config; migrated device не получает shared UUID.
@@ -618,6 +780,10 @@ Isolation evidence throughout: `account_id=1` was read-verified byte-identical a
 
 ## [x] PH4-02 — Durable migration state machine
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. CAS/terminal state and route integration exist; real LEGACY_REVOKED all-node evidence not reverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Same dormant-by-design pattern as PH4-01; the 2026-08-25 production dormant-deploy evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH4-01. **States:** `LEGACY`, `MIGRATING`, `MIGRATED`, `LEGACY_REVOKE_PENDING`, `LEGACY_REVOKED`, `ERROR_RECONCILE`.
 **Accept/tests:** durable/idempotent transitions; duplicate/crash boundary tests.
 **Rollback:** после revoke backward transition запрещён; recovery выдаёт new credential.
@@ -627,7 +793,11 @@ Isolation evidence throughout: `account_id=1` was read-verified byte-identical a
 **Production dormant deploy 2026-08-25:** additive-schema-only (`mgboost_migration_bindings`/`mgboost_migration_binding_events`), no route/worker wires `process_migration_bridge_request` into any live path (same dormancy discipline as PH4-01 -- reachable only via direct library/script call). Encrypted backup + restore verification passed; fast-forward-only pull; minimal service restart; `PRAGMA quick_check=ok`; 0 FK violations. Post-deploy: 0 `mgboost_migration_bindings` rows, 0 `mgboost_migration_binding_events` rows; `LEGACY_BRIDGE_ENABLED=False`, `OPAQUE_SUBSCRIPTION_ENABLED=False`, `PH3_04_ENFORCEMENT_MODE=OFF` all unchanged; pre/post masked cardinality (accounts/aliases/slots/generations/child_intents/telegram_identities/bridge_bindings) identical; all services stayed active. Zero real migrations, zero real legacy revokes, zero UUID changes.
 **Verdict: `[x]`.** State machine, transitions, crash/concurrency/reconciliation matrix, PH4-01 integration (no second resolver), terminal revoke semantics (isolated-proven), audit trail, focused/full regression, real isolated gate, and dormant production deploy are all complete. No production migration was performed -- that is PH4-03.
 
-## [x] PH4-03 — Internal canary migration (CLOSED 2026-08-26: mass migration completed, real ACTIVE cohort fully technically migrated)
+## [~] PH4-03 — Internal canary migration (CLOSED 2026-08-26: mass migration completed, real ACTIVE cohort fully technically migrated)
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Mass technical rollout claims cannot prove current real-device readiness; bootstrap retirement now exists but defaults preview (RISK-001/003). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL`; status remains `[~]`. The phase's own 2026-08-26 same-day "REOPENED" note already found the mass-migration cohort stage was never executed, contradicting this phase's own 4-stage acceptance contract; a genuine, previously self-documented unclosed criterion, so `PARTIAL` is correct. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH3-06/09, PH4-01/02.
 **Cohort order:** internal users -> несколько DIRECT/Stars subscriptions -> несколько DIRECT/external-payment subscriptions -> mass migration. Не считать internal-only canary достаточным.
@@ -688,6 +858,10 @@ No code changes are required to execute this plan -- every primitive it uses (`d
 
 ## [x] PH4-04 — New opaque URL rollout
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Actual bot/LK/admin issuance and browser landing exist; mixed delivery/runtime/nginx gate not proven. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only "mixed delivery/runtime/nginx gate not proven"; the 2026-08-26 production re-verification (real account rotation, real public browser fetch, leakage scan) is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** canary, PH2-01. **Scope:** Telegram/LK/admin показывают новый URL; no query/log leak; secure one-time presentation/reissue.
 **Accept:** новые accounts не зависят от legacy URL. **Tests:** full journey/rotation/log canary.
 **Rollback:** pause issuance; issued token state сохраняется.
@@ -708,6 +882,10 @@ No code changes are required to execute this plan -- every primitive it uses (`d
 **Verdict: `[x]`.** The post-closure browser-landing and implied-consent-rotation regressions are fixed, tested (22 focused tests) and re-verified for real on production end-to-end, including the mandated controlled rotation of the owner's manually-exposed credential without ever re-exposing a raw secret. The original 2026-08-26 backend/resolver canary above remains valid and is not retracted.
 
 ## [x] PH4-05 — Approve and implement legacy grace period
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Fourteen-day schema and clocks implemented; current_end_at, communication and real cohort support are UNVERIFIED_PRODUCTION. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-001 concerns a future grace-boundary date, not evidence the 2026-08-26 production mass-cohort launch (17 real accounts) was undone. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** telemetry (PH3-07, closed). **Fixed policy:** OPD-09/DL-023 — grace period 14 дней.
 **Accept:** per-account/cohort start/end, communications, support and metrics. **Tests:** exact UTC boundary at 14 days, inactive clients.
@@ -791,6 +969,8 @@ user; PH4-06 (the actual revoke) remains its own separate, unbuilt phase.
 
 ## [ ] PH4-06 — Revoke shared legacy URL/UUID after grace
 
+**Independent audit 2026-09-06:** `BLOCKED`. BLOCKED_UNTIL_DATE 2026-09-09 11:08:25 UTC at recorded boundary, AND fresh exception/device/node review; global revoke orchestration not complete. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Depends:** PH4-05 and migration/exception review.
 **Scope:** global legacy revoke/UUID rotation, verify main/remote Xray; не отзывать после первого migrated device.
 **Accept/tests:** old URL/config/direct host fail, child works, offline-node reconcile.
@@ -810,13 +990,17 @@ per-account, payment-gated `REVOKE -> FREE` under explicit operator
 device-selection — see DL-062 — and is unrelated to this item's *global*
 grace-cohort revoke) for authorization to act here.
 
-## [ ] PH4-07 — Migration observability/support/cleanup
+## [~] PH4-07 — Migration observability/support/cleanup
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: reports/support/classifiers and scoped retirement exist; global cleanup/retention and no-unexplained-backlog gate open. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** Phase 4. **Scope:** cohorts/failures/orphans/stale aliases/pending/error, support tools, cleanup under DL-042 retention and any entity-specific retention.
 **Accept:** no unexplained pending/error. **Tests:** reconciliation/support drill.
 **Rollback:** destructive cleanup only after verified backup/restore, confirmed rotation/reissue strategy, verified quarantine snapshot where legacy token evidence is involved, and applicable retention expiry.
 
-## [ ] PH4-08 — Preserve legacy manual/external-payment subscriptions
+## [~] PH4-08 — Preserve legacy manual/external-payment subscriptions
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: preservation/UNKNOWN_LEGACY and audited ambiguity resolver now exist; owner evidence/current cohort and full migration renewal snapshot gate remain. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH0-08, PH3-09, PH4-01/02, authoritative payment/admin evidence.
 **Preserve:** expiry, plan/conditions, device evidence, legacy Marzban username, Telegram/end-user mapping и renewal/issuance history; external-payment metadata сохраняется только если доказана.
@@ -828,6 +1012,10 @@ grace-cohort revoke) for authorization to act here.
 # Phase 5 — Tariffs and billing
 
 ## [x] PH5-01 — Versioned six-plan catalog
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Six-plan Stars/RUB catalogs and immutable snapshots exist; catalog version handoff RISK-009 not tested end-to-end. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-009 (plan-version default lookup) is a renewal-engine concern belonging to PH5-02, not a defect in this item's own catalog/immutable-snapshot scope; the 2026-08-26 production-deployed evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** PH3-01. **Scope:** stable plan codes/versions, approved prices/durations/devices/WL; independent Stars and `RUB-2026-08-23-v1` channel-price tables. Current free-form `stars_tariffs` requires migration.
 **Accept/tests:** exact 12 plan-duration combinations in each applicable price channel; RUB values exactly match DL-040; invoice/payment snapshots unchanged by later catalog edits.
@@ -891,7 +1079,9 @@ re-run immediately after confirmed fully idempotent (0 newly-created,
 existing row touched (immutability triggers make that structurally
 impossible, not just observed).
 
-## [x] PH5-02 — 30/60-day entitlement and WL-period semantics
+## [~] PH5-02 — 30/60-day entitlement and WL-period semantics
+
+**Independent audit 2026-09-06:** `PARTIAL`. BUG-003 disproves globally non-overlapping chronology; repeated ordinary renewal alone is insufficient. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-01, PH6 period interface. **Policy:** 60d = two sequential 30d WL periods; Non-WL unlimited. По OPD-40/DL-044 повторная покупка того же plan — renewal с формулой `max(current_expiry, now) + purchased_duration`; накопленный срок создаёт последовательные 30-day WL periods, а не объединённый base quota.
 **Accept:** purchase создаёт expiry/schedule без сброса WL на plain expiry admin action; active subscription продлевается от current expiry, expired — от текущего момента; каждая успешно оплаченная покупка добавляет duration ровно один раз.
@@ -980,7 +1170,9 @@ PH5-03 despite its `Depends` line not naming it explicitly. No further PH5
 slice was judged safely startable this session without either skipping this
 dependency or starting Phase 6, both explicitly out of scope.
 
-## [x] PH5-03 — Versioned WL package catalog
+## [~] PH5-03 — Versioned WL package catalog
+
+**Independent audit 2026-09-06:** `PARTIAL`. Catalog/FIFO/rollover/refund primitive exists; sold manual package omitted from enforcement, refund finality RISK-016. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-01/02 and entitlement ledger. **Fixed policy:** OPD-02/03/04/12/13/32 and DL-025–027 — rollover/freeze, Base rejection, base-first consumption and unused-only refund. **Approved Stars:** +50/79, +100/149, +250/349, +500/599. **Approved RUB v1:** +50/139, +100/249, +250/579, +500/999. Purchase/use only on WL-enabled plans.
 **Accept:** invoice snapshot, eligibility, rollover bucket, adjustment/audit durable; period reset не удаляет remainder; expiry/Base transition freezes bucket; unused-only refund atomically revokes it.
@@ -1012,7 +1204,9 @@ restarted; all four services active, unauthenticated admin remains `401` and
 legacy bogus `/sub` remains `404`. No route/UI/worker invokes grant/refund,
 and no enforcement/config/inbound/UUID/expiry behavior changed.
 
-## [x] PH5-04 — Deterministic entitlement engine
+## [~] PH5-04 — Deterministic entitlement engine
+
+**Independent audit 2026-09-06:** `PARTIAL`. Read composition exists; add-on/adjustment outputs explicitly NONE, downstream WL authority diverges. PH5-07 remains deferred, PH6-08 needed for complete adjustment inputs. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-01, PH5-01–03. **Inputs:** plan, packages, admin adjustments/overrides, slot add-ons, period.
 **Accept:** one function returns effective expiry/device/WL plus explanation; no username hardcode.
@@ -1069,7 +1263,9 @@ violations; subscriptions/WL periods/package grants/package refunds stayed
 Only `mgboost-panel` restarted. No purchase, Stars worker, enforcement,
 subscription/expiry/UUID/config/inbound/user-access mutation was introduced.
 
-## [x] PH5-05 — Stars purchase + renewal
+## [~] PH5-05 — Stars purchase + renewal
+
+**Independent audit 2026-09-06:** `PARTIAL`. Capture/apply/sync chain exists; mixed promo chronology defect inherited; true paid flow/current runtime not exercised. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-01/04; сохранить текущие payer/currency/amount/CAS/refund/reconcile strengths.
 **Scope:** distinguish purchase/renewal, product version, outbox entitlement and child expiry sync. Повторная покупка того же plan всегда renewal; покупка другого plan проходит PH5-06 и не использует stacking.
@@ -1123,23 +1319,31 @@ callback was initiated at any point in this verification.
 
 ## [ ] PH5-06 — Upgrade/downgrade engine
 
+**Independent audit 2026-09-06:** `NOT_IMPLEMENTED`. General commercial upgrade/proration and ticket downgrade engine absent; legacy paid transition is not this engine. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Depends:** PH5-01/04 and admin ticket workflow. **Fixed policy:** OPD-07/08/17/31 and DL-021/022/033 — self-service только upgrade; surcharge = prorated source/target price difference за remaining current period, округлённая вверх до integer Stars. Downgrade только support ticket с preview/reason/audit и explicit выбором лишних devices. Plan purchase/renewal определяется реальным plan и не очищает действующий admin override.
 **Accept:** система не выбирает device сама; old/new plan, surcharge или ticket relation audited.
 **Tests:** upgrade price boundaries/rounding/replay, 12->3 ticket, WL->Base ticket, concurrent payment. **Rollback:** audited compensating entitlement.
 
 ## [ ] PH5-07 — Additional device slot product
 
+**Independent audit 2026-09-06:** `BLOCKED`. OPTIONAL/DEFERRED; BLOCKED_OWNER_DECISION only on reactivation of OPD-05. No price selected. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Status:** deferred by DL-017; не входит в текущий product rollout. Пока effective device limit строго равен plan baseline 3/6/12.
 **Current dependency:** none — задача deferred и не входит в текущий rollout. **Перед будущей реактивацией:** закрыть deferred OPD-05 и завершить PH3; OPD-06/DL-017 уже фиксируют maximum 99 и повторного решения не требуют. **Fixed:** slot и WL quota независимы; slot даёт lazy child и использует parent pool.
 **Accept:** approved price/duration/max и revoke semantics. **Tests:** baseline+addons/max/duplicate/downgrade.
 **Rollback:** stop sale; existing version honored.
 
-## [ ] PH5-08 — Billing UX/API/changelog contract
+## [~] PH5-08 — Billing UX/API/changelog contract
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: canonical catalog/purchase/renewal UI exists; unified plan-change/package/period explanation incomplete. Deferred PH5-07 must not block current UX. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-01–07. **Scope:** одинаковое explanation в bot/admin/LK, plan version, periods/packages/slots, purchase vs renewal, API versioning.
 **Tests:** snapshot/API/UI/localization. **Rollback:** compatible versioned endpoint.
 
-## [x] PH5-09 — Manual external-payment record and entitlement application
+## [~] PH5-09 — Manual external-payment record and entitlement application
+
+**Independent audit 2026-09-06:** `PARTIAL`. Confirmed payment cancellation-after-commit and base-only package enforcement; compensation engine absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-09, DL-034–036/040, admin session/audit. RUB catalog data blocker закрыт.
 **Actor/channel:** только основной MGBoost admin; account source DIRECT, payment channel `EXTERNAL_PAYMENT`, mutation source `MANUAL_PAYMENT`.
@@ -1215,7 +1419,9 @@ since restart shows zero errors/tracebacks; safe HTTP smoke unchanged
 admin route/UI/bot wiring exists; no real manual or Stars payment was
 created or mutated. Final HEAD: local/origin/production all `5cbee5c`.
 
-## [x] PH5-10 — Manual external-payment renewal of the same parent account
+## [~] PH5-10 — Manual external-payment renewal of the same parent account
+
+**Independent audit 2026-09-06:** `PARTIAL`. Same-parent idempotency exists, but committed payment is not frozen and mixed WL schedule fails. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
 **Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
@@ -1261,7 +1467,11 @@ exact equality, matching the DL-044/PH5-05 precedent. See PH5-09's own
 entry above for the shared review verdict, DL-054 and full production
 evidence (same deploy, same commit).
 
-## [x] PH5-11 — First commercial STANDARD signup (self-service DIRECT account + system-owned provisioning template)
+## [~] PH5-11 — First commercial STANDARD signup (self-service DIRECT account + system-owned provisioning template)
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Dispatcher/capture/template/first-device chain exists; actual paid signup and DL-058 stop condition unverified (RISK-015). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL`; status remains `[~]`. RISK-015 identifies a concrete, code-confirmed fact (per-account provisioning templates remain active, usable infrastructure credentials) tied directly to this item's own DL-058 stop condition; a genuine unclosed criterion, so `PARTIAL` is correct. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH5-01/02/04/05, PH3-01/02/03/04/08, PH2-01.
 **Scope:** первый полноценный commercial signup/purchase flow: Telegram →
@@ -1369,7 +1579,9 @@ Status line above.**
   membership changes onto existing children is PH6-adjacent remote-mutation
   territory and deliberately not built here.
 
-## [x] Commercial WL wiring — WL / EXTENDED / FAMILY 30/60d sellable через canonical Stars flow
+## [~] Commercial WL wiring — WL / EXTENDED / FAMILY 30/60d sellable через canonical Stars flow
+
+**Independent audit 2026-09-06:** `PARTIAL`. Six-plan sellable gate exists; live WL safety depends on confirmed ledger defects and unknown rollout state. No new PH ID invented for this existing title. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-01/02/04/05/11, PH6-06/07/09.
 
@@ -1439,7 +1651,11 @@ signup/renewal backend, без нового payment flow:
   WL intersection STANDARD = 0, legacy UNLIMITED не переводится, P0 legacy
   WL hotfix suite зелёный, refund flow (money-only) не менялся.
 
-## [x] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
+## [~] PH5-12 — Operational delivery routing (plan → delivery profile → host membership)
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Audited exact membership exists; old templates/children remain pinned; live topology and propagation boundary RISK-004/015. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL`; status remains `[~]`. RISK-004/RISK-015 identify concrete pinned-template/no-auto-propagation facts tied directly to this item's own delivery-routing scope; a genuine unclosed criterion, so `PARTIAL` is correct. See the reconciled per-ID matrix near the end.
 
 **Depends:** PH0-05, PH3-01, PH6-01.
 **Scope:** host membership is operational routing configuration, NOT tariff
@@ -1607,7 +1823,9 @@ longer applies — see DL-058 and the Status line above.**
   - Full regression after fixes: 1396 passed, 0 failed. `git diff --check`
     clean; touched JS/Python compile clean.
 
-## [x] PH5-13 — Promo codes v1 (production-verified 2026-08-30)
+## [~] PH5-13 — Promo codes v1 (production-verified 2026-08-30)
+
+**Independent audit 2026-09-06:** `PARTIAL`. Three effects and bootstrapped WL_TRIAL exist; real trial/payment canary unverified, chronology contradicts ordinary renewal. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Implemented (commits 43d27f1, 7697b0c, + two 2026-08-30 commits; suite
 1597 passed):** `src/promo.py` (`PromoStore`: definitions with
@@ -1711,6 +1929,10 @@ effects land through the same apply path as PH5-02/05/09).
 
 ## [x] PH6-01 — Runtime topology allowlist/assertions
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Historical not-wired claim obsolete: enforcement/reconciliation call guard; actual topology still unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was RISK-004 alone (a topology risk), not a confirmed defect; the 2026-08-26 production-deployed evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Сделано (2026-08-26, production-deployed):** `src/wl_topology_guard.py` +
 `src/wl_topology_guard_schema.py` (additive migration
 `ph6_01_wl_topology_guard_v1`). `WLTopologyGuardStore.run_assertion()`
@@ -1738,7 +1960,9 @@ node present live never satisfying the WL-node requirement).
 revert is a plain code+migration revert, no data ever depended on for
 correctness elsewhere.
 
-## [x] PH6-02 — Immutable WL periods
+## [~] PH6-02 — Immutable WL periods
+
+**Independent audit 2026-09-06:** `PARTIAL`. Immutable periods/reset primitive present; no-overlap acceptance fails across promo and normal purchase. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-02; units/anchor закрыты DL-016/DL-020.
 **Fields:** UTC-hour-aligned start/end, decimal quota bytes (GB x 1,000,000,000), source/reason, closed/successor; ADMIN_RESET closes and creates, never rewrites consumed. Subscription expiry хранится отдельно.
@@ -1807,7 +2031,9 @@ PH5-02 integration tests updated for the now-correct hour-floored absolute
 values (their own relative/contiguity assertions were already
 alignment-agnostic and needed no change).
 
-## [x] PH6-03 — Durable monotonic usage ledger/collector
+## [~] PH6-03 — Durable monotonic usage ledger/collector
+
+**Independent audit 2026-09-06:** `PARTIAL`. Zero-reset cursor key collision confirmed; lease fencing RISK-005; v2 sample bucket migration does not fix event identity. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH6-01/02. **Require:** unique period/child/node/sample-hour, idempotency, non-decreasing usage, cursor/snapshot, one leader or CAS/shared lock, retry/reconcile.
 **Caveat:** Marzban UTC-hour aggregation requires own snapshot/delta or UTC-hour alignment.
@@ -1936,7 +2162,9 @@ duplicate-detection path used for crash/retry safety. `quick_check=ok` and
 0 FK violations held after both runs. Collector lease released
 (`lease_owner=NULL`, `last_run_outcome='OK'`) after each run.
 
-## [x] PH6-04 — Default shared parent WL pool: accounting/read model only, production-deployed 2026-08-27
+## [~] PH6-04 — Default shared parent WL pool: accounting/read model only, production-deployed 2026-08-27
+
+**Independent audit 2026-09-06:** `PARTIAL`. Base accounting exists and retains historic child usage; paid pool agreement and all-consumer correctness incomplete. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH6-02/03 + children. **Policy:** sum child usage on two WL nodes; at quota disable all children. Family использует один общий 150 GB parent pool; optional advanced per-device allocation идёт через PH6-05, purchased traffic увеличивает этот же parent pool.
 **Accept:** 60+20+10 = 90/100; at 100 disable exactly once.
@@ -2018,11 +2246,15 @@ explicitly out of this task's own scope.
 
 ## [ ] PH6-05 — Optional manual per-device allocation
 
+**Independent audit 2026-09-06:** `NOT_IMPLEMENTED`. Optional per-device allocation/move-unspent engine absent; not a rollout prerequisite for default shared pool. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Depends:** PH6-04. **Policy:** consumed monotonic; move only unspent; allocation >= consumed; device cap disables its child only.
 **Transition policy (OPD-18):** shared/manual можно переключать в current period; перераспределяется только unspent remainder.
 **Tests:** allocated 60/consumed 50 cannot shrink to 10; concurrency/shared-mode transition, repeated transition cannot refund consumption.
 
-## [x] PH6-06 — Exact inbound-only state machine — P2
+## [~] PH6-06 — Exact inbound-only state machine — P2
+
+**Independent audit 2026-09-06:** `PARTIAL`. Epoch/manifest/minimal inbound update exists; actual decision ignores sold packages, all-node access verification unavailable. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH1-05, PH6-01, children.
 **States:** `ACTIVE -> DISABLE_PENDING -> DISABLED`; `DISABLED -> ENABLE_PENDING -> ACTIVE`; mismatch `ERROR_RECONCILE`. Local DB holds desired.
@@ -2132,7 +2364,9 @@ passed (was 1333 + 1 new) via the Playwright venv, `git diff --check`
 clean. Production-deployed application-code-only; see the deploy evidence
 entry for exact HEAD/service/backup facts.
 
-## [x] PH6-07 — Production WL enforcement runtime: scheduler / reconciliation / drift / backlog — production-deployed (implemented 2026-08-28)
+## [~] PH6-07 — Production WL enforcement runtime: scheduler / reconciliation / drift / backlog — production-deployed (implemented 2026-08-28)
+
+**Independent audit 2026-09-06:** `PARTIAL`. Scheduler/flock/drift rows exist; false healthy ledger and base-only decisions propagate; current timer/alert evidence unavailable. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Status (reconciled 2026-09-01, read-only production verification):
 `mgboost-wl-enforcement.timer`/`.service` are active on production (15-minute
@@ -2222,13 +2456,17 @@ observation path, flock/PrivateTmp, UNLIMITED/STANDARD abstain) verified
 unchanged by independent code reading and test reproduction. See
 `AGENT_HANDOFF.md` for the full verdict and production deploy evidence.
 
-## [ ] PH6-08 — Effective quota/adjustment ledger
+## [~] PH6-08 — Effective quota/adjustment ledger
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: package buckets/read breakdown implemented; general GB adjustment/compensation ledger and enforcement integration absent (BUG-002). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-03/04; package lifecycle decisions закрыты. **Breakdown:** base+purchased rollover+admin grant-deduction=effective; consumed/remaining; append-only package buckets/compensations. Base quota расходуется первой. Package remainder переносится через periods, не обнуляется reset, а при expiry/non-WL plan замораживается до возврата WL entitlement.
 **Tests:** example 100+50+20-10=160; base-first, multi-period carry, freeze/resume, unused refund/stack; 83 consumed vs 60 effective -> exceeded.
 **Rollback:** compensating entry only.
 
-## [x] PH6-09 — Overshoot/outage fail-safe — production-deployed (implemented 2026-08-28)
+## [~] PH6-09 — Overshoot/outage fail-safe — production-deployed (implemented 2026-08-28)
+
+**Independent audit 2026-09-06:** `PARTIAL`. Freshness gates present but reset failure can appear OK; cadence includes jitter/runtime, not a guaranteed 1500s ceiling; RISK-004/005. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Status (reconciled 2026-09-01, read-only production verification):
 `mgboost-wl-usage-collector.timer`/`.service` are active on production
@@ -2349,11 +2587,15 @@ fail-safe, not any of those.
 
 ## [ ] PH6-10 — Subscription UX after exhaustion
 
+**Independent audit 2026-09-06:** `NOT_IMPLEMENTED`. No canonical exhausted-WL reset-date placeholder found. ph6_10_* schema ID is attribution work, not completion of this UX ID. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Depends:** PH6-06. **Fixed policy:** OPD-11/DL-028 — один informational placeholder, например `🔒 WL исчерпан • сброс <date>`; no `0.0.0.0` enforcement.
 **Accept/tests:** placeholder безопасно parses во всех supported clients и объясняет reset; реальные WL hosts не дают доступ, block остаётся Marzban/Xray.
 **Rollback:** remove decoration without enabling WL.
 
 ## [!] PH6-11 — Reseller-wide WL/package isolation — superseded 2026-08-23
+
+**Independent audit 2026-09-06:** `SUPERSEDED`. Reseller-wide pool superseded; parent-account isolation remains. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Причина:** отдельного reseller account/shared pool нет. External payment — канал прямой end-customer subscription.
 **Сохранённое правило:** quota/packages/device slots всегда принадлежат конкретному parent account и не зависят от payment channel; это покрывают PH6-02–08. Manual package grant проходит PH5-09 с теми же eligibility/idempotency rules.
@@ -2361,6 +2603,10 @@ fail-safe, not any of those.
 # Phase 7 — Admin controls
 
 ## [x] PH7-01 — Expiry operations and child sync
+
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. CAS/reason/preview/current child sync implemented; live all-child convergence unverified and worker scope RISK-003. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited RISK-003 restates the same known-by-design disabled-reconciliation default seen elsewhere; the 2026-08-27 production rollout evidence is unrefuted. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
 
 **Depends:** PH3-08/outbox. **Ops:** +7/+30/+60, -N, exact date, end now; no WL reset.
 **Accept/tests:** preview/reason, all children converge, timezone/concurrent Stars/12 children.
@@ -2444,23 +2690,31 @@ itself, and the deploy made zero data-row changes (cardinalities identical
 before/after, `SLOT_*`/`ADMIN_EXPIRY_ADJUSTMENT` rows stayed `0`). Final
 HEAD: local/origin/production all `78588bc`.
 
-## [ ] PH7-02 — WL quota breakdown
+## [~] PH7-02 — WL quota breakdown
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: base/consumed/package/current-period display exists; grants/deductions/effective authority depend on PH6-08. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH6-08. **Display:** base, purchased, grants, deductions, effective, consumed, remaining, period, desired/observed.
 **Tests:** 100+50+20-10=160, consumed 83, remaining 77; UI/API/calculator same units.
 
 ## [ ] PH7-03 — Administrative GB adjustments
 
+**Independent audit 2026-09-06:** `NOT_IMPLEMENTED`. No reusable administrative +GB/-GB/cancel-adjustment API; expiry adjustment is not GB adjustment. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Depends:** PH6-08. **Ops:** +N/-N, grant package, cancel adjustment, baseline, remove extras, force new period. Never reduce consumed.
 **Accept:** 83/60 shows exceeded and disable flow. **Tests:** concurrency/validation/payment link/audit.
 **Rollback:** compensating adjustment.
 
-## [ ] PH7-04 — Immutable WL reset
+## [~] PH7-04 — Immutable WL reset
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: reset store/schema exists and is initialized; no admin route/UI, collector/pending-disable integrated acceptance not proven. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH6-02. **Scope:** close old `ADMIN_RESET`, create successor consumed=0, preserve ledger.
 **Tests:** collector boundary, duplicate request, pending disable. **Correction:** another explicit period action.
 
 ## [~] PH7-05 — Device slot administration
+
+**Independent audit 2026-09-06:** `PARTIAL`. Revoke/free/rebind/pause and recent telemetry/recovery exist; add/remove/baseline and live node proof remain. Old empty telemetry claim superseded. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** Phase 3. **Display:** slot/type, masked HWID/UUID, name, child, dates, traffic/WL, status, desired/observed.
 **Ops:** unbind/disable/enable/revoke/free/rebind/add/remove/restore baseline.
@@ -2692,19 +2946,25 @@ telemetry), plus `tests/test_device_slots.py`/`test_phase1_legacy_compat.py`/
 keyword-only `check_device_access` parameter) — 108 passed. No full
 regression run for this incremental checkpoint (by design).
 
-## [ ] PH7-06 — Explicit conflict resolution on limit reduction
+## [~] PH7-06 — Explicit conflict resolution on limit reduction
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: immutable explicit selection exists for legacy paid transitions only; general ticket-backed commercial downgrade absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH7-05 and ticket workflow. **Fixed policy:** OPD-07/08 and DL-021/022 — downgrade только через ticket; active 5 -> limit 3 требует явного выбора, no silent automatic choice.
 **Tests:** conflict/no conflict/concurrent slot/state changed before confirm.
 **Rollback:** explicit new generation only.
 
-## [ ] PH7-07 — WL override AUTO/FORCE_ENABLED/FORCE_DISABLED
+## [~] PH7-07 — WL override AUTO/FORCE_ENABLED/FORCE_DISABLED
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: typed expiring WL access override/read calculation exists; AUTO/FORCE admin control and exact enforcement contract incomplete. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH6-06. **Fixed policy:** OPD-17/36 and DL-033/037 — affects desired only, never history; every FORCE override has mandatory expiry/reason, duration at most 90 days, and atomically returns to AUTO after expiry. FORCE enabled for internal/compensation, disabled independent of remainder. Purchase/renewal eligibility always follows actual plan; purchase/renewal neither clears override nor lets FORCE_ENABLED buy WL packages on a non-WL plan.
 **Authority:** unlimited grants only by primary MGBoost admin.
 **Tests:** each override with exhausted/available/unlimited, reject >90 days, expiry-to-AUTO, renewal during override, Base+FORCE_ENABLED package rejection, non-primary unlimited denial. **Rollback:** audited return AUTO.
 
 ## [~] PH7-08 — Immutable administrative audit trail
+
+**Independent audit 2026-09-06:** `PARTIAL`. Append-only canonical events and timeline implemented; rejected/raw/compensation coverage not universal (RISK-006/007). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH1-01/PH2-05 actor model. **Fields:** who/when/account/operation/old/new/reason/source/order/correlation.
 **Scope:** GB/reset/device/slot/expiry/plan/override/token/migration/revoke/Telegram ownership rebind; rebind stores old/new Telegram ID, primary-admin actor, reason and timestamp; no raw secrets.
@@ -2753,12 +3013,16 @@ production-deployed** (HEAD `78588bc`, 2026-08-27; see PH7-01's "Production
 rollout" entry); still `[~]` because the unified emit point covering every
 future operation kind (PH7-11) remains unbuilt.
 
-## [ ] PH7-09 — Safe plan/entitlement admin
+## [~] PH7-09 — Safe plan/entitlement admin
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: constrained plan grants and legacy transition preview/apply exist; generic commercial change/ticket/conflict matrix still absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH5-04/06 and admin ticket workflow. **Fixed policies:** approved OPD/DL decisions referenced by PH5-04/06 and PH7-06/07; no open plan/entitlement-transition decision remains for this task. **Scope:** preview effective change/conflicts/schedule/reasons/confirmations; no raw counters.
 **Tests:** plan matrix, invalid transition, concurrent payment. **Rollback:** compensation with snapshot.
 
-## [x] PH7-10 — Manual external-payment admin UI
+## [~] PH7-10 — Manual external-payment admin UI
+
+**Independent audit 2026-09-06:** `PARTIAL`. Real UI/backend wired; paid-record/edit atomic boundary and package authority are defective; applied compensation action absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-09, PH5-09; только основной admin.
 **Account UI:** payment channel, plan, expiry, WL/devices; first rollout фиксирует RUB и позволяет выбрать только versioned fixed RUB price, exact amount/method/reference/comment с preview entitlement change. Pending можно исправить до apply; applied record read-only, correction создаётся отдельной compensation action.
@@ -2815,7 +3079,9 @@ driver, not a new defect); the sync-retry route has no UI button yet
 `SYNCED`/`PENDING` as passing rather than forcing deterministic convergence.
 Deploy is application-code-only (no schema migration).
 
-## [ ] PH7-11 — Immutable manual-payment mutation audit
+## [~] PH7-11 — Immutable manual-payment mutation audit
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: immutable manual edit/apply/evidence events exist; failed/denied/correction and correlated reconciliation coverage remains. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH7-08, PH5-09.
 **Sources:** `SYSTEM`, `DIRECT_PURCHASE`, `MANUAL_PAYMENT`, `ADMIN`, `MIGRATION`, `PACKAGE`, `INTERNAL`.
@@ -2850,6 +3116,8 @@ read-only UI, can start immediately) → Wave B (PH7-01/05/08 safe mutations)
 `docs/ADMIN_PANEL_REDESIGN.md` §6 for exact scope per wave.
 
 ## [~] PH7-12 — Wave A account-centric admin foundation
+
+**Independent audit 2026-09-06:** `PARTIAL`. Monolith split complete; owner authenticated/mobile click-through outstanding. Removed admin.js description superseded. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH2–PH4 read models and DL-048..052. **Scope:** approved Wave A
 from `docs/ADMIN_PANEL_REDESIGN.md` §6; it does not start PH4-06 and does not
@@ -3114,6 +3382,10 @@ split-out remains the open Wave A item above.
 
 ## [x] PH7-13 — Account consolidation (merge/supersession)
 
+**Independent audit 2026-09-06:** `UNVERIFIED_PRODUCTION`. Merge bipartition/close/reversal and resolver normalization exist; actual cohort state unverified, template lifecycle PH7-15 remains. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**Second independent review reconciliation (2026-09-06):** restored to `[x]`. Cited gap was only a generic "actual cohort state unverified" caveat; the 2026-08-27 production account-merge evidence (verified byte-for-byte) is unrefuted. PH7-15's separate template-lifecycle question is a distinct, already-`BLOCKED` dependency, not a PH7-13 defect. This session-limitation reasoning alone does not reopen a historically verified `[x]` (implemented-in-main + historically-verified evidence stands even without a fresh reverification this session). See the reconciled per-ID matrix near the end.
+
 **Depends:** PH3-01 (account schema), PH4-01 (legacy bridge), PH3-05 (child lifecycle), PH4-03 (legacy-compat entitlement). **Scope:** merge two already-independent parent accounts that are the same real person into one canonical survivor, without ever mutating or physically moving either account's existing history.
 **Trigger:** owner-approved consolidation `MegochelPC` (account 5) + `MegochelAndroid` (account 6) -> `Megochel`, per DL-057.
 **Why no existing primitive covers this:** `mgboost_legacy_alias_groups` is a 1:1 `account_id PRIMARY KEY` table -- a multi-alias group is only ever assembled once, at bootstrap (`legacy_grace_migration.migrate_bootstrapped_account`); `mgboost_legacy_account_aliases.legacy_username` is globally `UNIQUE` and the table is fully immutable (no `UPDATE`, no `DELETE`), so an existing alias can never be moved to a different account. Every other account-scoped table (`mgboost_subscriptions`, `mgboost_device_slot_generations`, `mgboost_child_user_intents`, `mgboost_entitlement_mutations`, `mgboost_legacy_bridge_bindings`, `mgboost_legacy_grace_periods`, `mgboost_wl_usage_samples`) treats `account_id` as part of an immutable identity, enforced by triggers or by construction. Reassigning history across accounts is therefore structurally impossible; a new, purely additive supersession layer was required.
@@ -3128,7 +3400,9 @@ split-out remains the open Wave A item above.
 Executed via a new, reviewed, hardcoded-target script (`scripts/dl057_megochel_consolidation.py`, iterated twice in production after two real bugs it exposed in itself -- a 15-character `idempotency_key` one byte under the 16-minimum, and a preflight that mis-required the genesis child to still be "non-terminal" and so couldn't resume after the already-applied `REVOKE` -- both fixed and redeployed before the ordering-guaranteed re-run completed cleanly; the underlying primitives' own idempotency made every retry safe, including the real Marzban `REVOKE` never re-rotating): `REVOKE` (`lc_twdq6bl3hi2scoy2rq2kpumuj4`, `APPLIED`, real Marzban genesis child `mgc_2uipd27le766vdd7lt4kjpj5pi` disabled + UUID rotated) -> `FREE` (`APPLIED`, slot 1/generation 1 -> `RELEASED`, slot -> `FREE`) -> `close_account(5)` (subscription id 5 -> `CANCELLED`, account 5 -> `CLOSED`) -> `create_merge(absorbed=5, survivor=6)` (`mgboost_account_merges` id 1, `ACTIVE`, `decision_ref='DL-057-megochel-consolidation-2026-08-27'`) -> `set_display_name(6, 'Megochel')` -> `increase_device_limit(6, +3)` (subscription id 6 unchanged, plan -> `LEGACY_PAID_COMPAT_V1_D6`, `device_limit=6`, `wl_mode` still `UNLIMITED`, `current_expiry` still `NULL`).
 Post-mutation evidence, all read-only against the live DB: account 5 `CLOSED`/subscription `CANCELLED`/generation 19 `RELEASED`/slot `FREE`/zero `ACTIVE` generations anywhere for account 5; exactly one `mgboost_account_merges` row (`5->6`, `ACTIVE`) with exactly one `CREATED` event; account 6 unchanged `ACTIVE` status, unchanged Telegram identity row (id 6, `telegram_id=1623120036`, still not revoked), unchanged opaque credential (id 9, same `generation=1`/`row_version=2`/`last_used_at`), exactly one live subscription (id 6, same row, now `LEGACY_PAID_COMPAT_V1_D6`), new `display_name='Megochel'`; both `mgboost_legacy_account_aliases` rows (`MegochelPC`->5, `MegochelAndroid`->6) byte-for-byte unchanged; `db.legacy_bridge.resolve_account_for_legacy_username('MegochelPC')` and `resolve_account_id(db, 5)` both now return `6`; both real legacy Marzban users (`MegochelPC` id 4, `MegochelAndroid` id 5) confirmed `active` with traffic still accruing normally, completely untouched by this operation; unrelated account 2 (`DISABLED`, pre-existing PH3-08 canary) and the other 16 `ACTIVE` accounts unchanged (18 total, as before); all 5 services active, zero errors/tracebacks/5xx in `mgboost-panel` logs across the whole operation; `admin_read_models.account_detail()`/`account_summaries()` confirmed showing `display_name='Megochel'` for account 6 and the new `consolidation` block correctly cross-referencing both sides. Local/origin/production all at `d5ed3b7`.
 
-## [x] PH7-14 — Pre-launch admin/operator tooling
+## [~] PH7-14 — Pre-launch admin/operator tooling
+
+**Independent audit 2026-09-06:** `PARTIAL`. All eight surfaces exist; all acceptance closed is too strong with BUG-001/002 and absent current end-to-end evidence. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Owner decision recorded 2026-08-29 (DL-061).**
 
@@ -3190,6 +3464,8 @@ scoped to an exact plan/duration like any other canonical entitlement.
 
 ## [ ] PH7-15 — `tpl-<public_id>` lifecycle cleanup on terminal account operations
 
+**Independent audit 2026-09-06:** `BLOCKED`. BLOCKED_OWNER_DECISION: terminal tpl policy not chosen; no cleanup engine; RISK-015. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
 **Added:** 2026-09-01 (documentation reconciliation pass), tracking the
 backlog item recorded but not yet given a stable ID in **DL-058**.
 **Depends:** PH5-11 (`src/commercial_signup.py::ensure_template_for_account`),
@@ -3220,7 +3496,9 @@ implementing agent may pick unilaterally, per this roadmap's own
 governance rule.
 **Accept/tests:** not defined until the owner decision above is made.
 
-## [x] PH7-16 — Admin v2 / canonical frontend cutover — implemented locally, reviewed/remediated; deployment pending (2026-09-01)
+## [~] PH7-16 — Admin v2 / canonical frontend cutover — implemented locally, reviewed/remediated; deployment pending (2026-09-01)
+
+**Independent audit 2026-09-06:** `PARTIAL`. Local modular cutover exists; heading scoped locally but Acceptance undefined and current regression/browser/deploy gates unverified. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Status split:** implementation is complete in local `main`; independent
 review found integration issues and the same local review session remediated
@@ -3322,24 +3600,32 @@ and trackable, not to authorize implementation.
 
 # Phase 8 — Hardening and scale
 
-## [ ] PH8-01 — Production-safe bounded HTTP concurrency — P2
+## [~] PH8-01 — Production-safe bounded HTTP concurrency — P2
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ] for deadlines/body pieces; bounded HTTP concurrency/graceful shutdown absent. Hard prerequisite PH8-02. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH2-03, PH3-02, PH6-03, PH8-02.
 **Scope:** replace single-thread HTTPServer, deadlines/body limits/graceful shutdown/backpressure. Нельзя просто включить workers поверх process-local state.
 **Accept/tests:** slow upstream/request не блокирует canary; slowloris/load/soak/graceful restart.
 
-## [ ] PH8-02 — Shared concurrency/datastore readiness
+## [~] PH8-02 — Shared concurrency/datastore readiness
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: nonce/slot/outbox DB primitives exist; rate/admin sessions/per-user locks process-local and collector fencing unproven. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** nonce/rate/session/device capacity/outbox/per-account locks/collector ownership; решить SQLite vs other DB на фактах.
 **Accept/tests:** correctness across processes/restart/lock timeout/duplicate delivery.
 **Migration/rollback:** dual flow только с reconciliation и verified backup.
 
-## [ ] PH8-03 — Reproducible dependencies/images — P3
+## [~] PH8-03 — Reproducible dependencies/images — P3
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: pinned runtime/image layers implemented; clean reproducible current build/SBOM/secret/deploy manifest gate unavailable. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** controlled Marzban upgrade, image digest, lock/hashes, SBOM, secret scan, reproducible build, fail placeholder secrets.
 **Tests:** clean build/lock/staging contract. **Rollback:** previous immutable image and DB-compatible release.
 
 ## [~] PH8-04 — Monitoring/alerting
+
+**Independent audit 2026-09-06:** `PARTIAL`. Read-only health/redaction implemented; actual alert delivery, transition heartbeat and thresholds absent; RISK-007/012. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Status (reconciled 2026-09-01): PARTIAL_PROD.** `DONE_PROD`: Step 1
 (logging/redaction hardening) and Step 2 (`GET /admin/ops/health` read
@@ -3360,27 +3646,37 @@ runbooks.
 
 **Step 2 implemented 2026-09-01:** read-only `GET /admin/ops/health` operator surface (`src/ops_observability.py`, `src/routes/admin_ops.py`), authenticated by the existing `require_admin_auth` -- no new capability tier. Composes only already-durable signals, no new table/write: PH6-07 `backlog_snapshot()` (collector freshness, outbox age, drift, reconciliation worker health, last/last-successful cycle), WL usage-cursor monotonicity (reset-count over a 24h display window), PH4-02 `ERROR_RECONCILE` migration backlog (count/oldest-age/recurrence), and a new P0 `legacy_transition_review_snapshot()` (`MANUAL_REVIEW` backlog count/oldest-age/retry-recurrence over the existing `mgboost_legacy_commercial_transitions`/`_events` tables). Fail-open composition: each of the four signals runs through `_safe_source()`, which turns any exception into a same-shaped `{"status":"UNKNOWN","error_class":type(exc).__name__}` for that signal alone (never the raw exception text) instead of raising -- one broken source degrades only itself, the endpoint always returns `200` with a top-level `status` of `OK` (all sources resolved) or `DEGRADED` (one or more didn't), never `500`. `ops_observability.py` is imported only by the admin route, never by `src/database.py`/bootstrap, so a broken observability module cannot affect server startup or any customer-facing path. 13 focused tests (`tests/test_ops_observability_health.py`): happy snapshot, per-signal fail-open degradation (mocked exception + a dropped table), redaction (output + source-table columns), no raw exception leakage through the fail-open stub, admin-auth requirement, query-string source-selection is ignored (fixed predefined signal set only), deterministic output shape, and confirmation that `src/database.py` never imports this module. Explicitly out of Step 2 scope, left as open items: hot-path auth/rate-failure counters and the permanent acquisition-milestone fact table (separate future additions with their own write path); true worker-heartbeat freshness for `mgboost-legacy-commercial-transition.service`/`.timer` (no durable cycle-tracking table exists for it yet, unlike WL reconciliation's `mgboost_wl_reconciliation_cycles` -- would need new schema, a separate owner decision); all alert thresholds -- no value is invented in this step; every threshold (backlog age, monotonicity reset rate, MANUAL_REVIEW age/recurrence) is deferred until a real production observability report exists to derive it from, per `THRESHOLDS_REQUIRING_OWNER_DECISION` in the implementation report; slot-to-real-device telemetry/naming projection (separate future checkpoint).
 
-## [ ] PH8-05 — Backup/restore/disaster drills
+## [~] PH8-05 — Backup/restore/disaster drills
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: encryption/restore checks/retention implemented; system consistency/off-host/RPO/RTO drill unverified (RISK-002). Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** encrypted minimum-access backups, regular DB-backup retention 90 days, consistent account/ledger/outbox/audit restore, post-leak rotation; legacy token-evidence quarantine is a separate single encrypted snapshot retained 180 days under DL-042.
 **Accept/tests:** isolated restore, measured RPO/RTO, no raw bearer in new backup/output, quarantine access limited to minimum owner/service identity, controlled expiry deletion; credentials present in retained backup are independently rotated.
 
-## [ ] PH8-06 — OpenRouter/support privacy
+## [~] PH8-06 — OpenRouter/support privacy
+
+**Independent audit 2026-09-06:** `PARTIAL`. Some canonical support projection exists; provider minimisation/argument bounds/user-before-LIMIT incomplete. Device telemetry tagged PH8-06 is not this privacy task. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** minimal/redacted context, bounded args, SQL user filter before LIMIT, retention/provider policy, no extra operational IDs.
 **Tests:** prompt injection, negative/huge LIMIT, cross-user, outbound capture/provider outage.
 
-## [ ] PH8-07 — Continuous security regression suite
+## [~] PH8-07 — Continuous security regression suite
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: large security regression corpus exists; no tracked automated CI/deploy gate or current run artifacts. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** XSS/auth/IDOR/CSRF/bearer canary/replay/rates/permissions/dependencies/child revoke/WL cached-direct/log redaction.
 **Accept:** CI/deploy gate; waiver only dated Decision Log/security reason.
 
-## [ ] PH8-08 — Operational runbooks
+## [~] PH8-08 — Operational runbooks
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: many runbooks implemented; second-operator/tabletop proof and current rollback consistency absent. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Scope:** deploy/rollback, credential rotation, migration, failed payment, orphan child, WL reconcile/topology, logs, outage/incidents.
 **Accept/tests:** second operator performs staging/tabletop drill without source archaeology.
 
-## [ ] PH8-09 — Manual-payment reconciliation and monitoring
+## [~] PH8-09 — Manual-payment reconciliation and monitoring
+
+**Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: durable jobs/operator retry exist; financial reconciliation/alerts/compensation and safe apply fence incomplete. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
 **Depends:** PH3-09, PH5-09/10.
 **Scope:** reconcile external payment record/outbox with account entitlement and child expiry; alert orphan payment reference, duplicate/replay, failed apply and mutation backlog.
@@ -4650,3 +4946,449 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
 - Marzban/Xray reread/verified;
 - exact WL topology не изменилась либо изменение versioned/approved.
 - manual/external-payment catalog, validation, audit или reconciliation change имеет changelog и Decision Log entry.
+
+# Independent current-state audit — 2026-09-06
+
+## Scope, repository state and evidence rules
+
+Audited `main` = HEAD = cached `origin/main` = `98e27fe9e4ea72727dab36436e573d701c83c3b7`.
+Divergence 0 ahead / 0 behind; remote tracking ref was not refreshed over the network.
+Initially no tracked modifications. Pre-existing untracked `.full-suite-tmp.Ppvc5X/`,
+`.legacy-expiry-push-9673c0c/`, `.pytest-py312/`, `.zcode/` and
+`scripts/support_goodwill_extend_5d_20260828.py` were preserved. No secret/env/real DB
+was read as runtime evidence; `Database()` was used only with synthetic /tmp DATA_DIR
+and dotenv loading explicitly disabled. No production mutation or message was sent.
+
+The matrix covers **all 93 original checklisted entries** (92 PH IDs plus the existing
+unnumbered Commercial WL wiring). OPD/DL are policy/history, not extra completed coding
+tasks; their reconciliation is below. Four post-roadmap implementation streams are
+indexed separately and do not inflate those counts. Static coverage means entrypoints,
+callers, schema/bootstrap, test assertions, failure boundaries and git/docs were
+cross-checked by domain; it is not an exhaustive proof of every line or absence of bugs.
+
+- `VERIFIED_DONE`: an `[x]` item where the implementation is present in current
+  `main` **and** either (a) documented historical evidence shows a passed test/
+  staging/production acceptance gate at closure time, or (b) this audit itself
+  found no contradiction and the task is a documentation/inventory deliverable.
+  A fresh reverification in the *current* session is **not** required to keep
+  this classification -- see "Second independent review reconciliation" below.
+- `PARTIAL`: implementation exists but a specific, concretely evidenced criterion
+  is missing or disproved (a confirmed BUG-00x, a RISK-0xx tied to an actual
+  code fact rather than a bare possibility, or the roadmap's own text already
+  documenting an open/reopened criterion).
+- `UNVERIFIED_PRODUCTION`: retained only where the second review below found the
+  evidence for a given item genuinely ambiguous and unresolved by either
+  `VERIFIED_DONE` or `PARTIAL` reasoning; see `MANUAL_REVIEW` immediately below.
+- `MANUAL_REVIEW`: evidence is genuinely contradictory or ambiguous and cannot be
+  honestly resolved by static analysis; the item is **not** asserted broken --
+  it needs an explicit owner/technical decision. Used only for PH2-01/PH2-05
+  (see the second review below).
+- `NOT_IMPLEMENTED`, `BLOCKED`, `SUPERSEDED` retain their distinct meanings.
+- `STALE_ROADMAP` is a correction dimension, not a mutually exclusive implementation
+  state; corrected headings and notes are listed explicitly.
+- **Rejected rule (corrected by the second review below):** the original version
+  of this audit read "`[~]` now names the remaining implementation **or
+  verification** gate; a historical `[x]` alone is not proof." That sentence
+  conflated *historically verified* with *reverified in this session* and is
+  withdrawn. Absence of a fresh reverification this session, by itself, is never
+  sufficient to move an item from `[x]` to `[~]`; only a concretely evidenced,
+  still-open acceptance criterion (a confirmed BUG-00x, a code-level RISK-0xx
+  fact, or the roadmap's own documented reopening) does that. See the restored
+  status legend near the top of this file.
+
+## Second independent review reconciliation — 2026-09-06
+
+A second independent review of this audit's own 55-item `[x]` -> `[~]` mass
+downgrade (documentation-only; no re-audit, no tests, no runtime/production
+access) found that the great majority of those 55 downgrades cited exactly one
+reason class: "not reverified this session" / "cannot be proven from repo
+config" / "gate unavailable under audit constraint" / a bare RISK-0xx with no
+corresponding BUG. None of those, by the corrected methodology above, is
+sufficient grounds to move a historically-verified `[x]` to `[~]`. Where the
+downgrade instead cited a confirmed `BUGS.md` entry, or a RISK-0xx tied to an
+actual, currently-true code fact directly contradicting the item's own stated
+acceptance criterion, or the roadmap's own already-documented reopening, the
+downgrade is confirmed correct and unchanged.
+
+Disposition of the 55: **29 restored to `[x]`**, **24 remain `[~]`** (4 of those
+24 additionally reclassified from `UNVERIFIED_PRODUCTION` to `PARTIAL`, same
+checkbox, more accurate label), and **2 marked `MANUAL_REVIEW`** (still `[~]`,
+explicitly not asserted broken). Per-item reasoning is inline on each entry
+above (search for "Second independent review reconciliation") and summarized in
+the reconciled per-ID matrix and reconciled checkbox-change list below.
+`BUGS.md` and `RISKS.md` are unchanged; nothing here disputes any confirmed BUG
+or RISK, it only disputes which roadmap items they actually constrain.
+
+Counts (93 original items, post-reconciliation): `VERIFIED_DONE=33`, `PARTIAL=49`, `NOT_IMPLEMENTED=4`, `BLOCKED=3`, `UNVERIFIED_PRODUCTION=0`, `SUPERSEDED=2`, `MANUAL_REVIEW=2`.
+
+Original (first-review, now superseded) counts, retained for history: `VERIFIED_DONE=4`, `PARTIAL=48`, `NOT_IMPLEMENTED=4`, `BLOCKED=3`, `UNVERIFIED_PRODUCTION=32`, `SUPERSEDED=2`.
+
+STALE corrected checkboxes: **44** (down from the first review's 73; the 29
+restored `[x]` items are no longer "corrected" away from their original value).
+Additional narrative corrections do not add tasks or completed work.
+
+## Current repository map (supersedes PH0 historical baseline)
+
+```text
+nginx (effective installed config UNVERIFIED_PRODUCTION)
+  -> main.py -> single-thread HTTPServer + bot thread
+     -> canonical account/identity/subscription/plan/period/credential stores
+     -> legacy tg_users/user_devices/hwid_lock + legacy invoices (compatibility)
+     -> SQLite data/db.sqlite3, shared connection/RLock within a process
+     -> ServiceMarzbanClient -> loopback HMAC broker -> privileged Marzban -> Xray
+     -> admin session proxy -> Marzban using server-held administrator JWT
+     -> Telegram / OpenRouter (separate external boundaries)
+child_worker_main.py -> provision allowlist + configurable parent-sync + retirement preview
+WL collector timer -> cumulative usage -> ledger -> pool
+WL enforcement timer -> reconciliation -> epoch outbox -> exact inbound mutation + reread
+legacy transition timer -> payment/CAS/explicit selection -> REVOKE/FREE -> apply -> child sync
+backup timer -> sequential online DB copies -> encryption -> isolated integrity verification
+```
+
+| Domain | Actual connected implementation/schema | Entry/use, controls and remaining proof |
+| --- | --- | --- |
+| Accounts/ownership | account_store/account_schema; account_consolidation and schema | Database initializes stores; admin grants, enrollment, Stars signup and migration use canonical account identity. Telegram active-owner uniqueness and scoped aliases; legacy tg_users remains independent (RISK-006). |
+| Subscriptions/opaque | subscription_credentials + schema; credential_issuance; opaque_resolver | server routes root 43-char token after reserved routes; bot/LK/admin issue. SHA verifier, generation CAS, one ACTIVE index, terminal triggers; delivery concurrency RISK-018. |
+| Devices/HWID | device_slots + schema; hwid_gate/compat_registry; device_telemetry + schema | canonical resolver claims under BEGIN IMMEDIATE before ensure; admin pause/revoke/free/rebind and recovery are wired; client-reported HWID is not hardware attestation. |
+| Child provisioning/lifecycle | child_provisioning/workflow/lifecycle + their schemas; child_recovery | route lazy ensure and allowlisted worker; deterministic username/op, frozen source hash, UUID verification, outbox/leases; no raw child UUID persisted. General retry/runtime coverage RISK-003/017. |
+| Parent state | parent_sync + schema/v2 | route/money/grant callers plus child_worker_main reconciliation tick; verification_events and sweep_state additive tables; default mode disabled. |
+| Migration/legacy | direct_enrollment, legacy_paid_compat, legacy_bridge, migration_lifecycle, grace + schemas | explicit evidence, shared resolver, terminal migration state; grace campaign, scoped bootstrap retirement and expiry ambiguity resolver. Current cohort is not inferred from synthetic genesis. |
+| Plans/entitlement | plan_catalog/schema, subscription_renewal, entitlement_engine | explicit plan/package seed scripts; WL_TRIAL bootstrapped in main.py. Pinned plans/durations/terms and immutable WL windows, but BUG-003 and RISK-009. |
+| Stars | stars_purchase/schema, stars.py, bot_support callbacks | canonical invoice kinds separate from LEGACY_EXPIRE; charge evidence and one application; template/delivery and sync jobs run via bot loop. Refund is money-only, compensation not implied. |
+| Manual payments/grants/promo | manual_payment, admin_grant, promo + schemas/v2 | primary admin manual/grants; user-scoped promo via proven Telegram; immutable edits/grants/redemptions/discount snapshots. BUG-001/002/003 cross boundaries. |
+| WL | topology/guard/versions, usage ledger v1/v2, parent pool, packages, enforcement/reconciliation schemas | timers wired in repo; sampled usage and immutable history, epoch/manifest decisions. Base-only enforcement BUG-002, reset event identity BUG-004, delayed observation RISK-005. |
+| Delivery | delivery_routing/schema, commercial_signup templates | primary-admin host membership/CAS/audit; exact WL rejection in STANDARD; template pinning means later membership does not propagate automatically. |
+| Admin/frontend | src/routes/admin_*.py, admin_read_models/audit_timeline; frontend/assets/admin/app/router.js | index loads router.js; per-domain ES modules, Technical legacy path retained. Presence of UI is not authority; auth/CSRF/primary capability verified in consequential canonical routes. |
+| Support/bot | bot_runner, bot_support, bot_monitor; tickets/messages | durable payment callback handling and canonical subscription card coexist with legacy helpers. BUG-005 and RISK-010; node status view is not Xray data-plane proof. |
+| Ops/security | service units, broker HMAC, sensitive.py, ops_observability, secure_db_backup | current installed permissions/timers/proxy/secret rotation unknown; static locks/build layers present; PH8 is partial, not an empty phase. |
+
+## Schema, migration and rollback audit
+
+`Database._create_tables` (`src/database.py:499–538`) calls the canonical schema
+installers in dependency order. All four `*_schema_v2.py` modules have runtime imports
+and calls: parent sync, promo immutability, legacy commercial transition and WL sample
+period bucketing. They are additive/versioned successors, **not duplicate independent
+stores**. First bootstrap and reopen succeeded on the synthetic harness DB. That proves
+neither migration of arbitrary existing production data nor rollback to old binaries.
+Account schema enables foreign keys; individual stores use transactions/CAS/immutable
+triggers. These mechanisms do not by themselves make cross-store commits atomic (BUG-001)
+or period/event identities semantically valid (BUG-003/004).
+
+Rollback corrections: once real credentials are revoked, no rollback can restore the
+old shared UUID; issue a new generation. Once billing/usage rows exist, historical
+“plain code+migration revert” paragraphs are insufficient. Reverting before the freshness
+implementation can remove its gate; stopping a timer preserves durable work but also
+stops convergence. Backup integrity does not prove cross-DB consistency. See RISK-002/020.
+No v1 checksum, schema, runtime or historic evidence was changed by this audit.
+
+## Per-ID evidence and verdict
+
+Evidence cells name implementations actually present in this checkout. Test files are
+under `tests/` and were inspected as source, **not reported PASS**. Shared bootstrap,
+rollback and production limitations above apply to each row; specific remaining gates
+are explicit. Code/staging/production claims in old paragraphs remain dated history.
+
+| ID | Actual classification | Current implementation / caller / schema evidence | Tests inspected / reproduction | Remaining gate or correction |
+| --- | --- | --- | --- | --- |
+| PH0-01 | VERIFIED_DONE | src/server.py; src/database.py; git 98e27fe | test_main_bootstrap.py | Repository inventory refreshed; live security inventory not independently reproduced. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH0-02 | VERIFIED_DONE | main.py; src/server.py; mgboost-panel.service; child_worker_main.py | N/A: documentation-only topology map | STALE corrected: root/direct-SUDO-only diagram is historical; current code graph below supersedes it. |
+| PH0-03 | VERIFIED_DONE | src/database.py::_create_tables; src/account_schema.py | test_parent_account_schema.py (content only) | STALE corrected: canonical entities and v2 migrations exist and are wired; fresh synthetic bootstrap succeeded in harness. |
+| PH0-04 | PARTIAL | mgboost-*.service/timer; ops/nginx; scripts/secure_db_backup.py | test_secure_backup.py | Backup units exist; effective deploy manifest, volume/port matrix and runtime drift still absent (RISK-002/013). |
+| PH0-05 | VERIFIED_DONE | src/wl_topology.py::diff_topology; src/wl_topology_versions.py | test_wl_topology.py | Exact versioned node/tag baseline present; present live topology is unknown (RISK-004). Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH0-06 | VERIFIED_DONE | src/routes/sub.py; src/routes/opaque_sub.py; src/stars.py; src/manual_payment.py | test_opaque_sub_route.py; test_stars_purchase.py (content only) | STALE corrected: canonical purchase and opaque/child callers now exist alongside legacy paths. |
+| PH0-07 | PARTIAL | tests/; tests/conftest.py | test_concurrency.py; test_internal_hmac_durable.py | Cross-connection/crash tests now exist; missing combined failure paths demonstrated by BUG-001..004; current full regression UNVERIFIED_TEST. |
+| PH0-08 | VERIFIED_DONE | src/routes/internal.py; src/routes/admin_payments.py; src/manual_payment.py | test_manual_payment_ph509.py (content only) | STALE corrected: structured manual records exist; Filin remains a separate non-payment authority. |
+| PH1-01 | VERIFIED_DONE | src/security.py::AdminSessionStore; src/routes/admin_session.py; frontend/assets/admin/core.js | test_admin_sessions.py; test_admin_frontend_security.py; test_admin_browser_e2e.py | Cookie/CSRF/server JWT and SafeMarkup exist; browser/current deployment gate unavailable. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-02 | VERIFIED_DONE | src/security.py::AdminLoginRateLimiter; src/marzban.py; nginx.conf.example | test_marzban_auth.py; test_admin_sessions.py | Encoding/limiter code present; actual credential rotation and invalidation are production facts not reverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-03 | VERIFIED_DONE | docs/PHASE1_SENSITIVE_LOG_PERMISSIONS.md; mgboost-panel.service | test_ph1_10_sensitive_log_retention_config.py | Actual file owner/modes and Marzban container privileges cannot be proven from repo config. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-04 | VERIFIED_DONE | mgboost-panel.service; README.md | test_phase1_legacy_compat.py | Dedicated mgboost UID sandbox configured; running UID/effective unit unknown. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-05 | VERIFIED_DONE | broker_main.py; src/broker_server.py; src/broker_operations.py; src/service_marzban.py | test_marzban_broker.py; test_broker_client_policies.py | Typed operations and loopback/HMAC exist; full-SUDO remains broker-side and legacy operations remain reachable (RISK-006). Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-06 | PARTIAL | src/sensitive.py; src/database.py; scripts/secure_db_backup.py | test_token_containment.py; test_secure_backup.py | Redaction/hash references and backup implemented; retained production evidence/log settings and complete exceptional sinks remain unverified (RISK-002/007/014). |
+| PH1-07 | VERIFIED_DONE | requirements-runtime.lock; deploy/marzban-hardening/Dockerfile | test_phase1_dependency_gate.py; test_marzban_hardening.py | Pinned build present; no current advisory/build/integration/soak proof collected. No claim of zero current CVEs. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-08 | VERIFIED_DONE | scripts/patch_marzban_login_report.py; deploy/marzban-hardening/Dockerfile | test_marzban_hardening.py | AST patch exists; installed image and live report sink unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-09 | VERIFIED_DONE | ops/nginx/logrotate.d-mgboost-sensitive-nginx | test_ph1_10_sensitive_log_retention_config.py | 0600 rotation config exists; actual inode/access denial unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH1-10 | VERIFIED_DONE | ops/nginx/logrotate.d-nginx; ops/nginx/logrotate.d-mgboost-sensitive-nginx | test_ph1_10_sensitive_log_retention_config.py | Config separation exists; installed distro timer/forced rotation unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH2-01 | MANUAL_REVIEW | src/subscription_credentials.py; src/subscription_credential_schema.py; src/routes/opaque_sub.py | test_subscription_credentials.py; test_opaque_resolver.py | CSPRNG/verifier/CAS/terminal triggers wired. Mixed-issuer delivery remains RISK-018; fresh DoD gate absent. Second independent review (2026-09-06): `MANUAL_REVIEW` -- not asserted broken; evidence genuinely ambiguous, owner/technical decision required (checkbox unchanged, still `[~]`). |
+| PH2-02 | VERIFIED_DONE | frontend/assets/lk.js; frontend/lk.html | test_lk_frontend_security.py; test_lk_browser_e2e.py | DOM/text/CSP paths exist; browser evidence unavailable under audit constraint. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH2-03 | PARTIAL | src/security.py::require_internal_auth; src/routes/internal.py; src/database.py | test_internal_hmac_durable.py | Durable nonce and optional v2 exist; v1 mutation retries remain ambiguous; BLOCKED_EXTERNAL on Filin adoption. |
+| PH2-04 | VERIFIED_DONE | src/http_utils.py; src/server.py; nginx.conf.example | test_http_security_headers.py; test_ph2_04_nginx.py | Headers implemented; repo nginx not a complete current route manifest; uniform operational 404 claims superseded by later authenticated 503 paths. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH2-05 | MANUAL_REVIEW | src/ownership_rebind.py::process_rebind; src/routes/admin_ownership.py; src/security.py | test_ownership_rebind.py; test_ownership_rebind_compromise_crash.py | Rotation-before-owner ordering and schema uniqueness present; actual recovery workflow/runtime unavailable (RISK-018). Second independent review (2026-09-06): `MANUAL_REVIEW` -- not asserted broken; evidence genuinely ambiguous, owner/technical decision required (checkbox unchanged, still `[~]`). |
+| PH2-06 | PARTIAL | src/subscription_rate_limit.py; src/http_utils.py::client_ip; src/server.py::_Handler | test_subscription_rate_limit.py | Rates/body/socket limits present; criterion one slow client cannot block others is not established by single-thread HTTPServer (RISK-011). |
+| PH2-07 | VERIFIED_DONE | src/opaque_resolver.py::resolve_opaque_subscription; src/broker_operations.py | test_ph2_07_no_persistent_legacy_token.py | No persistent upstream bearer in canonical resolver chain found; current full regression and remote contract unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH2-08 | SUPERSEDED | DL-029; src/manual_payment.py | test_manual_payment_ph509.py | Separate reseller tenant superseded; no new reseller backlog. |
+| PH3-01 | VERIFIED_DONE | src/account_schema.py; src/account_store.py; src/database.py:499 | test_parent_account_schema.py | Schema/checksums/identity indexes installed by bootstrap; full migration/concurrency/current production data gate absent. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-02 | VERIFIED_DONE | src/device_slots.py::claim; src/device_slot_schema.py | test_device_slots.py | BEGIN IMMEDIATE and account/generation FKs/unique HWID/capacity checks exist; multi-process contract not executed here. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-03 | VERIFIED_DONE | src/child_provisioning.py; src/child_worker.py; src/opaque_resolver.py | test_child_provisioning.py; test_child_worker.py | Lazy intent/outbox and typed ensure exist; automatic coverage depends on explicit op allowlist (RISK-003); live orphan/retry guarantee unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-04 | VERIFIED_DONE | src/hwid_gate.py::evaluate; src/compat_registry.py; src/opaque_resolver.py | test_hwid_gate.py; test_compat_registry.py | Canonical gate fails closed; legacy behavior separately flag-gated; actual supported-client cohort unknown. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-05 | PARTIAL | src/child_lifecycle.py::process_revoke/process_free/process_rebind; src/routes/admin_devices.py | test_child_lifecycle.py; test_child_lifecycle_authorization_binding.py | Lifecycle/order/replay controls present; general retry dispatcher and rebind-current-expiry proof need RISK-003/017; remote all-node revoke unverified. |
+| PH3-06 | VERIFIED_DONE | src/internal_entitlements.py; src/admin_authority.py; src/internal_entitlement_schema.py | test_internal_entitlements.py | Versioned internal plans, capped expiring overrides and primary capability exist; current deployment/effective override convergence unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-07 | VERIFIED_DONE | src/compat_telemetry.py; src/routes/sub.py; mgboost-compat-telemetry-cleanup.timer | test_compat_telemetry.py | Request hooks and cleanup unit exist; effective runtime retention/coverage unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-08 | VERIFIED_DONE | src/parent_sync.py::sweep_convergence/run_drift_audit_cycle; child_worker_main.py | test_parent_sync_retry_safety.py; test_child_worker_main_reconciliation.py | STALE narrative: autonomous sweep/post-ACK drift now wired by a4c8ef3..5f4f18c; default reconciliation disabled, current rollout gate unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH3-09 | PARTIAL | src/provenance.py; src/provenance_schema.py; src/manual_payment.py; src/stars_purchase.py | test_provenance.py; test_manual_renewal_ph510.py | Canonical provenance wired to money/grant paths; no username-derived payment inference. Cross-flow correctness limited by BUG-001/002. Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
+| PH4-01 | VERIFIED_DONE | src/legacy_bridge.py; src/legacy_bridge_resolver.py; src/routes/sub.py | test_legacy_bridge_route.py; test_legacy_bridge_resolver.py | Shared resolver and per-account binding exist; live flag/cohort/fallback exposure unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH4-02 | VERIFIED_DONE | src/migration_lifecycle.py::process_migration_bridge_request; src/migration_lifecycle_schema.py | test_migration_lifecycle.py | CAS/terminal state and route integration exist; real LEGACY_REVOKED all-node evidence not reverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH4-03 | PARTIAL | src/legacy_grace_migration.py; src/direct_enrollment.py; src/bootstrap_retirement.py | test_ph4_03_migration_cohort_integration.py; test_bootstrap_retirement.py | Mass technical rollout claims cannot prove current real-device readiness; bootstrap retirement now exists but defaults preview (RISK-001/003). Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
+| PH4-04 | VERIFIED_DONE | src/subscription_credential_issuance.py; src/routes/lk.py; src/bot_support.py | test_bot_newsub.py; test_lk_opaque_subscription_routes.py; test_opaque_browser_landing.py | Actual bot/LK/admin issuance and browser landing exist; mixed delivery/runtime/nginx gate not proven. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH4-05 | VERIFIED_DONE | src/legacy_grace.py; src/legacy_grace_schema.py; src/legacy_grace_observability.py | test_legacy_grace.py; test_legacy_grace_route_hooks.py | Fourteen-day schema and clocks implemented; current_end_at, communication and real cohort support are UNVERIFIED_PRODUCTION. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH4-06 | BLOCKED | src/migration_lifecycle.py; docs/PHASE4_GRACE_PERIOD_RUNBOOK.md | test_migration_lifecycle.py (synthetic revoke only) | BLOCKED_UNTIL_DATE 2026-09-09 11:08:25 UTC at recorded boundary, AND fresh exception/device/node review; global revoke orchestration not complete. |
+| PH4-07 | PARTIAL | src/legacy_grace_observability.py; scripts/ph4_05_daily_cohort_report.py; src/bootstrap_retirement.py | test_legacy_grace_daily_report.py; test_bootstrap_retirement.py | STALE [ ]: reports/support/classifiers and scoped retirement exist; global cleanup/retention and no-unexplained-backlog gate open. |
+| PH4-08 | PARTIAL | src/direct_enrollment.py; src/legacy_paid_compat.py; src/manual_payment.py | test_legacy_paid_compat.py; test_direct_enrollment.py; test_manual_renewal_ph510.py | STALE [ ]: preservation/UNKNOWN_LEGACY and audited ambiguity resolver now exist; owner evidence/current cohort and full migration renewal snapshot gate remain. |
+| PH5-01 | VERIFIED_DONE | src/plan_catalog.py::seed_plan_catalog; src/plan_catalog_schema.py | test_plan_catalog.py; test_plan_catalog_schema.py | Six-plan Stars/RUB catalogs and immutable snapshots exist; catalog version handoff RISK-009 not tested end-to-end. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH5-02 | PARTIAL | src/subscription_renewal.py::apply_same_plan_purchase/append_promo_wl_period | test_subscription_renewal.py; BUG-003 harness | BUG-003 disproves globally non-overlapping chronology; repeated ordinary renewal alone is insufficient. |
+| PH5-03 | PARTIAL | src/wl_package_catalog.py; src/wl_packages.py; src/wl_package_schema.py | test_wl_packages.py; BUG-002 harness | Catalog/FIFO/rollover/refund primitive exists; sold manual package omitted from enforcement, refund finality RISK-016. |
+| PH5-04 | PARTIAL | src/entitlement_engine.py::calculate_effective_entitlement | test_entitlement_engine.py; BUG-002 harness | Read composition exists; add-on/adjustment outputs explicitly NONE, downstream WL authority diverges. PH5-07 remains deferred, PH6-08 needed for complete adjustment inputs. |
+| PH5-05 | PARTIAL | src/stars_purchase.py; src/stars.py; src/bot_support.py | test_stars_purchase.py; test_stars_worker.py; BUG-003 harness | Capture/apply/sync chain exists; mixed promo chronology defect inherited; true paid flow/current runtime not exercised. |
+| PH5-06 | NOT_IMPLEMENTED | src/stars_purchase.py::_assert_purchase_plan_locked; src/bot_support.py | test_stars_purchase.py (different-plan rejection) | General commercial upgrade/proration and ticket downgrade engine absent; legacy paid transition is not this engine. |
+| PH5-07 | BLOCKED | DL-017; src/entitlement_engine.py | test_entitlement_engine.py (zero add-ons) | OPTIONAL/DEFERRED; BLOCKED_OWNER_DECISION only on reactivation of OPD-05. No price selected. |
+| PH5-08 | PARTIAL | src/bot_support.py; src/entitlement_read_model.py; frontend/assets/admin | test_bot_ux_redesign.py; test_entitlement_engine.py | STALE [ ]: canonical catalog/purchase/renewal UI exists; unified plan-change/package/period explanation incomplete. Deferred PH5-07 must not block current UX. |
+| PH5-09 | PARTIAL | src/manual_payment.py; src/manual_payment_schema.py; src/routes/admin_payments.py | test_manual_payment_ph509.py; BUG-001/002 harness | Confirmed payment cancellation-after-commit and base-only package enforcement; compensation engine absent. |
+| PH5-10 | PARTIAL | src/manual_payment.py::_apply_plan_locked; src/subscription_renewal.py | test_manual_renewal_ph510.py; BUG-001/003 harness | Same-parent idempotency exists, but committed payment is not frozen and mixed WL schedule fails. |
+| PH5-11 | PARTIAL | src/commercial_signup.py::ensure_signup_account/ensure_template_for_account; src/stars.py | test_commercial_signup.py; test_commercial_wl_wiring.py | Dispatcher/capture/template/first-device chain exists; actual paid signup and DL-058 stop condition unverified (RISK-015). Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
+| Commercial WL wiring | PARTIAL | src/commercial_signup.py; src/stars_purchase.py; src/wl_enforcement.py | test_commercial_wl_wiring.py; BUG-002/004 harness | Six-plan sellable gate exists; live WL safety depends on confirmed ledger defects and unknown rollout state. No new PH ID invented for this existing title. |
+| PH5-12 | PARTIAL | src/delivery_routing.py; src/routes/admin_routing.py; src/commercial_signup.py | test_delivery_routing.py | Audited exact membership exists; old templates/children remain pinned; live topology and propagation boundary RISK-004/015. Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
+| PH5-13 | PARTIAL | src/promo.py; src/promo_schema_v2.py; main.py; src/routes/admin_promo.py | test_promo.py; test_promo_trial_signup.py; BUG-003 harness | Three effects and bootstrapped WL_TRIAL exist; real trial/payment canary unverified, chronology contradicts ordinary renewal. |
+| PH6-01 | VERIFIED_DONE | src/wl_topology_guard.py; src/wl_topology_guard_schema.py; src/wl_enforcement.py | test_wl_topology_guard.py | Historical not-wired claim obsolete: enforcement/reconciliation call guard; actual topology still unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH6-02 | PARTIAL | src/wl_period_lifecycle_schema.py; src/wl_period_admin_reset.py; src/subscription_renewal.py | test_wl_period_admin_reset.py; BUG-003 harness | Immutable periods/reset primitive present; no-overlap acceptance fails across promo and normal purchase. |
+| PH6-03 | PARTIAL | src/wl_usage_ledger.py::record_sample/run_collection_cycle; src/wl_usage_ledger_schema_v2.py | test_wl_usage_ledger.py; BUG-004 harness | Zero-reset cursor key collision confirmed; lease fencing RISK-005; v2 sample bucket migration does not fix event identity. |
+| PH6-04 | PARTIAL | src/wl_parent_pool.py::compute_parent_wl_pool | test_wl_parent_pool.py; BUG-002 harness | Base accounting exists and retains historic child usage; paid pool agreement and all-consumer correctness incomplete. |
+| PH6-05 | NOT_IMPLEMENTED | src/wl_parent_pool.py; src/device_slots.py | test_wl_parent_pool.py (shared only) | Optional per-device allocation/move-unspent engine absent; not a rollout prerequisite for default shared pool. |
+| PH6-06 | PARTIAL | src/wl_enforcement.py; src/broker_operations.py; src/wl_enforcement_schema.py | test_wl_enforcement.py; BUG-002 harness | Epoch/manifest/minimal inbound update exists; actual decision ignores sold packages, all-node access verification unavailable. |
+| PH6-07 | PARTIAL | src/wl_reconciliation.py; scripts/run_wl_quota_enforcement.py; mgboost-wl-enforcement.timer | test_wl_reconciliation.py | Scheduler/flock/drift rows exist; false healthy ledger and base-only decisions propagate; current timer/alert evidence unavailable. |
+| PH6-08 | PARTIAL | src/wl_packages.py; src/entitlement_engine.py; src/wl_enforcement.py | test_wl_packages.py; test_entitlement_engine.py | STALE [ ]: package buckets/read breakdown implemented; general GB adjustment/compensation ledger and enforcement integration absent (BUG-002). |
+| PH6-09 | PARTIAL | src/wl_freshness.py; src/wl_enforcement.py; mgboost-wl-usage-collector.timer | test_wl_ph6_09_fail_safe.py; BUG-004 harness | Freshness gates present but reset failure can appear OK; cadence includes jitter/runtime, not a guaranteed 1500s ceiling; RISK-004/005. |
+| PH6-10 | NOT_IMPLEMENTED | src/routes/opaque_sub.py; src/subscription.py | test_subscription.py; test_opaque_sub_route.py | No canonical exhausted-WL reset-date placeholder found. ph6_10_* schema ID is attribution work, not completion of this UX ID. |
+| PH6-11 | SUPERSEDED | DL-029; src/wl_parent_pool.py | test_wl_parent_pool.py | Reseller-wide pool superseded; parent-account isolation remains. |
+| PH7-01 | VERIFIED_DONE | src/subscription_admin_ops.py; src/routes/admin_expiry.py; src/parent_sync.py | test_admin_operational_admin.py | CAS/reason/preview/current child sync implemented; live all-child convergence unverified and worker scope RISK-003. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH7-02 | PARTIAL | src/entitlement_engine.py; src/admin_read_models.py; frontend/assets/admin/accounts.js | test_admin_account_read_models.py; test_entitlement_engine.py | STALE [ ]: base/consumed/package/current-period display exists; grants/deductions/effective authority depend on PH6-08. |
+| PH7-03 | NOT_IMPLEMENTED | src/routes/admin_expiry.py; src/wl_period_admin_reset.py | test_wl_period_admin_reset.py (primitive only) | No reusable administrative +GB/-GB/cancel-adjustment API; expiry adjustment is not GB adjustment. |
+| PH7-04 | PARTIAL | src/wl_period_admin_reset.py::reset_period; src/database.py | test_wl_period_admin_reset.py | STALE [ ]: reset store/schema exists and is initialized; no admin route/UI, collector/pending-disable integrated acceptance not proven. |
+| PH7-05 | PARTIAL | src/routes/admin_devices.py; src/device_slot_admin.py; src/device_telemetry.py; src/child_recovery.py | test_admin_operational_admin.py; test_device_telemetry_canonical.py; test_child_recovery_atomicity.py | Revoke/free/rebind/pause and recent telemetry/recovery exist; add/remove/baseline and live node proof remain. Old empty telemetry claim superseded. |
+| PH7-06 | PARTIAL | src/legacy_commercial_transition.py; src/routes/admin_legacy_transitions.py | test_legacy_commercial_transition.py | STALE [ ]: immutable explicit selection exists for legacy paid transitions only; general ticket-backed commercial downgrade absent. |
+| PH7-07 | PARTIAL | src/internal_entitlements.py; src/entitlement_engine.py; src/wl_enforcement.py | test_internal_entitlements.py; test_entitlement_engine.py | STALE [ ]: typed expiring WL access override/read calculation exists; AUTO/FORCE admin control and exact enforcement contract incomplete. |
+| PH7-08 | PARTIAL | src/admin_audit_timeline.py; src/provenance.py; src/child_recovery.py | test_audit_log.py; test_child_recovery_atomicity.py | Append-only canonical events and timeline implemented; rejected/raw/compensation coverage not universal (RISK-006/007). |
+| PH7-09 | PARTIAL | src/admin_grant.py; src/routes/admin_grant.py; src/routes/admin_legacy_transitions.py | test_admin_grant.py; test_admin_legacy_transitions_routes.py | STALE [ ]: constrained plan grants and legacy transition preview/apply exist; generic commercial change/ticket/conflict matrix still absent. |
+| PH7-10 | PARTIAL | src/routes/admin_payments.py; frontend/assets/admin/payments.js | test_admin_operational_admin.py; BUG-001/002 harness | Real UI/backend wired; paid-record/edit atomic boundary and package authority are defective; applied compensation action absent. |
+| PH7-11 | PARTIAL | src/manual_payment_schema.py; src/manual_payment.py; src/admin_audit_timeline.py | test_manual_payment_ph509.py; test_admin_operational_admin.py | STALE [ ]: immutable manual edit/apply/evidence events exist; failed/denied/correction and correlated reconciliation coverage remains. |
+| PH7-12 | PARTIAL | frontend/index.html; frontend/assets/admin/app/router.js; src/admin_read_models.py | test_admin_frontend_security.py; test_admin_browser_e2e.py | Monolith split complete; owner authenticated/mobile click-through outstanding. Removed admin.js description superseded. |
+| PH7-13 | VERIFIED_DONE | src/account_consolidation.py; src/account_consolidation_schema.py; src/legacy_bridge.py | test_account_consolidation.py | Merge bipartition/close/reversal and resolver normalization exist; actual cohort state unverified, template lifecycle PH7-15 remains. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
+| PH7-14 | PARTIAL | src/routes/admin_grant.py; src/routes/admin_payments.py; src/routes/admin_promo.py | test_admin_grant.py; test_admin_operational_admin.py | All eight surfaces exist; all acceptance closed is too strong with BUG-001/002 and absent current end-to-end evidence. |
+| PH7-15 | BLOCKED | src/account_consolidation.py::close_account; src/commercial_signup.py::ensure_template_for_account | test_account_consolidation.py; test_commercial_signup.py | BLOCKED_OWNER_DECISION: terminal tpl policy not chosen; no cleanup engine; RISK-015. |
+| PH7-16 | PARTIAL | frontend/index.html; frontend/assets/admin/app/router.js; frontend/assets/admin/technical | test_admin_frontend_security.py; test_admin_browser_e2e.py | Local modular cutover exists; heading scoped locally but Acceptance undefined and current regression/browser/deploy gates unverified. |
+| PH8-01 | PARTIAL | src/server.py::_Handler/_ServerWithDB; src/http_utils.py | test_subscription_rate_limit.py; test_concurrency.py | STALE [ ] for deadlines/body pieces; bounded HTTP concurrency/graceful shutdown absent. Hard prerequisite PH8-02. |
+| PH8-02 | PARTIAL | src/database.py; src/security.py; src/marzban_lock.py; src/wl_usage_ledger.py | test_internal_hmac_durable.py; test_device_slots.py | STALE [ ]: nonce/slot/outbox DB primitives exist; rate/admin sessions/per-user locks process-local and collector fencing unproven. |
+| PH8-03 | PARTIAL | requirements-runtime.lock; deploy/marzban-hardening/Dockerfile; requirements.txt | test_phase1_dependency_gate.py | STALE [ ]: pinned runtime/image layers implemented; clean reproducible current build/SBOM/secret/deploy manifest gate unavailable. |
+| PH8-04 | PARTIAL | src/ops_observability.py; src/routes/admin_ops.py; src/wl_reconciliation.py | test_ops_observability_health.py; test_ops_observability_redaction.py | Read-only health/redaction implemented; actual alert delivery, transition heartbeat and thresholds absent; RISK-007/012. |
+| PH8-05 | PARTIAL | scripts/secure_db_backup.py; mgboost-secure-backup.service/timer | test_secure_backup.py | STALE [ ]: encryption/restore checks/retention implemented; system consistency/off-host/RPO/RTO drill unverified (RISK-002). |
+| PH8-06 | PARTIAL | src/bot_support.py::execute_tool/build_ai_messages; src/device_telemetry.py | test_bot_support.py; BUG-005 harness | Some canonical support projection exists; provider minimisation/argument bounds/user-before-LIMIT incomplete. Device telemetry tagged PH8-06 is not this privacy task. |
+| PH8-07 | PARTIAL | tests/; requirements-runtime.lock | test_token_containment.py; test_admin_frontend_security.py | STALE [ ]: large security regression corpus exists; no tracked automated CI/deploy gate or current run artifacts. |
+| PH8-08 | PARTIAL | docs/PHASE1_RETENTION_AND_BACKUP.md; docs/LEGACY_COMMERCIAL_TRANSITION_RUNBOOK.md; docs/PHASE4_MIGRATION_SUPPORT_RUNBOOK.md | test_secure_backup.py; verifier scripts inspected only | STALE [ ]: many runbooks implemented; second-operator/tabletop proof and current rollback consistency absent. |
+| PH8-09 | PARTIAL | src/manual_payment.py::pending_sync_jobs; src/routes/admin_payments.py; src/ops_observability.py | test_manual_renewal_ph510.py; BUG-001 harness | STALE [ ]: durable jobs/operator retry exist; financial reconciliation/alerts/compensation and safe apply fence incomplete. |
+
+## Changed checkboxes (exhaustive, post-reconciliation)
+
+First review changed 55 `[x]` → `[~]`. The second independent review restored 29
+of those to `[x]` (no longer listed as "changed" below -- they are back at their
+original value); the remaining 26 stay changed, 2 of them now explicitly labeled
+`MANUAL_REVIEW` rather than a bare `[~]`. The 18 `[ ]` → `[~]` changes (genuinely
+new work found, never claimed `[x]` before) are untouched by this reconciliation.
+
+Restored to `[x]` by the second review (no longer counted as a changed checkbox):
+PH0-01, PH0-05, PH1-01, PH1-02, PH1-03, PH1-04, PH1-05, PH1-07, PH1-08, PH1-09,
+PH1-10, PH2-02, PH2-04, PH2-07, PH3-01, PH3-02, PH3-03, PH3-04, PH3-06, PH3-07,
+PH3-08, PH4-01, PH4-02, PH4-04, PH4-05, PH5-01, PH6-01, PH7-01, PH7-13 (29 total).
+
+Still changed `[x]` → `[~]` (confirmed correct by the second review):
+
+- PH1-06 [x] → [~]
+- PH2-06 [x] → [~]
+- PH3-05 [x] → [~]
+- PH3-09 [x] → [~] (reclassified UNVERIFIED_PRODUCTION → PARTIAL)
+- PH4-03 [x] → [~] (reclassified UNVERIFIED_PRODUCTION → PARTIAL)
+- PH5-02 [x] → [~]
+- PH5-03 [x] → [~]
+- PH5-04 [x] → [~]
+- PH5-05 [x] → [~]
+- PH5-09 [x] → [~]
+- PH5-10 [x] → [~]
+- PH5-11 [x] → [~] (reclassified UNVERIFIED_PRODUCTION → PARTIAL)
+- Commercial WL wiring [x] → [~]
+- PH5-12 [x] → [~] (reclassified UNVERIFIED_PRODUCTION → PARTIAL)
+- PH5-13 [x] → [~]
+- PH6-02 [x] → [~]
+- PH6-03 [x] → [~]
+- PH6-04 [x] → [~]
+- PH6-06 [x] → [~]
+- PH6-07 [x] → [~]
+- PH6-09 [x] → [~]
+- PH7-10 [x] → [~]
+- PH7-14 [x] → [~]
+- PH7-16 [x] → [~]
+
+Still `[~]`, now explicitly `MANUAL_REVIEW` (not asserted broken):
+
+- PH2-01 [x] → [~] (MANUAL_REVIEW)
+- PH2-05 [x] → [~] (MANUAL_REVIEW)
+
+Unrelated `[ ]` → `[~]` changes (new work found by the first review; not part of
+the 55-item downgrade this reconciliation addresses, left as-is):
+
+- PH4-07 [ ] → [~]
+- PH4-08 [ ] → [~]
+- PH5-08 [ ] → [~]
+- PH6-08 [ ] → [~]
+- PH7-02 [ ] → [~]
+- PH7-04 [ ] → [~]
+- PH7-06 [ ] → [~]
+- PH7-07 [ ] → [~]
+- PH7-09 [ ] → [~]
+- PH7-11 [ ] → [~]
+- PH8-01 [ ] → [~]
+- PH8-02 [ ] → [~]
+- PH8-03 [ ] → [~]
+- PH8-05 [ ] → [~]
+- PH8-06 [ ] → [~]
+- PH8-07 [ ] → [~]
+- PH8-08 [ ] → [~]
+- PH8-09 [ ] → [~]
+
+## Later work, cross-phase consistency and evidence limits
+
+The following is an index of existing work, not authorization for new implementation
+or four extra completion claims. It is excluded from the 93-item count.
+
+| Existing cross-phase work | Current evidence | Remaining gate |
+| --- | --- | --- |
+| XF-LEGACY-COMMERCIAL (DL-062) | `src/legacy_commercial_transition.py`, schema, `src/routes/admin_legacy_transitions.py`, worker; history `1b6599f`, `f1e8c02` | UNVERIFIED_PRODUCTION: scheduled September 1 activation outcome; not a substitute for general PH5-06 transitions |
+| XF-DEVICE-RECOVERY | `src/device_telemetry.py`, `src/child_recovery.py`; `5255404`, `4ebd4f3`; atomicity tests | Local implementation present; actual node convergence/recovery UNVERIFIED_PRODUCTION |
+| XF-LEGACY-EXPIRY | `9673c0c`; ambiguity detection and explicit finite/non-expiring correction path | Current affected cohort and owner evidence unknown; no live correction performed |
+| XF-BOOTSTRAP-RETIREMENT | `98e27fe`; child worker retirement preview/active controls and synthetic lineage tests | Preview/config/current references require verification; does not authorize global legacy revoke |
+
+| Authority boundary | Finding / disposition |
+| --- | --- |
+| Payment record vs entitlement | Independently committed states can diverge after crash: BUG-001. ADMIN_GRANT is entitlement provenance, not external revenue; MANUAL_RUB and Stars must retain distinct financial evidence. |
+| Entitlement vs WL enforcement | Packages appear in entitlement remaining but base-only pool controls direction: BUG-002. Store/schema presence alone does not complete commercial WL wiring. |
+| Promo vs ordinary renewal | Exact-second and hour-rounded boundaries overlap: BUG-003. Legacy scheduled transitions do not establish general downgrade semantics. |
+| Ledger vs remote counters | Reset/repeated cursor identity loses subsequent usage: BUG-004. No claim that existing production totals are known wrong without inspection. |
+| Parent desired state vs children | Durable reconciliation is now called; effective mode/allowlist and all-node enforcement remain RISK-003/004. Local queued work is not remote convergence. |
+| Legacy vs canonical identity | `tg_users`/legacy device compatibility coexist with accounts/slots/opaque credentials; raw technical admin and Filin v1 remain reachable. RISK-006; no automatic removal under DL-050. |
+| Versioned catalogue vs invoice | Downstream plan lookup defaults to version 1 while duration lookup may select a later version: RISK-009, not a reproduced charge defect. |
+| Admin vs support read models | Canonical admin telemetry now exists. Support still has legacy/tool paths and global ticket LIMIT defect (BUG-005); canonical admin completion cannot close support privacy. |
+| Schema v1 vs v2 | Inspected v2 bootstrap calls are present. Additive migration layers are not inherently duplicate authorities. Older executable rollback would still invoke schema/bootstrap writes (RISK-020). |
+
+Static module/import inventory found no top-level `src` module that could be declared
+unused merely from missing static imports. This is not dynamic reachability proof.
+The reset and unused-package-refund primitives have tests but no complete public
+administrative lifecycle; classify the missing wiring under PH7-04 / RISK-016.
+Legacy bridge/shadow compatibility, Filin v1 and raw technical mutation paths remain
+reachable; removing them requires observed callers and migration gates. Old admin
+monolith descriptions are superseded by the current module router. A schema named
+`ph6_10_*` and telemetry comments naming PH8-06 do not implement those roadmap UX/privacy
+items. Cleanup belongs after correctness and rollout evidence; nothing was deleted.
+
+### Definition of Done reconciliation
+
+| Applicable criterion | Audit result |
+| --- | --- |
+| Implementation and actual caller | Per-ID table above; five reproduced defects prevent claiming complete behavior. Documentation inventory tasks PH0-02/03/06/08 are updated here and VERIFIED_DONE within their documentation scope. |
+| Positive/negative/concurrency/crash tests | Existing test source inspected; current regression/browser gates UNVERIFIED_TEST. Five narrow reproductions PASS as reproductions of defects, not correctness tests. |
+| Migration/bootstrap | Fresh synthetic Database bootstrap exercised; inspected v2 calls wired. Existing production migration/data invariants UNVERIFIED_PRODUCTION. |
+| Failure handling and compensation | Specific missing boundaries recorded in BUGS and RISKS; successful retry tests do not prove cancellation/edit between commits or remote rollback. |
+| Deployment and runtime | No live connection, fetch, install, service activation or production mutation. Historical completion reports remain historical evidence, not current attestation. |
+| Rollback | Runbooks exist; coordinated database/Marzban restore and additive-schema compatibility remain RISK-002/020. |
+| Observability | Read health exists; alert delivery, worker heartbeat and actionable reconciliation incomplete. |
+| Documentation / changelog | This dated correction and Unreleased documentation entry describe audit only. Stable IDs and historical paragraphs retained. |
+| Owner decisions | OPD/DL decisions remain binding; unresolved choices below are recommendations only. |
+
+The test corpus is a surface map: the manual-payment crash test retries apply directly,
+its edit race changes a comment, reset coverage does not continue through a repeated
+post-reset cursor identity, and mixed promo/renewal plus package/enforcement boundaries
+are missing. SQL state rewinds and FakeMarzban contract tests do not prove independent
+process death, current Marzban/Xray behavior, or distributed convergence.
+
+Validation in this audit: AST parsing of 341 tracked Python files passed; 136 tracked
+test modules inventoried. A bounded 25-second synthetic harness with network disabled
+reproduced BUG-001..005, exit 0; source and concise results are in BUGS.md. Full regression,
+focused pytest suites, browser/Playwright, staging verifiers, load/soak, fresh dependency
+advisory scan and production checks were **NOT RUN**. They are not failures or passes.
+The repository uses pytest (`requirements.txt`, `tests/conftest.py`); the suite entrypoint is `python -m pytest` from the repository root in the project environment. It was not executed. No flaky classification is possible from this evidence. Historical run counts were not
+reissued as results from this audit.
+
+OPD-05's deferred add-on decision is not silently reversed. Superseded reseller decisions
+(DL-013..015 / DL-029) do not restore reseller-wide pooling. DL-058's accepted per-account
+template approach and stop condition remain binding. Earlier planning paragraphs for
+DL-060/061 are superseded by later implementation evidence, not deleted. DL-062's actual
+activation result is still unknown. Existing prices, refund rules, rollover and eviction
+choices have not been changed.
+
+### OWNER_DECISION_REQUIRED — unresolved policy boundaries
+
+These are pending questions, not accepted decisions and not requests to execute now.
+
+| Question | Options and consequences | Technical recommendation (NOT adopted) | Blocks |
+| --- | --- | --- | --- |
+| How should ordinary renewal follow an exact-second promo end? | (1) Preserve exact end for the next period: no overlap, changes rounding contract. (2) Explicitly account for partial-hour bridge: preserves aligned schedule, adds typed accounting. (3) Temporarily disallow this mixed mutation: avoids new overlap, limits service. | Specify one interval invariant and explicit treatment of the partial hour before changing money/time accounting. | BUG-003, PH5-02/13, PH6-02 |
+| What is the terminal lifecycle of an account template? | (1) Disable immediately after reference checks. (2) Disable after an explicit retention/grace interval. (3) Require audited manual retirement. Tradeoffs are exposure window, reversibility and operator work. | Controlled disable after verifying canonical references and DL-058 stop condition; preserve audit and do not delete evidence. | PH7-15, RISK-015 |
+| How are already sold WL packages handled while enforcement wiring is incomplete? | (1) Pause new sales and preserve obligations pending correction. (2) Prioritize integrated enforcement with reviewed temporary service handling. (3) Owner-approved case-by-case remedy. None implies automatic refund or removal. | Inventory affected grants first; prevent additional unsupported promises until effective enforcement is verified. | BUG-002 rollout, PH6-08, PH7-10 |
+| What compensation may an applied manual-payment correction perform beyond existing agreed unused-package rules? | (1) Financial correction only, entitlement unchanged. (2) Explicit unused-term compensation with immutable ledger entry. (3) Case-specific audited owner approval. These differ in service and accounting consequences. | Keep monetary and entitlement compensation explicit and separately traceable; never infer subtraction from a cancelled record. | Remaining PH5-09/10, PH7-10/11, RISK-008 |
+
+# Recommended remaining execution sequence — 2026-09-06
+
+This is operational ordering, not a replacement for historical phases and not permission
+to deploy. **SAFE_NOW** means suitable for the next separately authorized work session;
+this audit implements none of it. Every production change additionally needs a verified
+backup/recovery path, reviewed scope and fresh state. Read-only boundary inventory in
+lane C starts immediately in parallel; it must not wait for coding steps 1–3.
+
+| Order | Roadmap / BUG / mitigation | Why now | Dependencies satisfied? | Unlocks | Production risk | Scope | Parallel with | Stop condition / acceptance gate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | BUG-004; PH6-03/04 | Confirmed repeated-reset ledger loss undermines every WL consumer | SAFE_NOW for isolated fix; additive history migration reviewed before rollout | Reliable ledger, packages, reconciliation | P1; never rewrite old events by guess | M | 2, lane C | Repeated reset/restart/duplicate delivery preserve total and advance cursor; affected rows inventoried |
+| 2 | BUG-001; PH5-09/10 | Paid service can survive cancelled payment after crash | SAFE_NOW; preserve committed mutations and evidence | Safe retry/edit/cancel and financial reconciliation | P1 money/service divergence | M | 1, C | Crash at each commit plus edit/cancel cannot change/finalize an already applied intent incorrectly |
+| 3 | BUG-002 containment; PH6-08 design | Paid package promise currently differs from effective direction | SAFE_NOW inventory/design; handling existing sales BLOCKED_OWNER_DECISION | Safe package enforcement rollout at 11 | P1; no silent confiscation/refund | S | 4, 5 decision | Affected grants known; approved temporary handling and no further unsupported sale path |
+| 4 | RISK-001; DL-062, PH4-05/06 | September 1 activation passed; September 9 grace is imminent | SAFE_NOW read-only; live access/evidence BLOCKED_EXTERNAL in this audit | Correct recovery/revoke decisions | Read-only inspection low; destructive response high | S | All independent analysis | Fresh scheduled/applied/failed transition and current cohort/end/exception/lineage report, no secrets |
+| 5 | BUG-003; PH5-02/13, PH6-02 | Confirmed interval overlap changes period authority | BLOCKED_OWNER_DECISION on partial hour; reproduce/fix design SAFE_NOW | Consistent schedule and downstream WL | P1 time/accounting | M | C, 2 if no shared-store edits | Owner interval policy; mixed promo/renewal/idempotency tests, no overlapping effective periods |
+| 6 | RISK-003; PH3-08, PH4-08, PH7-01 | Existing desired state needs an effective worker and scope | SAFE_NOW config inventory; enablement depends on reviewed fixes and canary | Expiry/child convergence, safe migration | High if scope broadens unexpectedly | S/M | 7, 8 | Effective unit/env/mode/allowlist recorded; bounded canary drains/retries and proves remote state |
+| 7 | PH8-04/09; RISK-012 | Already enabled financial and worker flows need actionable detection | SAFE_NOW design; payment reconciliation depends on 2, WL correctness on 1 | Detection before broad rollout | Low read-only; avoid alert secrets | M | 8, 9 | Heartbeat and paid-not-applied/drift alert reaches operator with tested recovery route |
+| 8 | PH8-05/03; PH0-04; RISK-002/020 | Revoke and repair require actual recovery capability | SAFE_NOW isolated restore/manifest work; live evidence separately scoped | Production rollout gates, 10 | High for untested restore; drill isolated | M | 6, 7, 9 | Coordinated restore and compatibility verified; effective manifest plus owner RPO/RTO agreed |
+| 9 | PH4-08; XF-LEGACY-EXPIRY / XF-BOOTSTRAP-RETIREMENT | Ambiguous expiry and synthetic lineage must be resolved before revoke | 4 inventory; owner evidence for ambiguous intent; 6 scope for any action | 10 | High if inferred expiry or live references ignored | M | 7, 8 | Explicit finite/non-expiring evidence; retirement preview and reference checks; reviewed narrow canary |
+| 10 | PH4-06 legacy revoke | Time boundary is a gate, not an ordinary coding task | BLOCKED_UNTIL_DATE **and** 4/6/8/9 plus reviewed owner scope | Finish migration lifecycle | High / irreversible credential effects | M | Unrelated isolated work | Each current end has elapsed, extensions/exceptions resolved, actual credentials/nodes checked, compensation/stop procedure ready |
+| 11 | PH6-08 / BUG-002 integration; PH6-07/09 | Unify effective base/package/override authority | 1, 3 policy, 5 interval fix; current collector/topology evidence | PH7-02/03/04/07 | High billing and enforcement | L | UI read-only preparation | Base-first/package order, expiry/refund/reset/retry and direction use same effective result |
+| 12 | PH7-02/03/04/07; RISK-016 | Existing stores need a safe administrative lifecycle | 11; approved adjustment/refund semantics | Audited WL operations | High on reset/refund | L | 13 design | Preview/CAS/audit, pending collector samples and disable jobs cannot double apply or resurrect state |
+| 13 | PH5-06; PH7-06/09; PH5-08 | General plan changes remain absent despite legacy-specific path | 2/5/11 as applicable; owner policy; active catalogue only | Coherent general commercial workflow | High financial/slot semantics | L/XL | 12 with explicit interfaces | Ticket/selection/conflict/compensation contract covers upgrade/downgrade without silent eviction |
+| 14 | BUG-005; PH8-06; RISK-010 | Correct support history and minimize external context | SAFE_NOW bounded isolated fix; privacy acceptance reviewed | Reliable support tools | Low for query fix | S/M | 1–13 independent files | Filter ownership before LIMIT; bounds and privacy tests; other-account tickets absent |
+| 15 | PH7-15; RISK-015 | Template terminal lifecycle remains owner-blocked | BLOCKED_OWNER_DECISION; DL-058 controls and live reference proof | Account-close cleanup | High if template still referenced | M | Non-mutating inventory now | Approved lifecycle, stop clause tested, references/audit preserved |
+| 16 | PH8-02 then PH8-01; RISK-005/011 | Shared-state safety precedes concurrent HTTP scaling | Ledger fix 1; shared-lock/session/rate-limit design | Bounded concurrency and capacity | High if locks become ineffective | L | Isolated profiling/design | Multi-process/crash fencing then concurrency limits, shutdown, contention/fairness gates |
+| 17 | PH8-07; RISK-019 | Automate accepted release evidence | SAFE_NOW pipeline design; future test execution separately authorized | Repeatable deploy gates for all lanes | Low in isolated CI | M | All independent work | Current supported environment, secret checks and relevant failure suites gate release; no inferred green status |
+| 18 | PH7-12/16; PH2-02; PH8-08 | Owner UI acceptance and second-operator runbooks remain | Stable relevant backend contract; browser execution future authorized | Verified admin rollout and support handoff | Medium | M | 17 | Authenticated desktop/mobile flows, recovery/tabletop checks and actual release evidence |
+| 19 | PH6-10; PH6-05; PH5-07; compatibility cleanup | UX/deferred scope follows correctness and rollout | PH6-10 needs 11; split/add-ons OPTIONAL/DEFERRED until owner reactivation; cleanup needs caller evidence | Optional capacity/product improvements | Depends on chosen scope | S–XL | Documentation inventory | Explicit scope decision; no dead-code deletion based only on filenames or flags |
+
+**Parallel lanes:** A = payment correctness (2/3 and approved part of 5); B = WL ledger
+(1, then 11/12); C = immediate dated read-only inventory plus backup/config/observability
+(4/6/7/8/9); D = independent support fix and release-gate design (14/17). Shared SQLite
+schema/store changes in A/B must be serialized/reviewed together; parallel analysis does
+not mean concurrent unsynchronized migrations. Step 10 cannot borrow an unverified
+prerequisite from another lane.
+
+**Dependency corrections:** historical broad phase arrows are not a runnable DAG.
+The PH2/PH4 bridge cycle was resolved by the existing staged bridge design; do not
+reintroduce it as an impossible all-phase completion gate. PH5-02/PH6-02 share a now
+implemented schedule interface, whose actual remaining blocker is BUG-003. Deferred
+PH5-07 is not required to release an already agreed base catalogue under PH5-08.
+Legacy-specific paid transitions/grants do not depend on implementing every general
+PH7-09 feature, but do not close that feature either. Existing explicit slot-selection
+primitives can be reused after their checks; they do not close all of PH7-05. Historical
+waivers do not waive current migration/revoke safety checks or unresolved owner policy.
+
+**Boundary dates:** DL-062 scheduled activation was **2026-09-01 17:00 UTC**; the last
+historical observation preceded it, so outcome is UNVERIFIED_PRODUCTION now. Recorded
+grace epoch `1788952105` is **2026-09-09 11:08:25 UTC / 14:08:25 MSK / 18:08:25
+Krasnoyarsk**. Historical 17-account cohort is not a current eligible revoke list.
+Extensions, current end, already migrated state and exceptions must be recomputed;
+passing the date is not permission. Recorded paid target expiry October 31 is likewise
+not proof of actual application. Retention windows (30/60/90/180 days by class) apply to
+actual timestamps and legal/operational holds, not a blanket cleanup date.
+
+The collector/enforcer nominal 10/15-minute intervals are not an end-to-end SLA: their
+60/90-second randomized delays, scheduler accuracy, execution time, failures and stale
+samples add delay. Preserve historical overshoot statements as history, not a verified
+current upper bound. See [BUGS.md](BUGS.md) and [RISKS.md](RISKS.md) for the underlying
+reproductions, uncertainty, controls and closure requirements.

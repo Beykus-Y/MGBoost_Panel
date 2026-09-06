@@ -15,6 +15,53 @@
 
 ## Unreleased
 
+### Documentation — Independent audit (2026-09-06)
+
+Состояние `ROADMAP.md` сверено с main `98e27fe`: добавлены матрица всех 93 пунктов,
+датированные corrections без удаления исторических evidence, ограничения проверки
+Definition of Done и очередь оставшейся работы с зависимостями и временными gates.
+Созданы `BUGS.md` (пять локально воспроизведённых дефектов) и `RISKS.md` (20 рисков).
+Изменены только документы; runtime fixes и deployment не выполнялись. Полные и тяжёлые
+suite не запускались; production claims отмечены как непроверенные.
+
+### Documentation — Second independent review reconciliation of the 2026-09-06 audit downgrade
+
+Второй независимый review проверил массовое `[x]` → `[~]` понижение 55 пунктов
+из аудита выше и нашёл, что бо́льшая часть этого понижения опиралась на одно
+смешение понятий: «эта сессия не перепроверила production/тесты заново» ≠
+«пункт больше не выполнен». Это правило отклонено; восстановлена изначальная
+семантика статусов (`[x]` = historically verified + implemented in current
+main, не требует свежей reverification в каждой сессии) в `ROADMAP.md`.
+
+По итогам review: **29 пунктов возвращены в `[x]`** (историческое
+production/test evidence осталось неопровергнутым — единственной причиной
+понижения было "not reverified this session"): PH0-01, PH0-05, PH1-01, PH1-02,
+PH1-03, PH1-04, PH1-05, PH1-07, PH1-08, PH1-09, PH1-10, PH2-02, PH2-04, PH2-07,
+PH3-01, PH3-02, PH3-03, PH3-04, PH3-06, PH3-07, PH3-08, PH4-01, PH4-02, PH4-04,
+PH4-05, PH5-01, PH6-01, PH7-01, PH7-13.
+
+**24 пункта остаются `[~]`** (подтверждено: конкретный незакрытый criterion,
+подкреплённый confirmed BUG-00x из `BUGS.md` или code-level RISK-0xx фактом из
+`RISKS.md`, а не просто отсутствием reverification): PH1-06, PH2-06, PH3-05,
+PH3-09, PH4-03, PH5-02, PH5-03, PH5-04, PH5-05, PH5-09, PH5-10, PH5-11, PH5-12,
+PH5-13, Commercial WL wiring, PH6-02, PH6-03, PH6-04, PH6-06, PH6-07, PH6-09,
+PH7-10, PH7-14, PH7-16. Из них PH3-09/PH4-03/PH5-11/PH5-12 переклассифицированы
+из `UNVERIFIED_PRODUCTION` в более точный `PARTIAL` (чекбокс не менялся).
+
+**PH2-01 и PH2-05 остаются `[~]` и явно помечены `MANUAL_REVIEW`** — evidence
+по ним неоднозначно (реальный, но никогда не протестированный concurrent-flow
+edge case), они не объявляются broken, требуется отдельное owner/техническое
+решение.
+
+Пересчитаны итоговые counts в матрице `ROADMAP.md`: `VERIFIED_DONE=33`,
+`PARTIAL=49`, `NOT_IMPLEMENTED=4`, `BLOCKED=3`, `UNVERIFIED_PRODUCTION=0`,
+`SUPERSEDED=2`, `MANUAL_REVIEW=2` (было `VERIFIED_DONE=4`/`UNVERIFIED_PRODUCTION=32`
+— старые числа сохранены в тексте только как явно помеченная история).
+Исторические evidence-параграфы каждого пункта не удалялись, только дополнены
+reconciliation-заметкой. Изменены исключительно `ROADMAP.md` и этот файл;
+`BUGS.md`/`RISKS.md` не менялись; runtime/src/tests/scripts/ops не менялись;
+тесты, production, SSH и network в этой сессии не использовались.
+
 ### Changed — Admin
 
 Admin panel visual/CSS redesign (Waves 0-9, план `docs/ADMIN_CSS_REDESIGN.md`)
