@@ -26,9 +26,11 @@ Idempotent/deterministic by construction: summing an immutable, already-
 deduplicated ledger is naturally safe to recompute any number of times, from
 any process, at any point after a restart, with zero risk of double-
 counting a duplicate/racing collector observation -- PH6-03's own
-`UNIQUE(child_intent_id, node_id, cursor_before)` event key and monotonic-
-non-decreasing `bytes_delta` trigger already own that guarantee; this module
-never re-derives it.
+`UNIQUE(child_intent_id, node_id, reset_generation, cursor_before)` event key
+(BUG-004 fix: `reset_generation` durably disambiguates a post-reset epoch from
+an earlier one that happened to pass through the same raw cursor value) and
+monotonic-non-decreasing `bytes_delta` trigger already own that guarantee;
+this module never re-derives it.
 
 Period resolution reuses -- never duplicates -- `WLUsageLedgerStore.
 resolve_active_wl_period` (the exact same resolver PH6-03's own collector

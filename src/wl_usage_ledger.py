@@ -76,10 +76,21 @@ from datetime import datetime, timezone
 
 from .subscription_renewal import align_to_utc_hour
 from .wl_topology import WL_NODE_IDS
+from .wl_usage_ledger_schema_v3 import EVENT_UNIQUE_COLUMNS
 
 
 _EPOCH_ISO = "1970-01-01T00:00:00+00:00"
 _DEFAULT_LEASE_SECONDS = 300
+
+# BUG-004 fix: the exact sqlite3 message text for a violation of the events
+# table's own (child_intent_id, node_id, reset_generation, cursor_before)
+# unique key -- used to narrowly identify "this really is the same logical
+# observation replayed" and nothing else. Any other IntegrityError (a FK
+# violation, a CHECK failure) must never be silently treated as a replay, so
+# it is deliberately not caught here and propagates instead.
+_EVENT_REPLAY_INTEGRITY_MESSAGE = "UNIQUE constraint failed: " + ", ".join(
+    f"mgboost_wl_usage_sample_events.{column}" for column in EVENT_UNIQUE_COLUMNS
+)
 
 
 class WLUsageLedgerError(RuntimeError):
@@ -324,12 +335,26 @@ class WLUsageLedgerStore:
                     )
                     cursor_before = 0
                     cursor_row_version = 1
+                    cursor_generation = 0
                 else:
                     cursor_before = int(cursor_row["last_observed_cumulative_bytes"])
                     cursor_row_version = int(cursor_row["row_version"])
+                    cursor_generation = int(cursor_row["reset_generation"])
 
                 reset_detected = cursor_after < cursor_before
                 delta_bytes = cursor_after if reset_detected else (cursor_after - cursor_before)
+
+                # BUG-004 fix: durable reset-epoch identity. This transition's
+                # event belongs to the epoch active *before* any bump (a reset
+                # event's own cursor_before still describes the epoch it
+                # closes); the cursor's stored generation only advances once
+                # this transition actually crosses a reset boundary. This is
+                # what lets the very next post-reset cursor_before=0 (or any
+                # other value the counter passes through again) live in its
+                # own namespace instead of colliding with the same raw value
+                # from a previous epoch.
+                event_generation = cursor_generation
+                next_generation = cursor_generation + 1 if reset_detected else cursor_generation
 
                 # Consume exactly one transition baseline atomically with the
                 # cursor advance.  Do not emit an event/sample: that would
@@ -347,18 +372,18 @@ class WLUsageLedgerStore:
                     if cursor_row is None:
                         self._conn.execute(
                             "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
-                            "last_polled_at=?,row_version=row_version+1,updated_at=? "
+                            "last_polled_at=?,reset_generation=?,row_version=row_version+1,updated_at=? "
                             "WHERE child_intent_id=? AND node_id=?",
-                            (int(cursor_after), int(collected_at), int(collected_at),
+                            (int(cursor_after), int(collected_at), next_generation, int(collected_at),
                              int(child_intent_id), int(node_id)),
                         )
                     else:
                         updated = self._conn.execute(
                             "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
-                            "last_polled_at=?,reset_count=reset_count+?,row_version=row_version+1,"
-                            "updated_at=? WHERE id=? AND row_version=?",
+                            "last_polled_at=?,reset_count=reset_count+?,reset_generation=?,"
+                            "row_version=row_version+1,updated_at=? WHERE id=? AND row_version=?",
                             (int(cursor_after), int(collected_at), 1 if reset_detected else 0,
-                             int(collected_at), cursor_row["id"], cursor_row_version),
+                             next_generation, int(collected_at), cursor_row["id"], cursor_row_version),
                         )
                         if updated.rowcount != 1:
                             raise WLUsageLedgerError("usage cursor changed concurrently")
@@ -403,24 +428,36 @@ class WLUsageLedgerStore:
                     self._conn.execute(
                         "INSERT INTO mgboost_wl_usage_sample_events "
                         "(account_id, child_intent_id, node_id, sample_hour, cursor_before,"
-                        " cursor_after, delta_bytes, reset_detected, collector_id, collected_at,"
-                        " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        " cursor_after, delta_bytes, reset_detected, reset_generation, collector_id,"
+                        " collected_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             int(account_id), int(child_intent_id), int(node_id), sample_hour,
                             cursor_before, int(cursor_after), int(delta_bytes),
-                            1 if reset_detected else 0, collector_id, int(collected_at),
-                            int(collected_at),
+                            1 if reset_detected else 0, event_generation, collector_id,
+                            int(collected_at), int(collected_at),
                         ),
                     )
-                except sqlite3.IntegrityError:
-                    # This exact (child, node, cursor_before) transition was already
-                    # durably recorded -- a retried/duplicated poll after a crash
-                    # between the Marzban read and this commit. Idempotent no-op.
+                except sqlite3.IntegrityError as exc:
+                    if _EVENT_REPLAY_INTEGRITY_MESSAGE not in str(exc):
+                        # Some other constraint failed (FK, CHECK, ...). This is
+                        # not proven to be the same logical observation replayed
+                        # -- never silently treat an unrelated failure as a
+                        # harmless duplicate; surface it instead.
+                        raise
+                    # This exact (child, node, reset_generation, cursor_before)
+                    # transition was already durably recorded -- a retried/
+                    # duplicated poll after a crash between the Marzban read and
+                    # this commit, within the *same* reset epoch. Idempotent
+                    # no-op. Because reset_generation is now part of the key, a
+                    # legitimate post-reset transition that happens to reuse the
+                    # same raw cursor_before (most commonly 0) can never collide
+                    # with a pre-reset event here -- it always carries a
+                    # different, current, generation.
                     self._conn.rollback()
                     existing = self._conn.execute(
                         "SELECT * FROM mgboost_wl_usage_sample_events "
-                        "WHERE child_intent_id=? AND node_id=? AND cursor_before=?",
-                        (int(child_intent_id), int(node_id), cursor_before),
+                        "WHERE child_intent_id=? AND node_id=? AND reset_generation=? AND cursor_before=?",
+                        (int(child_intent_id), int(node_id), event_generation, cursor_before),
                     ).fetchone()
                     return dict(existing)
 
@@ -460,21 +497,23 @@ class WLUsageLedgerStore:
                 if cursor_row is None:
                     self._conn.execute(
                         "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
-                        "last_polled_at=?,reset_count=reset_count+?,row_version=row_version+1,"
-                        "updated_at=? WHERE child_intent_id=? AND node_id=?",
+                        "last_polled_at=?,reset_count=reset_count+?,reset_generation=?,"
+                        "row_version=row_version+1,updated_at=? WHERE child_intent_id=? AND node_id=?",
                         (
                             int(cursor_after), int(collected_at), 1 if reset_detected else 0,
-                            int(collected_at), int(child_intent_id), int(node_id),
+                            next_generation, int(collected_at), int(child_intent_id), int(node_id),
                         ),
                     )
                 else:
                     updated = self._conn.execute(
                         "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
-                        "last_polled_at=?,reset_count=reset_count+?,row_version=row_version+1,"
-                        "updated_at=? WHERE child_intent_id=? AND node_id=? AND row_version=?",
+                        "last_polled_at=?,reset_count=reset_count+?,reset_generation=?,"
+                        "row_version=row_version+1,updated_at=? "
+                        "WHERE child_intent_id=? AND node_id=? AND row_version=?",
                         (
                             int(cursor_after), int(collected_at), 1 if reset_detected else 0,
-                            int(collected_at), int(child_intent_id), int(node_id), cursor_row_version,
+                            next_generation, int(collected_at), int(child_intent_id), int(node_id),
+                            cursor_row_version,
                         ),
                     ).rowcount
                     if updated != 1:
@@ -491,6 +530,7 @@ class WLUsageLedgerStore:
                     "cursor_after": int(cursor_after),
                     "delta_bytes": int(delta_bytes),
                     "reset_detected": reset_detected,
+                    "reset_generation": event_generation,
                 }
             except Exception:
                 self._conn.rollback()

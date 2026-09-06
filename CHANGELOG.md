@@ -15,6 +15,41 @@
 
 ## Unreleased
 
+### Fixed — WL usage ledger reset/replay identity (BUG-004)
+
+Fixed a confirmed defect (`BUGS.md` BUG-004, now `FIXED_IN_MAIN`) where a real
+Marzban-side usage counter reset could permanently stop WL traffic from being
+accounted: the ledger's replay-idempotency key was
+`(child_intent_id, node_id, cursor_before)`, and every child/node's very first
+observation always starts at `cursor_before=0` -- so a reset that legitimately
+returned the counter to (or through) `0` again collided with that original row,
+was misclassified as an exact replay, and the cursor never advanced again
+(reproduced: `100 -> 0 -> 50 -> 200` recorded only `100` bytes, silently
+dropping all post-reset traffic).
+
+Added a new additive, idempotent migration (`src/wl_usage_ledger_schema_v3.py`,
+`bug004_wl_usage_ledger_reset_generation_v1`) that gives every accounting
+epoch (the span between resets) a durable `reset_generation` number, stored on
+both `mgboost_wl_usage_cursors` and `mgboost_wl_usage_sample_events`; the
+events table's uniqueness key becomes
+`(child_intent_id, node_id, reset_generation, cursor_before)`. A genuine
+replay (same generation, same cursor value) is still idempotent; a legitimate
+post-reset transition can no longer collide with an earlier epoch's row that
+happened to use the same raw cursor value. `src/wl_usage_ledger.py::record_sample`
+now stamps/advances this generation and narrows its `IntegrityError` handling
+to the exact new unique-constraint message, so an unrelated constraint
+failure is never silently treated as a harmless duplicate. Every existing
+cursor/event row is preserved unedited; only the new column is added and
+deterministically backfilled from each row's own already-recorded
+`reset_count`/`reset_detected` history (not guessed). See `BUGS.md` BUG-004
+and `ROADMAP.md` PH6-03/PH6-07/PH6-09 for full evidence and remaining,
+unrelated open gates (RISK-004/005, BUG-002).
+
+Documentation/tests only otherwise: `tests/test_wl_usage_ledger.py` and
+`tests/test_wl_usage_ledger_schema.py` extended, new
+`tests/test_bug004_wl_usage_ledger_reset_generation.py` added. No
+production/SSH/network access; no other BUG or roadmap item touched.
+
 ### Documentation — Independent audit (2026-09-06)
 
 Состояние `ROADMAP.md` сверено с main `98e27fe`: добавлены матрица всех 93 пунктов,

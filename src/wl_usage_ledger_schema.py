@@ -33,11 +33,19 @@ direct 2026-08-26 read of the real production Marzban 0.8.4 source
   schema layer, not just by application discipline.
 - `mgboost_wl_usage_sample_events`: fully immutable, append-only,
   fine-grained audit of every individual poll's (cursor_before,
-  cursor_after) transition, `UNIQUE(child_intent_id, node_id,
-  cursor_before)` -- this is the idempotency key: replaying the exact same
-  unconsumed cursor state twice (e.g. a crash after the Marzban read but
-  before the commit that would have advanced the cursor) can only ever
-  insert the same event row once. Reconciliation-friendly: summing this
+  cursor_after) transition. This v1 definition's own
+  `UNIQUE(child_intent_id, node_id, cursor_before)` was the idempotency key:
+  replaying the exact same unconsumed cursor state twice (e.g. a crash after
+  the Marzban read but before the commit that would have advanced the
+  cursor) can only ever insert the same event row once. **Superseded by
+  `wl_usage_ledger_schema_v3.py` (BUG-004 fix, see `BUGS.md`):** a reset
+  legitimately returns the raw cumulative counter to a value already used as
+  a `cursor_before` in an earlier epoch (most commonly `0`, the very first
+  observation), which this two-column key could not tell apart from a true
+  replay -- the real fix adds a durable `reset_generation` epoch number to
+  the key. This module's own `_SCHEMA_STATEMENTS`/checksum are left exactly
+  as originally applied (an already-applied migration is never rewritten);
+  v3 rebuilds the table on top of it. Reconciliation-friendly: summing this
   table's `delta_bytes` per (child, node, sample_hour) must always equal
   the corresponding `mgboost_wl_usage_samples.bytes_delta`.
 - `mgboost_wl_usage_collector_lease`: a single-row (`id=1`) CAS lease --

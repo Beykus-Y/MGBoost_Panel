@@ -2035,6 +2035,8 @@ alignment-agnostic and needed no change).
 
 **Independent audit 2026-09-06:** `PARTIAL`. Zero-reset cursor key collision confirmed; lease fencing RISK-005; v2 sample bucket migration does not fix event identity. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
+**BUG-004 fix (2026-09-06, narrow bugfix session):** the zero-reset cursor key collision named above is fixed -- `src/wl_usage_ledger_schema_v3.py` adds a durable `reset_generation` epoch to the events uniqueness key (`(child_intent_id,node_id,reset_generation,cursor_before)`), and `record_sample` in `src/wl_usage_ledger.py` stamps/advances it. See `BUGS.md` BUG-004 (now `FIXED_IN_MAIN`) for full evidence; `tests/test_wl_usage_ledger.py`, `tests/test_wl_usage_ledger_schema.py` and the new `tests/test_bug004_wl_usage_ledger_reset_generation.py` cover it. **This entry stays `[~]`:** RISK-005 (collector lease does not fence every delayed observation) is a separate, still-open concurrency-fencing gate this fix does not address, and no production/staging verification of the fix has been performed (no SSH/production access was used).
+
 **Depends:** PH6-01/02. **Require:** unique period/child/node/sample-hour, idempotency, non-decreasing usage, cursor/snapshot, one leader or CAS/shared lock, retry/reconcile.
 **Caveat:** Marzban UTC-hour aggregation requires own snapshot/delta or UTC-hour alignment.
 **Tests:** duplicate/out-of-order/node reset/two collectors/clock skew/delay.
@@ -2368,6 +2370,8 @@ entry for exact HEAD/service/backup facts.
 
 **Independent audit 2026-09-06:** `PARTIAL`. Scheduler/flock/drift rows exist; false healthy ledger and base-only decisions propagate; current timer/alert evidence unavailable. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
 
+**BUG-004 fix (2026-09-06, narrow bugfix session):** the "false healthy ledger" component named above was BUG-004 (a stuck reset cursor whose collector cycle still reported `OK`) -- fixed at the ledger layer, see PH6-03's own note and `BUGS.md` BUG-004 (`FIXED_IN_MAIN`). **This entry stays `[~]`:** "base-only decisions propagate" is BUG-002 (untouched, separate session), and "current timer/alert evidence unavailable" is an unrelated production-verification gate this documentation-only fix cannot close.
+
 **Status (reconciled 2026-09-01, read-only production verification):
 `mgboost-wl-enforcement.timer`/`.service` are active on production (15-minute
 cadence); `mgboost_wl_reconciliation_cycles` contains real cycle history
@@ -2467,6 +2471,8 @@ unchanged by independent code reading and test reproduction. See
 ## [~] PH6-09 — Overshoot/outage fail-safe — production-deployed (implemented 2026-08-28)
 
 **Independent audit 2026-09-06:** `PARTIAL`. Freshness gates present but reset failure can appear OK; cadence includes jitter/runtime, not a guaranteed 1500s ceiling; RISK-004/005. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**BUG-004 fix (2026-09-06, narrow bugfix session):** "reset failure can appear OK" named above was the BUG-004 symptom at the ledger layer -- fixed, see PH6-03's own note and `BUGS.md` BUG-004 (`FIXED_IN_MAIN`). **This entry stays `[~]`:** the cadence/jitter timing contract and RISK-004 (Marzban API state vs. real data-plane convergence) are separate, still-open gates this fix does not address; no production verification was performed.
 
 **Status (reconciled 2026-09-01, read-only production verification):
 `mgboost-wl-usage-collector.timer`/`.service` are active on production
@@ -5056,7 +5062,7 @@ backup timer -> sequential online DB copies -> encryption -> isolated integrity 
 | Plans/entitlement | plan_catalog/schema, subscription_renewal, entitlement_engine | explicit plan/package seed scripts; WL_TRIAL bootstrapped in main.py. Pinned plans/durations/terms and immutable WL windows, but BUG-003 and RISK-009. |
 | Stars | stars_purchase/schema, stars.py, bot_support callbacks | canonical invoice kinds separate from LEGACY_EXPIRE; charge evidence and one application; template/delivery and sync jobs run via bot loop. Refund is money-only, compensation not implied. |
 | Manual payments/grants/promo | manual_payment, admin_grant, promo + schemas/v2 | primary admin manual/grants; user-scoped promo via proven Telegram; immutable edits/grants/redemptions/discount snapshots. BUG-001/002/003 cross boundaries. |
-| WL | topology/guard/versions, usage ledger v1/v2, parent pool, packages, enforcement/reconciliation schemas | timers wired in repo; sampled usage and immutable history, epoch/manifest decisions. Base-only enforcement BUG-002, reset event identity BUG-004, delayed observation RISK-005. |
+| WL | topology/guard/versions, usage ledger v1/v2/v3, parent pool, packages, enforcement/reconciliation schemas | timers wired in repo; sampled usage and immutable history, epoch/manifest decisions. Base-only enforcement BUG-002, delayed observation RISK-005. Reset event identity BUG-004 fixed 2026-09-06 (v3 reset_generation migration), see BUGS.md. |
 | Delivery | delivery_routing/schema, commercial_signup templates | primary-admin host membership/CAS/audit; exact WL rejection in STANDARD; template pinning means later membership does not propagate automatically. |
 | Admin/frontend | src/routes/admin_*.py, admin_read_models/audit_timeline; frontend/assets/admin/app/router.js | index loads router.js; per-domain ES modules, Technical legacy path retained. Presence of UI is not authority; auth/CSRF/primary capability verified in consequential canonical routes. |
 | Support/bot | bot_runner, bot_support, bot_monitor; tickets/messages | durable payment callback handling and canonical subscription card coexist with legacy helpers. BUG-005 and RISK-010; node status view is not Xray data-plane proof. |
@@ -5149,13 +5155,13 @@ are explicit. Code/staging/production claims in old paragraphs remain dated hist
 | PH5-13 | PARTIAL | src/promo.py; src/promo_schema_v2.py; main.py; src/routes/admin_promo.py | test_promo.py; test_promo_trial_signup.py; BUG-003 harness | Three effects and bootstrapped WL_TRIAL exist; real trial/payment canary unverified, chronology contradicts ordinary renewal. |
 | PH6-01 | VERIFIED_DONE | src/wl_topology_guard.py; src/wl_topology_guard_schema.py; src/wl_enforcement.py | test_wl_topology_guard.py | Historical not-wired claim obsolete: enforcement/reconciliation call guard; actual topology still unverified. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
 | PH6-02 | PARTIAL | src/wl_period_lifecycle_schema.py; src/wl_period_admin_reset.py; src/subscription_renewal.py | test_wl_period_admin_reset.py; BUG-003 harness | Immutable periods/reset primitive present; no-overlap acceptance fails across promo and normal purchase. |
-| PH6-03 | PARTIAL | src/wl_usage_ledger.py::record_sample/run_collection_cycle; src/wl_usage_ledger_schema_v2.py | test_wl_usage_ledger.py; BUG-004 harness | Zero-reset cursor key collision confirmed; lease fencing RISK-005; v2 sample bucket migration does not fix event identity. |
+| PH6-03 | PARTIAL | src/wl_usage_ledger.py::record_sample/run_collection_cycle; src/wl_usage_ledger_schema_v3.py | test_wl_usage_ledger.py; test_wl_usage_ledger_schema.py; test_bug004_wl_usage_ledger_reset_generation.py | Zero-reset cursor key collision confirmed; lease fencing RISK-005; v2 sample bucket migration does not fix event identity. BUG-004 fix (2026-09-06): reset_generation epoch added to the events unique key -- see BUGS.md BUG-004 FIXED_IN_MAIN. Stays PARTIAL: RISK-005 unaddressed, no production verification. |
 | PH6-04 | PARTIAL | src/wl_parent_pool.py::compute_parent_wl_pool | test_wl_parent_pool.py; BUG-002 harness | Base accounting exists and retains historic child usage; paid pool agreement and all-consumer correctness incomplete. |
 | PH6-05 | NOT_IMPLEMENTED | src/wl_parent_pool.py; src/device_slots.py | test_wl_parent_pool.py (shared only) | Optional per-device allocation/move-unspent engine absent; not a rollout prerequisite for default shared pool. |
 | PH6-06 | PARTIAL | src/wl_enforcement.py; src/broker_operations.py; src/wl_enforcement_schema.py | test_wl_enforcement.py; BUG-002 harness | Epoch/manifest/minimal inbound update exists; actual decision ignores sold packages, all-node access verification unavailable. |
-| PH6-07 | PARTIAL | src/wl_reconciliation.py; scripts/run_wl_quota_enforcement.py; mgboost-wl-enforcement.timer | test_wl_reconciliation.py | Scheduler/flock/drift rows exist; false healthy ledger and base-only decisions propagate; current timer/alert evidence unavailable. |
+| PH6-07 | PARTIAL | src/wl_reconciliation.py; scripts/run_wl_quota_enforcement.py; mgboost-wl-enforcement.timer | test_wl_reconciliation.py | Scheduler/flock/drift rows exist; false healthy ledger and base-only decisions propagate; current timer/alert evidence unavailable. BUG-004 fix (2026-09-06) closes the "false healthy ledger" component; base-only decisions (BUG-002) and timer/alert evidence remain open. |
 | PH6-08 | PARTIAL | src/wl_packages.py; src/entitlement_engine.py; src/wl_enforcement.py | test_wl_packages.py; test_entitlement_engine.py | STALE [ ]: package buckets/read breakdown implemented; general GB adjustment/compensation ledger and enforcement integration absent (BUG-002). |
-| PH6-09 | PARTIAL | src/wl_freshness.py; src/wl_enforcement.py; mgboost-wl-usage-collector.timer | test_wl_ph6_09_fail_safe.py; BUG-004 harness | Freshness gates present but reset failure can appear OK; cadence includes jitter/runtime, not a guaranteed 1500s ceiling; RISK-004/005. |
+| PH6-09 | PARTIAL | src/wl_freshness.py; src/wl_enforcement.py; mgboost-wl-usage-collector.timer | test_wl_ph6_09_fail_safe.py; test_bug004_wl_usage_ledger_reset_generation.py | Freshness gates present but reset failure can appear OK; cadence includes jitter/runtime, not a guaranteed 1500s ceiling; RISK-004/005. BUG-004 fix (2026-09-06) closes the "reset failure can appear OK" component; cadence contract and RISK-004 remain open. |
 | PH6-10 | NOT_IMPLEMENTED | src/routes/opaque_sub.py; src/subscription.py | test_subscription.py; test_opaque_sub_route.py | No canonical exhausted-WL reset-date placeholder found. ph6_10_* schema ID is attribution work, not completion of this UX ID. |
 | PH6-11 | SUPERSEDED | DL-029; src/wl_parent_pool.py | test_wl_parent_pool.py | Reseller-wide pool superseded; parent-account isolation remains. |
 | PH7-01 | VERIFIED_DONE | src/subscription_admin_ops.py; src/routes/admin_expiry.py; src/parent_sync.py | test_admin_operational_admin.py | CAS/reason/preview/current child sync implemented; live all-child convergence unverified and worker scope RISK-003. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
@@ -5268,7 +5274,7 @@ or four extra completion claims. It is excluded from the 93-item count.
 | Payment record vs entitlement | Independently committed states can diverge after crash: BUG-001. ADMIN_GRANT is entitlement provenance, not external revenue; MANUAL_RUB and Stars must retain distinct financial evidence. |
 | Entitlement vs WL enforcement | Packages appear in entitlement remaining but base-only pool controls direction: BUG-002. Store/schema presence alone does not complete commercial WL wiring. |
 | Promo vs ordinary renewal | Exact-second and hour-rounded boundaries overlap: BUG-003. Legacy scheduled transitions do not establish general downgrade semantics. |
-| Ledger vs remote counters | Reset/repeated cursor identity loses subsequent usage: BUG-004. No claim that existing production totals are known wrong without inspection. |
+| Ledger vs remote counters | Reset/repeated cursor identity loses subsequent usage: BUG-004, fixed 2026-09-06 (see BUGS.md BUG-004 FIXED_IN_MAIN; not production-verified). No claim that existing production totals are known wrong without inspection. |
 | Parent desired state vs children | Durable reconciliation is now called; effective mode/allowlist and all-node enforcement remain RISK-003/004. Local queued work is not remote convergence. |
 | Legacy vs canonical identity | `tg_users`/legacy device compatibility coexist with accounts/slots/opaque credentials; raw technical admin and Filin v1 remain reachable. RISK-006; no automatic removal under DL-050. |
 | Versioned catalogue vs invoice | Downstream plan lookup defaults to version 1 while duration lookup may select a later version: RISK-009, not a reproduced charge defect. |
@@ -5360,6 +5366,12 @@ lane C starts immediately in parallel; it must not wait for coding steps 1–3.
 | 17 | PH8-07; RISK-019 | Automate accepted release evidence | SAFE_NOW pipeline design; future test execution separately authorized | Repeatable deploy gates for all lanes | Low in isolated CI | M | All independent work | Current supported environment, secret checks and relevant failure suites gate release; no inferred green status |
 | 18 | PH7-12/16; PH2-02; PH8-08 | Owner UI acceptance and second-operator runbooks remain | Stable relevant backend contract; browser execution future authorized | Verified admin rollout and support handoff | Medium | M | 17 | Authenticated desktop/mobile flows, recovery/tabletop checks and actual release evidence |
 | 19 | PH6-10; PH6-05; PH5-07; compatibility cleanup | UX/deferred scope follows correctness and rollout | PH6-10 needs 11; split/add-ons OPTIONAL/DEFERRED until owner reactivation; cleanup needs caller evidence | Optional capacity/product improvements | Depends on chosen scope | S–XL | Documentation inventory | Explicit scope decision; no dead-code deletion based only on filenames or flags |
+
+**Step 1 update (2026-09-06, narrow bugfix session):** the BUG-004 code-level fix
+(`src/wl_usage_ledger_schema_v3.py` reset-generation migration) landed and is covered by
+targeted tests -- see `BUGS.md` BUG-004 (`FIXED_IN_MAIN`). Step 1's own "affected rows
+inventoried" and any production rollout remain undone (no SSH/production access was used
+in the fixing session); step 1 is not marked complete here.
 
 **Parallel lanes:** A = payment correctness (2/3 and approved part of 5); B = WL ledger
 (1, then 11/12); C = immediate dated read-only inventory plus backup/config/observability
