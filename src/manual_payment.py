@@ -57,7 +57,7 @@ from .subscription_renewal import (
 )
 from .wl_packages import (
     PackageEligibilityError, PackageIdempotencyConflict, PackagePaymentError,
-    WLPackageError,
+    PackageSalesNotEnabledError, WLPackageError, assert_wl_package_sales_enabled,
 )
 
 
@@ -171,6 +171,10 @@ class ManualPaymentStore:
         else:
             if duration_days is not None:
                 raise ManualPaymentError("package records take no duration_days")
+            try:
+                assert_wl_package_sales_enabled()
+            except PackageSalesNotEnabledError as exc:
+                raise ManualPaymentError(str(exc)) from exc
             kind = "WL_PACKAGE"
             request_payload = {
                 "account_id": int(account_id), "kind": kind,

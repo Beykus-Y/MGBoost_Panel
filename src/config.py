@@ -136,3 +136,22 @@ OPAQUE_SUBSCRIPTION_ENABLED = os.getenv("OPAQUE_SUBSCRIPTION_ENABLED", "0").stri
 LEGACY_BRIDGE_ENABLED = os.getenv("LEGACY_BRIDGE_ENABLED", "0").strip().lower() in {
     "1", "true", "yes", "on",
 }
+
+# BUG-002 fix / PH6-08 readiness gate (src/wl_packages.py::assert_wl_package_sales_enabled).
+# WL packages (+50/100/250/500 GB) are fully catalogued/priced (PH5-03) and
+# technically purchasable end-to-end through the manual (RUB) admin payment
+# route, but the owner has not launched this as a supported customer-facing
+# feature: the effective-quota contract that would make a sold package
+# actually retain WL access (PH6-08) does not exist yet -- WL enforcement
+# still decides only from the base quota (see BUGS.md BUG-002). The Stars
+# channel already never lists packages in its sellable catalog for the same
+# reason; this flag is the single source of truth for the manual channel so
+# the two channels cannot silently diverge again.
+#   OFF (default) - preview/catalog/create all fail closed for any WL_PACKAGE
+#                   product on every channel; existing/historical package
+#                   rows and grants are entirely unaffected either way.
+#   ON             - reserved for the future explicit rollout once PH6-08's
+#                     effective-quota enforcement exists; never set today.
+WL_PACKAGE_SALES_ENABLED = os.getenv("WL_PACKAGE_SALES_ENABLED", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}

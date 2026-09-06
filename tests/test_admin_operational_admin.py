@@ -107,10 +107,23 @@ def test_rub_catalog_matches_approved_prices_exactly(db):
     actual = {(p["plan_code"], p["duration_days"]): p["amount_minor"]
               for p in catalog["plans"]}
     assert actual == expected
+    # BUG-002 / PH6-08 readiness gate: packages are omitted from the catalog
+    # entirely while sales are not enabled (the default) -- see
+    # test_wl_package_sales_readiness_gate.py for the dedicated gate coverage.
+    assert catalog["packages"] == []
+    assert all(p["currency"] == "RUB" for p in catalog["plans"])
+
+
+def test_rub_catalog_lists_approved_package_prices_once_sales_are_enabled(db, monkeypatch):
+    import src.config as config
+    monkeypatch.setattr(config, "WL_PACKAGE_SALES_ENABLED", True)
+    h = make_handler(db, command="GET")
+    AP.handle_manual_payment_catalog(h)
+    catalog = h.json()
     packages = {p["sku"]: p["amount_minor"] for p in catalog["packages"]}
     assert packages == {"WL_PACKAGE_50_GB": 139, "WL_PACKAGE_100_GB": 249,
                         "WL_PACKAGE_250_GB": 579, "WL_PACKAGE_500_GB": 999}
-    assert all(p["currency"] == "RUB" for p in catalog["plans"] + catalog["packages"])
+    assert all(p["currency"] == "RUB" for p in catalog["packages"])
 
 
 def test_preview_same_plan_exact_price_and_estimate(db):
@@ -137,12 +150,36 @@ def test_preview_blocks_other_plan_unlimited_and_package_on_base(db):
     assert data["purchasable"] is False
     assert data["not_purchasable_reason"] == "PLAN_SWITCH_REQUIRES_PH5_06"
 
+    # BUG-002 / PH6-08 readiness gate: even a WL-eligible account cannot
+    # preview a package as purchasable while sales are not enabled (the
+    # default) -- preview must never diverge from what `create` would do.
+    package_payload = {"package_sku": "WL_PACKAGE_50_GB"}
+    h = make_handler(db, payload=package_payload)
+    AP.handle_manual_payment_preview(h, str(wl_account["id"]))
+    gated = h.json()
+    assert gated["purchasable"] is False
+    assert gated["not_purchasable_reason"] == "WL_PACKAGE_SALES_NOT_ENABLED"
+
+    base_account, _ = build_topology_account(db, tag="pvbase", plan="BASIC")
+    h = make_handler(db, payload=package_payload)
+    AP.handle_manual_payment_preview(h, str(base_account["id"]))
+    blocked = h.json()
+    assert blocked["purchasable"] is False
+    # Gate reason takes precedence over the eligibility reason -- there is
+    # exactly one reason a caller needs to act on.
+    assert blocked["not_purchasable_reason"] == "WL_PACKAGE_SALES_NOT_ENABLED"
+
+
+def test_preview_reports_real_eligibility_reason_once_sales_are_enabled(db, monkeypatch):
+    import src.config as config
+    monkeypatch.setattr(config, "WL_PACKAGE_SALES_ENABLED", True)
+    wl_account, _ = build_topology_account(db, tag="pvwlon")
     package_payload = {"package_sku": "WL_PACKAGE_50_GB"}
     h = make_handler(db, payload=package_payload)
     AP.handle_manual_payment_preview(h, str(wl_account["id"]))
     assert h.json()["purchasable"] is True
 
-    base_account, _ = build_topology_account(db, tag="pvbase", plan="BASIC")
+    base_account, _ = build_topology_account(db, tag="pvbaseon", plan="BASIC")
     h = make_handler(db, payload=package_payload)
     AP.handle_manual_payment_preview(h, str(base_account["id"]))
     blocked = h.json()
@@ -314,7 +351,9 @@ def test_plan_drift_lands_in_manual_review_with_resolve_route(db):
     assert resolve.json()["payment"]["status"] == "PENDING"
 
 
-def test_package_purchase_grants_bucket_through_route(db):
+def test_package_purchase_grants_bucket_through_route(db, monkeypatch):
+    import src.config as config
+    monkeypatch.setattr(config, "WL_PACKAGE_SALES_ENABLED", True)
     account, children = build_topology_account(db, tag="pkg")
     h = make_handler(db, payload={
         "package_sku": "WL_PACKAGE_50_GB", "recorded_amount_minor": 139,

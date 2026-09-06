@@ -85,10 +85,14 @@ this fence before adding automatic manual-payment retries (PH8-09).
 
 # BUG-002 — Manual WL packages are sold but omitted by WL enforcement
 
-Severity: P1
+Severity: P1 (at time of finding; see reclassification below)
 Confidence: CONFIRMED
-Status: OPEN
-Production reachability: YES
+Status: FIXED_IN_MAIN (2026-09-06) — RECLASSIFIED `PREMATURELY_REACHABLE_PATH`
+(not a launched-feature enforcement bug; see "Classification correction" below —
+narrow BUG-002-only session)
+Production reachability: YES (was; the manual-channel creation path itself is now
+closed by a server-side readiness gate, see Fix evidence — fix has not been
+production-deployed, no SSH/production access was used)
 Related roadmap: PH5-03, PH5-04, PH5-09, PH6-04, PH6-06, PH6-08, PH7-10
 
 ## Симптом
@@ -147,6 +151,103 @@ Assert read-model and enforcement agreement, not just separate expected outputs.
 
 Fix BUG-004 first for trustworthy usage; PH6-08 completion is needed before expanding
 sales. Existing paid packages must be inventoried without silently cancelling them.
+
+## Classification correction (2026-09-06, narrow BUG-002-only session)
+
+Everything above (symptom/evidence/reproduction/root cause/impact) is retained
+unedited as the original finding -- it is a correct, static description of what the
+code does. What this session established, checking against `ROADMAP.md` DL-007/
+DL-053/PH5-03/PH5-04/PH6-08 and the owner's own explicit statement, is that **WL
+package sales are not, and have never been, launched as a supported customer-facing
+feature** -- the six-plan/WL-plan catalog and account signup went live, but package
+sales did not. Concrete evidence for this, all pre-existing and unchanged by this
+session:
+
+- `src/stars_purchase.py::sellable_catalog()` already, deliberately, never lists any
+  `WL_PACKAGE_*` SKU as sellable, with its own comment "(PH6-08 absent)" -- i.e. one of
+  the two channels was already correctly gated from day one.
+- `ROADMAP.md` DL-007 ties the package pricing decision itself to PH6-08
+  ("Связано: PH5-03/PH6-08"); DL-053 (package-bucket consumption order) does the same.
+  PH5-03/PH5-04's own roadmap text repeatedly notes PH6-08 has no durable adjustment
+  ledger and the entitlement engine explicitly returns `adjustment_state='NONE'`.
+- The original "Impact" section's own wording ("Stars package sales remain blocked;
+  that channel's gate does not protect MANUAL_RUB") already named the true defect
+  precisely: an **inconsistency between channels**, not a broken already-launched
+  product. The manual (RUB) admin channel (`src/routes/admin_payments.py`,
+  `src/manual_payment.py`) simply never had the equivalent gate the Stars channel
+  already had.
+
+So the original "Impact" line "A sold entitlement does not restore/retain WL access"
+overstated the situation as an active customer-facing failure. Given the feature was
+never actually launched, the correct classification is `PREMATURELY_REACHABLE_PATH` /
+`INCOMPLETE_FEATURE`: a real, reachable backend code path existed for something the
+owner had not approved for launch, guarded on only one of its two channels. This
+does **not** retroactively excuse the finding -- the path really was reachable and
+really would have diverged from enforcement if used -- it only corrects which fix is
+appropriate (close the premature path, per the bug's own "Suggested fix" option of
+gating every channel, rather than building PH6-08's full effective-quota enforcement
+to make the divergence "correct").
+
+## Fix evidence (2026-09-06, narrow BUG-002-only session)
+
+**Fix (option A, not option B):** added a single, explicit, server-side readiness
+gate -- `WL_PACKAGE_SALES_ENABLED` (`src/config.py`, defaults `0`/off, same
+env-flag convention as `OPAQUE_SUBSCRIPTION_ENABLED`/`LEGACY_BRIDGE_ENABLED`) and
+`src/wl_packages.py::assert_wl_package_sales_enabled()` (reads the flag fresh from
+`src.config` on every call, mirroring the existing `stars.py`/`bot_support.py`
+`OPAQUE_SUBSCRIPTION_ENABLED` lazy-read pattern, so it is one single source of truth
+for every channel/caller). `ManualPaymentStore.create_record` (`src/manual_payment.py`)
+now calls this gate before any catalog resolution or DB write whenever
+`package_sku` is given, so a *new* package payment record can never be created while
+the flag is off -- this is the true, sole backend entrypoint for package creation
+(`_apply_package_locked`/`grant_paid_package` are only ever reachable from an
+*existing* record, so closing creation closes the whole path). `handle_manual_payment_
+catalog` (admin_payments.py) omits packages from its listing entirely while the flag
+is off (matching the Stars channel's own already-established "just don't list it"
+pattern, and avoiding the frontend's `payments.js` hard-coded `purchasable:true` for
+anything the catalog returns). `handle_manual_payment_preview`'s package branch
+reports `purchasable=false`/`not_purchasable_reason="WL_PACKAGE_SALES_NOT_ENABLED"`
+while the flag is off, regardless of the account's actual WL eligibility, so
+preview/catalog/create can never disagree about availability.
+
+**No schema change; no data touched.** This is a pure config+code gate. No existing
+row in `mgboost_manual_payment_records`, `mgboost_wl_package_grants` or any other
+table was read, deleted, cancelled or mutated by this fix. `apply_record` (and the
+underlying `grant_paid_package`) are completely untouched -- an already-existing
+`PENDING` or `APPLIED` package record (e.g. from local/test data) continues to apply/
+retry exactly as before; only *creating a new one* while the flag is off is blocked.
+No refund/cancel logic was added or invoked (per the task's explicit instruction, that
+remains a separate owner decision if any pre-fix package record is ever found in a
+real deployment).
+
+**Verified with targeted tests only** (no full suite, no browser, no staging, no
+production/SSH/network): the original `manual_package_enforcement` reproduction from
+this file was re-run -- `db.manual_payments.create_record(..., package_sku=
+'WL_PACKAGE_50_GB', ...)` now raises `ManualPaymentError` before any row is written
+(`mgboost_manual_payment_records` count stays `0`), so the entitlement/enforcement
+divergence this bug reported can no longer be reached through this path at all.
+New `tests/test_bug002_wl_package_sales_readiness_gate.py` (8 tests): create/preview/
+catalog blocked by default; malformed/unknown SKU changes nothing; a repeated blocked
+request is idempotently a no-op; ordinary manual plan purchase is unaffected; a direct
+store-level call (bypassing any route/UI) is blocked identically; the HTTP
+catalog/preview/create layer agrees with the store; the Stars channel stays fail-closed
+regardless of the flag; and an already-`APPLIED` historical package row survives the
+gate shipping/toggling completely unmutated, with idempotent re-apply still working.
+`tests/test_manual_payment_ph509.py` (33) and `tests/test_wl_packages.py` (7) updated/
+re-run unmodified in behavior (the former's fixture now explicitly enables the flag,
+since that file tests the real grant/consumption mechanics, which remain correct and
+necessary groundwork independent of the launch decision). `tests/test_admin_operational
+_admin.py` (47, two tests updated + two new added) re-run and pass. Directly related:
+`tests/test_stars_purchase.py`, `tests/test_commercial_wl_wiring.py`,
+`tests/test_entitlement_engine.py`, `tests/test_wl_enforcement.py`,
+`tests/test_wl_parent_pool.py` re-run unmodified and pass.
+
+**Not done in this session:** PH6-08 (effective-quota enforcement) was not built --
+`wl_parent_pool.py`/`wl_enforcement.py` still decide only from `base_quota_bytes`, and
+that remains an explicit, correct, open gap for whenever the owner approves launching
+package sales for real (at which point this same flag is the intended flip point, not
+a second one). Production, SSH, staging verifier, full pytest suite, browser/Playwright,
+and BUG-001/003/004(already fixed)/005 or any other roadmap item were not touched.
 
 # BUG-003 — Promo extension followed by ordinary renewal overlaps WL periods
 

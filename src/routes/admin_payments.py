@@ -122,18 +122,30 @@ def handle_manual_payment_catalog(handler):
             "catalog_version": product["catalog_version"],
         })
     packages = []
-    for sku, display_name, bytes_count in PACKAGE_SPECS:
-        price_row = db.wl_package_catalog.active_price(sku, "RUB")
-        if not price_row:
-            continue
-        packages.append({
-            "sku": sku,
-            "display_name": display_name,
-            "bytes": price_row["bytes"],
-            "amount_minor": price_row["amount"],
-            "currency": "RUB",
-            "catalog_version": price_row["catalog_version"],
-        })
+    # BUG-002 / PH6-08 readiness gate: package sales are not yet an enabled,
+    # supported feature (see BUGS.md BUG-002, src/wl_packages.py::
+    # assert_wl_package_sales_enabled). Omit them from the catalog entirely
+    # -- like the Stars channel already omits packages from its own sellable
+    # catalog -- rather than listing something that would then be rejected
+    # at create time; the frontend does not read a per-item purchasable flag
+    # for catalog packages, so a listed-but-blocked entry would look like a
+    # silently broken button, not a real gate. Reads the flag fresh from
+    # src.config on every call (same pattern as OPAQUE_SUBSCRIPTION_ENABLED
+    # in stars.py/bot_support.py) so a single monkeypatch controls it in tests.
+    from ..config import WL_PACKAGE_SALES_ENABLED
+    if WL_PACKAGE_SALES_ENABLED:
+        for sku, display_name, bytes_count in PACKAGE_SPECS:
+            price_row = db.wl_package_catalog.active_price(sku, "RUB")
+            if not price_row:
+                continue
+            packages.append({
+                "sku": sku,
+                "display_name": display_name,
+                "bytes": price_row["bytes"],
+                "amount_minor": price_row["amount"],
+                "currency": "RUB",
+                "catalog_version": price_row["catalog_version"],
+            })
     json_response(handler, 200, {
         "channel": "RUB",
         "catalog_version": RUB_CATALOG_VERSION,
@@ -176,12 +188,24 @@ def handle_manual_payment_preview(handler, account_id):
         if not price_row:
             error_response(handler, 404, "Unknown package SKU for the RUB catalog")
             return
-        try:
-            entitlement = db.entitlements.calculate(account_id=int(account_id))
-            eligible = bool(entitlement.get("wl", {}).get("package_eligible"))
-            real_mode = entitlement.get("wl", {}).get("real_plan_mode")
-        except Exception:
-            eligible, real_mode = False, None
+        # BUG-002 / PH6-08 readiness gate: preview must never report
+        # purchasable=true for something `create` would then reject -- see
+        # src/wl_packages.py::assert_wl_package_sales_enabled. Reads the flag
+        # fresh from src.config on every call for the same testability reason
+        # as the catalog handler above.
+        from ..config import WL_PACKAGE_SALES_ENABLED
+        if not WL_PACKAGE_SALES_ENABLED:
+            eligible, real_mode, reason = False, None, "WL_PACKAGE_SALES_NOT_ENABLED"
+        else:
+            try:
+                entitlement = db.entitlements.calculate(account_id=int(account_id))
+                eligible = bool(entitlement.get("wl", {}).get("package_eligible"))
+                real_mode = entitlement.get("wl", {}).get("real_plan_mode")
+            except Exception:
+                eligible, real_mode = False, None
+            reason = None if eligible else (
+                "CURRENT_PLAN_NOT_WL" if real_mode != "LIMITED" else "PACKAGE_INELIGIBLE"
+            )
         response.update({
             "product_kind": "WL_PACKAGE",
             "package_sku": package_sku,
@@ -191,9 +215,7 @@ def handle_manual_payment_preview(handler, account_id):
             "currency": "RUB",
             "catalog_version": price_row["catalog_version"],
             "purchasable": eligible,
-            "not_purchasable_reason": None if eligible else (
-                "CURRENT_PLAN_NOT_WL" if real_mode != "LIMITED" else "PACKAGE_INELIGIBLE"
-            ),
+            "not_purchasable_reason": reason,
         })
         json_response(handler, 200, response)
         return

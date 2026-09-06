@@ -15,6 +15,35 @@
 
 ## Unreleased
 
+### Fixed — WL package sales fail-closed readiness gate (BUG-002)
+
+Closed a confirmed defect (`BUGS.md` BUG-002, reclassified `PREMATURELY_REACHABLE_
+PATH`) where the manual (RUB) admin-payment channel could create and apply a new
+WL package (`+50/100/250/500 GB`) with no readiness gate at all, even though WL
+enforcement (`wl_parent_pool.py`/`wl_enforcement.py`) still decides only from the
+base quota -- a sold package's promised remainder was not actually honored. Static
+analysis established the underlying feature was never launched as an owner-approved,
+supported customer-facing product in the first place (the Stars channel already,
+deliberately, never lists packages as sellable "PH6-08 absent"; `ROADMAP.md`
+DL-007/DL-053 both tie package sales to PH6-08, which does not exist) -- so the
+correct minimal fix is closing the premature backend path, not building PH6-08's
+full effective-quota enforcement.
+
+Added `WL_PACKAGE_SALES_ENABLED` (`src/config.py`, off by default, same env-flag
+convention as `OPAQUE_SUBSCRIPTION_ENABLED`/`LEGACY_BRIDGE_ENABLED`) and
+`src/wl_packages.py::assert_wl_package_sales_enabled()` as the single, server-side
+source of truth for every channel. `ManualPaymentStore.create_record`
+(`src/manual_payment.py`) now fail-closed-gates any new `package_sku` payment
+record before any catalog resolution or DB write -- a direct backend/API call
+cannot bypass this either. The admin catalog endpoint omits packages entirely
+while gated (matching how the Stars channel already omits them), and preview
+reports `purchasable=false`/`not_purchasable_reason="WL_PACKAGE_SALES_NOT_ENABLED"`
+so preview/catalog/create can never disagree. No schema change; no existing
+package row, grant, or historical/applied record was read, deleted, cancelled, or
+mutated -- `apply_record`/`grant_paid_package` remain fully functional for any
+pre-existing record. PH6-08 (effective-quota/adjustment ledger) was intentionally
+**not** implemented in this session.
+
 ### Fixed — WL usage ledger reset/replay identity (BUG-004)
 
 Fixed a confirmed defect (`BUGS.md` BUG-004, now `FIXED_IN_MAIN`) where a real

@@ -31,6 +31,13 @@ def db(monkeypatch):
     import src.database as database
     importlib.reload(config)
     importlib.reload(database)
+    # BUG-002 fix / PH6-08 readiness gate: this file specifically tests the
+    # package create/apply *mechanics* (grant/consumption correctness), which
+    # remain real and necessary groundwork even while the owner has not
+    # launched package sales as a feature (see BUGS.md BUG-002,
+    # src/wl_packages.py::assert_wl_package_sales_enabled). The gate itself is
+    # covered by its own dedicated test module.
+    config.WL_PACKAGE_SALES_ENABLED = True
     database.DB_PATH = os.path.join(tmp, "db.sqlite3")
     instance = database.Database()
     from src.plan_catalog import seed_plan_catalog

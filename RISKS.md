@@ -597,6 +597,8 @@ Only zero-derived consumption refunds; revoked bucket immutable; no public autom
 
 No finality contract for pending remote bytes; lifetime derivation skips revoked buckets, so later usage may be attributed elsewhere.
 
+**2026-09-06 factual note:** BUG-002 (the "sold manual package omitted from enforcement" defect elsewhere in this file/`BUGS.md`) was reclassified `PREMATURELY_REACHABLE_PATH` and fixed by fail-closed-gating *new* package sales (`WL_PACKAGE_SALES_ENABLED`, off by default). This does not reduce or close RISK-016: `refund_unused_package` itself and its missing freshness/finality check are entirely untouched, and this risk was already noted as having "no live refund route caller at HEAD" -- unrelated to whether new sales can occur. This risk is not closed.
+
 ## Recommended mitigation
 
 Define operational finality/control before exposing refunds; reconcile delayed usage and preserve immutable refund evidence.

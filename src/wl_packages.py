@@ -21,6 +21,32 @@ class PackagePaymentError(WLPackageError): pass
 class PackageIdempotencyConflict(WLPackageError): pass
 class PackageConsumed(WLPackageError): pass
 class PackageAlreadyRefunded(WLPackageError): pass
+class PackageSalesNotEnabledError(WLPackageError): pass
+
+
+def assert_wl_package_sales_enabled() -> None:
+    """BUG-002 fix / PH6-08 readiness gate.
+
+    WL packages are catalogued/priced (PH5-03) and the grant/consumption
+    machinery here is real, but the owner has not launched package sales as
+    a supported customer-facing feature: WL enforcement (`wl_enforcement.py`
+    via `wl_parent_pool.py`) still decides only from the base quota, so a
+    sold package's promised remainder is not actually honored yet (see
+    `BUGS.md` BUG-002). This is the single, server-side readiness gate for
+    every channel that could create a *new* package grant -- it is not a
+    hidden UI affordance, and a direct backend/API call cannot bypass it.
+    Existing/historical package rows and grants are never affected by this
+    gate; it only blocks creating a new one while `WL_PACKAGE_SALES_ENABLED`
+    is off (the default). Reads the flag fresh from `src.config` on every
+    call (the same pattern `stars.py`/`bot_support.py` already use for
+    `OPAQUE_SUBSCRIPTION_ENABLED`), so a single `monkeypatch.setattr(config,
+    "WL_PACKAGE_SALES_ENABLED", True)` controls every caller/channel."""
+    from .config import WL_PACKAGE_SALES_ENABLED
+    if not WL_PACKAGE_SALES_ENABLED:
+        raise PackageSalesNotEnabledError(
+            "WL package sales are not yet an enabled, supported feature "
+            "(PH6-08 effective-quota enforcement does not exist -- see BUGS.md BUG-002)"
+        )
 
 
 def _hash(scope: str, value: str) -> str:
