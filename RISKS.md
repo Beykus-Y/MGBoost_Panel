@@ -301,6 +301,8 @@ Immutable applied records, durable invoice/payment evidence, refund unknown-stat
 
 No end-to-end compensation/dispute workflow for existing paid terms; policy on already-used service must not be invented.
 
+**2026-09-06 factual note:** BUG-001 (a specific failure mode under "post-apply refund" -- a record could be CANCELLED by an operator while its entitlement had already, irreversibly, committed, making any later refund/compensation decision start from a false premise) is now `FIXED_IN_MAIN` (see `BUGS.md`): a durable `APPLYING` freeze means `cancel_record` can no longer succeed once the entitlement mutation may already have committed. This narrows one specific trigger for this risk; it does not close it -- there is still no end-to-end compensation/dispute workflow, no refund semantics were added or implied, and "permanent MANUAL_REVIEW" (an unsolvable divergence needing owner resolution) remains exactly as open as before. This risk is not closed.
+
 ## Recommended mitigation
 
 Define owner-approved compensation scenarios, then append correlated corrections; keep financial and entitlement evidence distinct.

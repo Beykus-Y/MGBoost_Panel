@@ -1351,6 +1351,8 @@ callback was initiated at any point in this verification.
 
 **BUG-002 fix (2026-09-06, narrow bugfix session):** "base-only package enforcement" named above is BUG-002, now closed at the reachability layer -- `ManualPaymentStore.create_record` fail-closed-gates any new `package_sku` record via `WL_PACKAGE_SALES_ENABLED`/`assert_wl_package_sales_enabled` (see `BUGS.md` BUG-002, reclassified `PREMATURELY_REACHABLE_PATH`). **This entry stays `[~]`:** BUG-001 (payment cancellation-after-commit) is untouched, a separate session's scope; the compensation engine remains absent.
 
+**BUG-001 fix (2026-09-06, narrow bugfix session):** "payment cancellation-after-commit" named above is fixed -- a durable `APPLYING` freeze (`src/manual_payment_schema_v2.py`, `ManualPaymentStore.apply_record`) now commits before any entitlement/package mutation is attempted, and `cancel_record`/`edit_pending_record` both refuse an `APPLYING` record exactly like an `APPLIED` one. See `BUGS.md` BUG-001 (now `FIXED_IN_MAIN`) for full evidence. **This entry stays `[~]`:** the compensation engine remains absent, and no production/staging verification of either fix has been performed.
+
 **Depends:** PH3-09, DL-034–036/040, admin session/audit. RUB catalog data blocker закрыт.
 **Actor/channel:** только основной MGBoost admin; account source DIRECT, payment channel `EXTERNAL_PAYMENT`, mutation source `MANUAL_PAYMENT`.
 **Store:** immutable plan/version/fixed-price-table version snapshot, exact amount, currency, payment method, external reference/comment, admin actor, timestamp, target account, result/idempotency/reconciliation. Telegram Stars не обязательны.
@@ -1428,6 +1430,8 @@ created or mutated. Final HEAD: local/origin/production all `5cbee5c`.
 ## [~] PH5-10 — Manual external-payment renewal of the same parent account
 
 **Independent audit 2026-09-06:** `PARTIAL`. Same-parent idempotency exists, but committed payment is not frozen and mixed WL schedule fails. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**BUG-001 fix (2026-09-06, narrow bugfix session):** "committed payment is not frozen" named above is fixed -- see `BUGS.md` BUG-001 (`FIXED_IN_MAIN`) and PH5-09's own note. **This entry stays `[~]`:** "mixed WL schedule fails" is BUG-003 (promo chronology), untouched, a separate session's scope.
 
 **Depends:** PH3-08/09, PH5-04/09, outbox.
 **Scope:** admin-confirmed external payment того же plan продлевает existing parent по `max(current_expiry, now) + purchased_duration`, синхронизирует active child expiry, сохраняет slots/HWIDs/current WL period и UUID без revoke причины. Другой plan направляется в PH5-06.
@@ -3046,6 +3050,8 @@ future operation kind (PH7-11) remains unbuilt.
 
 **BUG-002 fix (2026-09-06, narrow bugfix session):** "package authority are defective" named above is BUG-002; the admin UI/backend's package preview/catalog/create now agree and fail closed by default (`WL_PACKAGE_SALES_ENABLED`, see `BUGS.md` BUG-002, reclassified `PREMATURELY_REACHABLE_PATH`). **This entry stays `[~]`:** BUG-001's paid-record/edit atomic boundary defect is untouched, and applied compensation action remains absent.
 
+**BUG-001 fix (2026-09-06, narrow bugfix session):** "paid-record/edit atomic boundary" named above is fixed -- `handle_manual_payment_apply`/`_cancel`/`_edit` (this entry's own admin UI/backend) now go through the durable `APPLYING` freeze, so a crash mid-apply can no longer be cancelled/edited via this UI as though nothing happened. See `BUGS.md` BUG-001 (`FIXED_IN_MAIN`) and PH5-09's own note. **This entry stays `[~]`:** applied compensation action remains absent.
+
 **Depends:** PH3-09, PH5-09; только основной admin.
 **Account UI:** payment channel, plan, expiry, WL/devices; first rollout фиксирует RUB и позволяет выбрать только versioned fixed RUB price, exact amount/method/reference/comment с preview entitlement change. Pending можно исправить до apply; applied record read-only, correction создаётся отдельной compensation action.
 **No separate reseller UI/login.** Raw subscription bearer, UUID и full HWID не нужны для payment operation.
@@ -3104,6 +3110,8 @@ Deploy is application-code-only (no schema migration).
 ## [~] PH7-11 — Immutable manual-payment mutation audit
 
 **Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: immutable manual edit/apply/evidence events exist; failed/denied/correction and correlated reconciliation coverage remains. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**BUG-001 factual note (2026-09-06, narrow bugfix session):** BUG-001 is listed as related roadmap for this item because its crash-boundary defect touched the same audit trail this item owns; the fix (`APPLYING` freeze, see `BUGS.md` BUG-001) does not add a new audit event for a refused cancel/edit attempt (consistent with the existing behaviour for e.g. an already-cancelled record). **This entry stays `[~]`:** its own stated gap (failed/denied/correction and correlated reconciliation coverage) is unaffected and unaddressed here.
 
 **Depends:** PH7-08, PH5-09.
 **Sources:** `SYSTEM`, `DIRECT_PURCHASE`, `MANUAL_PAYMENT`, `ADMIN`, `MIGRATION`, `PACKAGE`, `INTERNAL`.
@@ -3699,6 +3707,8 @@ runbooks.
 ## [~] PH8-09 — Manual-payment reconciliation and monitoring
 
 **Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: durable jobs/operator retry exist; financial reconciliation/alerts/compensation and safe apply fence incomplete. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
+
+**BUG-001 fix (2026-09-06, narrow bugfix session):** "safe apply fence incomplete" named above is fixed at the `manual_payment.py` layer -- the durable `APPLYING` freeze in `ManualPaymentStore.apply_record` is exactly that fence (see `BUGS.md` BUG-001, `FIXED_IN_MAIN`), and the task's own dependency note ("Fix this fence before adding automatic manual-payment retries") is now satisfied. **This entry stays `[~]`:** this item's own scope (financial reconciliation/alerts/compensation and any automatic retry driver) was explicitly not built here -- PH8-09 itself remains unimplemented.
 
 **Depends:** PH3-09, PH5-09/10.
 **Scope:** reconcile external payment record/outbox with account entitlement and child expiry; alert orphan payment reference, duplicate/replay, failed apply and mutation backlog.
@@ -5077,7 +5087,7 @@ backup timer -> sequential online DB copies -> encryption -> isolated integrity 
 | Migration/legacy | direct_enrollment, legacy_paid_compat, legacy_bridge, migration_lifecycle, grace + schemas | explicit evidence, shared resolver, terminal migration state; grace campaign, scoped bootstrap retirement and expiry ambiguity resolver. Current cohort is not inferred from synthetic genesis. |
 | Plans/entitlement | plan_catalog/schema, subscription_renewal, entitlement_engine | explicit plan/package seed scripts; WL_TRIAL bootstrapped in main.py. Pinned plans/durations/terms and immutable WL windows, but BUG-003 and RISK-009. |
 | Stars | stars_purchase/schema, stars.py, bot_support callbacks | canonical invoice kinds separate from LEGACY_EXPIRE; charge evidence and one application; template/delivery and sync jobs run via bot loop. Refund is money-only, compensation not implied. |
-| Manual payments/grants/promo | manual_payment, admin_grant, promo + schemas/v2 | primary admin manual/grants; user-scoped promo via proven Telegram; immutable edits/grants/redemptions/discount snapshots. BUG-001/002/003 cross boundaries. |
+| Manual payments/grants/promo | manual_payment, admin_grant, promo + schemas/v2 | primary admin manual/grants; user-scoped promo via proven Telegram; immutable edits/grants/redemptions/discount snapshots. BUG-002/003 cross boundaries; BUG-001 (crash-boundary cancel/edit) fixed 2026-09-06, see BUGS.md. |
 | WL | topology/guard/versions, usage ledger v1/v2/v3, parent pool, packages, enforcement/reconciliation schemas | timers wired in repo; sampled usage and immutable history, epoch/manifest decisions. Base-only enforcement BUG-002, delayed observation RISK-005. Reset event identity BUG-004 fixed 2026-09-06 (v3 reset_generation migration), see BUGS.md. |
 | Delivery | delivery_routing/schema, commercial_signup templates | primary-admin host membership/CAS/audit; exact WL rejection in STANDARD; template pinning means later membership does not propagate automatically. |
 | Admin/frontend | src/routes/admin_*.py, admin_read_models/audit_timeline; frontend/assets/admin/app/router.js | index loads router.js; per-domain ES modules, Technical legacy path retained. Presence of UI is not authority; auth/CSRF/primary capability verified in consequential canonical routes. |
@@ -5093,8 +5103,10 @@ period bucketing. They are additive/versioned successors, **not duplicate indepe
 stores**. First bootstrap and reopen succeeded on the synthetic harness DB. That proves
 neither migration of arbitrary existing production data nor rollback to old binaries.
 Account schema enables foreign keys; individual stores use transactions/CAS/immutable
-triggers. These mechanisms do not by themselves make cross-store commits atomic (BUG-001)
-or period/event identities semantically valid (BUG-003/004).
+triggers. These mechanisms do not by themselves make cross-store commits atomic (BUG-001,
+fixed 2026-09-06 for the manual-payment apply/cancel/edit boundary specifically -- see
+`BUGS.md` BUG-001; cross-store atomicity elsewhere is not a general guarantee)
+or period/event identities semantically valid (BUG-003/004, BUG-004 fixed 2026-09-06).
 
 Rollback corrections: once real credentials are revoked, no rollback can restore the
 old shared UUID; issue a new generation. Once billing/usage rows exist, historical
@@ -5163,8 +5175,8 @@ are explicit. Code/staging/production claims in old paragraphs remain dated hist
 | PH5-06 | NOT_IMPLEMENTED | src/stars_purchase.py::_assert_purchase_plan_locked; src/bot_support.py | test_stars_purchase.py (different-plan rejection) | General commercial upgrade/proration and ticket downgrade engine absent; legacy paid transition is not this engine. |
 | PH5-07 | BLOCKED | DL-017; src/entitlement_engine.py | test_entitlement_engine.py (zero add-ons) | OPTIONAL/DEFERRED; BLOCKED_OWNER_DECISION only on reactivation of OPD-05. No price selected. |
 | PH5-08 | PARTIAL | src/bot_support.py; src/entitlement_read_model.py; frontend/assets/admin | test_bot_ux_redesign.py; test_entitlement_engine.py | STALE [ ]: canonical catalog/purchase/renewal UI exists; unified plan-change/package/period explanation incomplete. Deferred PH5-07 must not block current UX. |
-| PH5-09 | PARTIAL | src/manual_payment.py; src/manual_payment_schema.py; src/routes/admin_payments.py | test_manual_payment_ph509.py; BUG-001/002 harness | Confirmed payment cancellation-after-commit and base-only package enforcement; compensation engine absent. BUG-002 fix (2026-09-06) closes package-enforcement reachability; BUG-001/compensation-engine gaps unchanged. |
-| PH5-10 | PARTIAL | src/manual_payment.py::_apply_plan_locked; src/subscription_renewal.py | test_manual_renewal_ph510.py; BUG-001/003 harness | Same-parent idempotency exists, but committed payment is not frozen and mixed WL schedule fails. |
+| PH5-09 | PARTIAL | src/manual_payment.py; src/manual_payment_schema.py; src/routes/admin_payments.py | test_manual_payment_ph509.py; test_bug001_manual_payment_applying_state.py | Confirmed payment cancellation-after-commit and base-only package enforcement; compensation engine absent. BUG-002 fix (2026-09-06) closes package-enforcement reachability; BUG-001/compensation-engine gaps unchanged. BUG-001 fix (2026-09-06): APPLYING freeze closes payment cancellation-after-commit -- see BUGS.md BUG-001 FIXED_IN_MAIN. Compensation-engine gap unchanged. |
+| PH5-10 | PARTIAL | src/manual_payment.py::_apply_plan_locked; src/subscription_renewal.py | test_manual_renewal_ph510.py; BUG-001/003 harness | Same-parent idempotency exists, but committed payment is not frozen and mixed WL schedule fails. BUG-001 fix (2026-09-06): APPLYING freeze closes "committed payment is not frozen" -- see BUGS.md BUG-001 FIXED_IN_MAIN. Mixed WL schedule (BUG-003) unchanged. |
 | PH5-11 | PARTIAL | src/commercial_signup.py::ensure_signup_account/ensure_template_for_account; src/stars.py | test_commercial_signup.py; test_commercial_wl_wiring.py | Dispatcher/capture/template/first-device chain exists; actual paid signup and DL-058 stop condition unverified (RISK-015). Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
 | Commercial WL wiring | PARTIAL | src/commercial_signup.py; src/stars_purchase.py; src/wl_enforcement.py | test_commercial_wl_wiring.py; BUG-002/004 harness | Six-plan sellable gate exists; live WL safety depends on confirmed ledger defects and unknown rollout state. No new PH ID invented for this existing title. BUG-002 fix (2026-09-06) closes manual-channel package reachability to match the Stars channel's own pre-existing gate. |
 | PH5-12 | PARTIAL | src/delivery_routing.py; src/routes/admin_routing.py; src/commercial_signup.py | test_delivery_routing.py | Audited exact membership exists; old templates/children remain pinned; live topology and propagation boundary RISK-004/015. Second independent review (2026-09-06): reclassified `UNVERIFIED_PRODUCTION` -> `PARTIAL` (real BUG/RISK-confirmed gap; checkbox unchanged, still `[~]`). |
@@ -5189,8 +5201,8 @@ are explicit. Code/staging/production claims in old paragraphs remain dated hist
 | PH7-07 | PARTIAL | src/internal_entitlements.py; src/entitlement_engine.py; src/wl_enforcement.py | test_internal_entitlements.py; test_entitlement_engine.py | STALE [ ]: typed expiring WL access override/read calculation exists; AUTO/FORCE admin control and exact enforcement contract incomplete. |
 | PH7-08 | PARTIAL | src/admin_audit_timeline.py; src/provenance.py; src/child_recovery.py | test_audit_log.py; test_child_recovery_atomicity.py | Append-only canonical events and timeline implemented; rejected/raw/compensation coverage not universal (RISK-006/007). |
 | PH7-09 | PARTIAL | src/admin_grant.py; src/routes/admin_grant.py; src/routes/admin_legacy_transitions.py | test_admin_grant.py; test_admin_legacy_transitions_routes.py | STALE [ ]: constrained plan grants and legacy transition preview/apply exist; generic commercial change/ticket/conflict matrix still absent. |
-| PH7-10 | PARTIAL | src/routes/admin_payments.py; frontend/assets/admin/payments.js | test_admin_operational_admin.py; BUG-001/002 harness | Real UI/backend wired; paid-record/edit atomic boundary and package authority are defective; applied compensation action absent. BUG-002 fix (2026-09-06) closes package-enforcement reachability in preview/catalog/create; BUG-001/compensation-action gaps unchanged. |
-| PH7-11 | PARTIAL | src/manual_payment_schema.py; src/manual_payment.py; src/admin_audit_timeline.py | test_manual_payment_ph509.py; test_admin_operational_admin.py | STALE [ ]: immutable manual edit/apply/evidence events exist; failed/denied/correction and correlated reconciliation coverage remains. |
+| PH7-10 | PARTIAL | src/routes/admin_payments.py; frontend/assets/admin/payments.js | test_admin_operational_admin.py; BUG-001/002 harness | Real UI/backend wired; paid-record/edit atomic boundary and package authority are defective; applied compensation action absent. BUG-002 fix (2026-09-06) closes package-enforcement reachability in preview/catalog/create; BUG-001/compensation-action gaps unchanged. BUG-001 fix (2026-09-06): admin apply/cancel/edit routes now go through the APPLYING freeze, closing the paid-record/edit atomic boundary gap -- see BUGS.md BUG-001 FIXED_IN_MAIN. Compensation action gap unchanged. |
+| PH7-11 | PARTIAL | src/manual_payment_schema.py; src/manual_payment.py; src/admin_audit_timeline.py | test_manual_payment_ph509.py; test_admin_operational_admin.py | STALE [ ]: immutable manual edit/apply/evidence events exist; failed/denied/correction and correlated reconciliation coverage remains. BUG-001 factual note (2026-09-06): fix does not add a new audit event for a refused cancel/edit; this item's own failed/denied/correction coverage gap is unaffected. |
 | PH7-12 | PARTIAL | frontend/index.html; frontend/assets/admin/app/router.js; src/admin_read_models.py | test_admin_frontend_security.py; test_admin_browser_e2e.py | Monolith split complete; owner authenticated/mobile click-through outstanding. Removed admin.js description superseded. |
 | PH7-13 | VERIFIED_DONE | src/account_consolidation.py; src/account_consolidation_schema.py; src/legacy_bridge.py | test_account_consolidation.py | Merge bipartition/close/reversal and resolver normalization exist; actual cohort state unverified, template lifecycle PH7-15 remains. Second independent review (2026-09-06): restored to `[x]`/`VERIFIED_DONE` -- cited gap was non-reverification, not a found contradiction. |
 | PH7-14 | PARTIAL | src/routes/admin_grant.py; src/routes/admin_payments.py; src/routes/admin_promo.py | test_admin_grant.py; test_admin_operational_admin.py | All eight surfaces exist; all acceptance closed is too strong with BUG-001/002 and absent current end-to-end evidence. |
@@ -5204,7 +5216,7 @@ are explicit. Code/staging/production claims in old paragraphs remain dated hist
 | PH8-06 | PARTIAL | src/bot_support.py::execute_tool/build_ai_messages; src/device_telemetry.py | test_bot_support.py; BUG-005 harness | Some canonical support projection exists; provider minimisation/argument bounds/user-before-LIMIT incomplete. Device telemetry tagged PH8-06 is not this privacy task. |
 | PH8-07 | PARTIAL | tests/; requirements-runtime.lock | test_token_containment.py; test_admin_frontend_security.py | STALE [ ]: large security regression corpus exists; no tracked automated CI/deploy gate or current run artifacts. |
 | PH8-08 | PARTIAL | docs/PHASE1_RETENTION_AND_BACKUP.md; docs/LEGACY_COMMERCIAL_TRANSITION_RUNBOOK.md; docs/PHASE4_MIGRATION_SUPPORT_RUNBOOK.md | test_secure_backup.py; verifier scripts inspected only | STALE [ ]: many runbooks implemented; second-operator/tabletop proof and current rollback consistency absent. |
-| PH8-09 | PARTIAL | src/manual_payment.py::pending_sync_jobs; src/routes/admin_payments.py; src/ops_observability.py | test_manual_renewal_ph510.py; BUG-001 harness | STALE [ ]: durable jobs/operator retry exist; financial reconciliation/alerts/compensation and safe apply fence incomplete. |
+| PH8-09 | PARTIAL | src/manual_payment.py::pending_sync_jobs; src/routes/admin_payments.py; src/ops_observability.py | test_manual_renewal_ph510.py; test_bug001_manual_payment_applying_state.py | STALE [ ]: durable jobs/operator retry exist; financial reconciliation/alerts/compensation and safe apply fence incomplete. BUG-001 fix (2026-09-06): the APPLYING freeze is the "safe apply fence" named here -- see BUGS.md BUG-001 FIXED_IN_MAIN. Financial reconciliation/alerts/compensation remain unbuilt. |
 
 ## Changed checkboxes (exhaustive, post-reconciliation)
 
@@ -5287,7 +5299,7 @@ or four extra completion claims. It is excluded from the 93-item count.
 
 | Authority boundary | Finding / disposition |
 | --- | --- |
-| Payment record vs entitlement | Independently committed states can diverge after crash: BUG-001. ADMIN_GRANT is entitlement provenance, not external revenue; MANUAL_RUB and Stars must retain distinct financial evidence. |
+| Payment record vs entitlement | Independently committed states can diverge after crash: BUG-001, fixed 2026-09-06 (durable APPLYING freeze in `ManualPaymentStore.apply_record`; see `BUGS.md` BUG-001 FIXED_IN_MAIN; not production-verified). ADMIN_GRANT is entitlement provenance, not external revenue; MANUAL_RUB and Stars must retain distinct financial evidence. |
 | Entitlement vs WL enforcement | Packages appear in entitlement remaining but base-only pool controls direction: BUG-002. Store/schema presence alone does not complete commercial WL wiring. |
 | Promo vs ordinary renewal | Exact-second and hour-rounded boundaries overlap: BUG-003. Legacy scheduled transitions do not establish general downgrade semantics. |
 | Ledger vs remote counters | Reset/repeated cursor identity loses subsequent usage: BUG-004, fixed 2026-09-06 (see BUGS.md BUG-004 FIXED_IN_MAIN; not production-verified). No claim that existing production totals are known wrong without inspection. |
@@ -5388,6 +5400,13 @@ lane C starts immediately in parallel; it must not wait for coding steps 1–3.
 targeted tests -- see `BUGS.md` BUG-004 (`FIXED_IN_MAIN`). Step 1's own "affected rows
 inventoried" and any production rollout remain undone (no SSH/production access was used
 in the fixing session); step 1 is not marked complete here.
+
+**Step 2 update (2026-09-06, narrow bugfix session):** the BUG-001 code-level fix (durable
+`APPLYING` freeze, `src/manual_payment_schema_v2.py` + `ManualPaymentStore.apply_record`)
+landed and is covered by targeted tests -- see `BUGS.md` BUG-001 (`FIXED_IN_MAIN`). "Safe
+retry/edit/cancel" is now true at the code level; "financial reconciliation" (this step's
+own broader PH8-09 scope) was not built, and no production/staging verification of the fix
+has been performed (no SSH/production access was used); step 2 is not marked complete here.
 
 **Parallel lanes:** A = payment correctness (2/3 and approved part of 5); B = WL ledger
 (1, then 11/12); C = immediate dated read-only inventory plus backup/config/observability

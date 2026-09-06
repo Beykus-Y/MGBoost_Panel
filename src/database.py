@@ -74,6 +74,7 @@ from .wl_packages import WLPackageStore
 from .stars_purchase_schema import apply_stars_purchase_schema
 from .stars_purchase import StarsPurchaseStore
 from .manual_payment_schema import apply_manual_payment_schema
+from .manual_payment_schema_v2 import apply_manual_payment_schema_v2
 from .manual_payment import ManualPaymentStore
 from .legacy_commercial_transition_schema import apply_legacy_commercial_transition_schema
 from .legacy_commercial_transition_schema_v2 import apply_legacy_commercial_transition_schema_v2
@@ -524,6 +525,7 @@ class Database:
         apply_admin_grant_schema(self._conn)
         apply_delivery_routing_schema(self._conn)
         apply_manual_payment_schema(self._conn)
+        apply_manual_payment_schema_v2(self._conn)
         apply_legacy_commercial_transition_schema(self._conn)
         apply_legacy_commercial_transition_schema_v2(self._conn)
         apply_promo_schema(self._conn)

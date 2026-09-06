@@ -67,7 +67,7 @@ MUTATION_SOURCE = "MANUAL_PAYMENT"
 
 _RECORD_KEY_SCOPE = "manual-payment-v1\0"
 
-RECORD_STATUSES = ("PENDING", "APPLIED", "CANCELLED", "MANUAL_REVIEW")
+RECORD_STATUSES = ("PENDING", "APPLYING", "APPLIED", "CANCELLED", "MANUAL_REVIEW")
 
 
 class ManualPaymentError(ValueError):
@@ -297,10 +297,16 @@ class ManualPaymentStore:
                 row = self._require_record_locked(payment_record_id)
                 self._reject_confirmed_transition_payment_locked(row["id"])
                 if row["status"] != "PENDING":
+                    # BUG-001 fix: this already refused anything but PENDING --
+                    # APPLYING (frozen before any entitlement mutation is
+                    # attempted, see `apply_record`) is refused by the exact
+                    # same guard with no code change, only a clearer message.
                     raise ManualPaymentError(
                         f"a {row['status']} record can no longer be edited "
-                        "(applied facts are immutable; reviewed records must be "
-                        "resolved explicitly first)"
+                        "(only a PENDING record may be corrected; an applying/applied "
+                        "record's authoritative terms must never risk diverging from an "
+                        "already-committed or in-flight entitlement mutation, and "
+                        "reviewed records must be resolved explicitly first)"
                     )
                 swap_plan = ("plan_code" in changes) or ("duration_days" in changes)
                 swap_package = "package_sku" in changes
@@ -446,7 +452,14 @@ class ManualPaymentStore:
     def cancel_record(self, capability, payment_record_id: int, *, reason: str,
                       now: int | None = None) -> dict:
         """Terminal cancellation of an unapplied record.  Applied records are
-        historical money facts: they are never cancellable here."""
+        historical money facts: they are never cancellable here.
+
+        BUG-001 fix: a record that is `APPLYING` is refused too, and for the
+        same reason as `APPLIED` -- not because its entitlement mutation is
+        known to have committed, but because it is no longer known *not* to
+        have committed (the freeze in `apply_record` happens durably before
+        that mutation is ever attempted). Cancel is only ever safe while it
+        is still certain that no irreversible mutation has happened yet."""
         timestamp = int(time.time()) if now is None else int(now)
         actor_ref = self._authority.require(capability)
         cancel_reason = _clean(reason, field="reason", max_len=1000, min_len=8)
@@ -459,12 +472,18 @@ class ManualPaymentStore:
                     raise ManualPaymentError(
                         "an applied manual payment is immutable and cannot be cancelled"
                     )
+                if row["status"] == "APPLYING":
+                    raise ManualPaymentError(
+                        "a manual payment currently applying cannot be cancelled -- its "
+                        "entitlement mutation may already be durably committed; retry "
+                        "apply to converge it, or wait for it to resolve"
+                    )
                 if row["status"] == "CANCELLED":
                     raise ManualPaymentError("record is already cancelled")
                 self._conn.execute(
                     "UPDATE mgboost_manual_payment_records SET status='CANCELLED',"
                     "cancelled_at=?,cancel_reason=?,updated_at=? "
-                    "WHERE id=? AND status!='APPLIED'",
+                    "WHERE id=? AND status NOT IN ('APPLIED','APPLYING')",
                     (timestamp, cancel_reason, timestamp, int(payment_record_id)),
                 )
                 self._append_edit_locked(
@@ -488,22 +507,59 @@ class ManualPaymentStore:
         """Apply one unapplied record exactly once through the established
         engines.  Unsolvable divergences land in MANUAL_REVIEW instead of
         being guessed; retries after any crash converge through the renewal/
-        grant engines' own durable idempotency keys."""
+        grant engines' own durable idempotency keys.
+
+        BUG-001 fix: before any entitlement mutation is even attempted, a
+        PENDING record is durably frozen to `APPLYING` in its own committed
+        transaction. That freeze -- not the later, separately-committing
+        entitlement mutation -- is the point after which `cancel_record`/
+        `edit_pending_record` can never again treat this record as though
+        apply had not started. If the process crashes at any point after
+        this method is entered, the record is left `APPLYING` (never stuck
+        `PENDING`), and only a retried `apply_record` (idempotent via the
+        renewal/grant engines' own deterministic per-record keys) or an
+        eventual `MANUAL_REVIEW` transition can move it forward."""
         timestamp = int(time.time()) if now is None else int(now)
         actor_ref = self._authority.require(capability)
         with self._lock:
-            row = dict(self._require_record_locked(payment_record_id))
-            self._reject_confirmed_transition_payment_locked(row["id"])
-            if row["status"] == "CANCELLED":
-                raise ManualPaymentError("cancelled records are never applicable")
-            if row["status"] == "MANUAL_REVIEW":
-                raise ApplyRequiresManualReview(
-                    "resolve the manual review before applying this record"
-                )
-            if row["kind"] == "PLAN_PRODUCT":
-                self._validate_plan_snapshot_locked(row)
-            else:
-                self._validate_package_snapshot_locked(row)
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = dict(self._require_record_locked(payment_record_id))
+                self._reject_confirmed_transition_payment_locked(row["id"])
+                if row["status"] == "CANCELLED":
+                    raise ManualPaymentError("cancelled records are never applicable")
+                if row["status"] == "MANUAL_REVIEW":
+                    raise ApplyRequiresManualReview(
+                        "resolve the manual review before applying this record"
+                    )
+                if row["kind"] == "PLAN_PRODUCT":
+                    self._validate_plan_snapshot_locked(row)
+                else:
+                    self._validate_package_snapshot_locked(row)
+                if row["status"] == "PENDING":
+                    updated = self._conn.execute(
+                        "UPDATE mgboost_manual_payment_records SET status='APPLYING',"
+                        "updated_at=? WHERE id=? AND status='PENDING'",
+                        (timestamp, row["id"]),
+                    )
+                    if updated.rowcount != 1:
+                        # A concurrent cancel/edit legitimately won the race
+                        # before this freeze committed -- report the real
+                        # current outcome instead of a false internal error.
+                        current_status = self._get_record_row(row["id"])["status"]
+                        self._conn.commit()
+                        if current_status == "CANCELLED":
+                            raise ManualPaymentError("cancelled records are never applicable")
+                        if current_status == "MANUAL_REVIEW":
+                            raise ApplyRequiresManualReview(
+                                "resolve the manual review before applying this record"
+                            )
+                        raise RuntimeError("manual payment freeze transition failed")
+                    row["status"] = "APPLYING"
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         if row["kind"] == "PLAN_PRODUCT":
             return self._apply_plan_locked(row, actor_ref=actor_ref, now=timestamp)
         return self._apply_package_locked(row, actor_ref=actor_ref, now=timestamp)
@@ -569,7 +625,7 @@ class ManualPaymentStore:
                     "SELECT * FROM mgboost_manual_payment_applications WHERE payment_record_id=?",
                     (row["id"],),
                 ).fetchone()
-                if current["status"] == "PENDING":
+                if current["status"] == "APPLYING":
                     if existing is None:
                         self._conn.execute(
                             "INSERT INTO mgboost_manual_payment_applications "
@@ -588,7 +644,7 @@ class ManualPaymentStore:
                     updated = self._conn.execute(
                         "UPDATE mgboost_manual_payment_records SET status='APPLIED',applied_at=?,"
                         "entitlement_mutation_id=?,applied_operation=?,applied_expiry=?,updated_at=? "
-                        "WHERE id=? AND status='PENDING'",
+                        "WHERE id=? AND status='APPLYING'",
                         (now, renewal["mutation_id"], operation, renewal["new_expiry"],
                          now, row["id"]),
                     )
@@ -662,7 +718,7 @@ class ManualPaymentStore:
                     "SELECT * FROM mgboost_manual_payment_applications WHERE payment_record_id=?",
                     (row["id"],),
                 ).fetchone()
-                if current["status"] == "PENDING":
+                if current["status"] == "APPLYING":
                     if existing is None:
                         grant_snapshot = {
                             "grant_id": int(grant["id"]), "sku": row["package_sku_snapshot"],
@@ -683,7 +739,7 @@ class ManualPaymentStore:
                         "UPDATE mgboost_manual_payment_records SET status='APPLIED',applied_at=?,"
                         "entitlement_mutation_id=?,applied_operation='PACKAGE_GRANT',"
                         "applied_expiry=NULL,updated_at=? "
-                        "WHERE id=? AND status='PENDING'",
+                        "WHERE id=? AND status='APPLYING'",
                         (now, grant["grant_mutation_id"], now, row["id"]),
                     )
                     if updated.rowcount != 1:
@@ -980,9 +1036,12 @@ class ManualPaymentStore:
             )
 
     def _mark_review_locked(self, payment_record_id: int, reason: str, now: int) -> None:
+        # BUG-001 fix: both callers (`_apply_plan_locked`/`_apply_package_locked`)
+        # are only ever reached after `apply_record` has already frozen the
+        # record to APPLYING, so that is the only legitimate source state here.
         self._conn.execute(
             "UPDATE mgboost_manual_payment_records SET status='MANUAL_REVIEW',"
-            "review_reason=?,review_at=?,updated_at=? WHERE id=? AND status='PENDING'",
+            "review_reason=?,review_at=?,updated_at=? WHERE id=? AND status='APPLYING'",
             (reason[:200], now, now, int(payment_record_id)),
         )
         self._conn.commit()

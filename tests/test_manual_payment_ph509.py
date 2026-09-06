@@ -629,7 +629,20 @@ def test_apply_crash_between_commit_and_proof_recovers_exactly_once(db, monkeypa
         db.manual_payments.apply_record(cap, record["id"], now=300)
     monkeypatch.undo()
     mid = db.manual_payments.get_record(record["id"])
-    assert mid["status"] == "PENDING"
+    # BUG-001 fix: the crash happened *after* the canonical renewal already
+    # committed (`calculate_effective_entitlement` is the PH5-04 proof step
+    # that runs strictly after `apply_same_plan_purchase`'s own commit) --
+    # the record must be the durable APPLYING freeze state, never PENDING,
+    # and cancel/edit must both refuse it exactly because of that.
+    assert mid["status"] == "APPLYING"
+    with pytest.raises(ManualPaymentError, match="currently applying"):
+        db.manual_payments.cancel_record(cap, record["id"], reason="should be refused", now=305)
+    with pytest.raises(ManualPaymentError, match="can no longer be edited"):
+        db.manual_payments.edit_pending_record(
+            cap, record["id"], reason="should be refused too",
+            changes={"comment": "attempted edit"}, now=305,
+        )
+    assert db.manual_payments.get_record(record["id"])["status"] == "APPLYING"
     recovered = db.manual_payments.apply_record(cap, record["id"], now=310)
     assert recovered["already_applied"] is True
     assert recovered["new_expiry"] == 310 - 10 + 30 * 86400

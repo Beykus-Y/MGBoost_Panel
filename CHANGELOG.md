@@ -15,6 +15,50 @@
 
 ## Unreleased
 
+### Fixed — Crash-safe manual-payment apply/cancel/edit boundary (BUG-001)
+
+Fixed a confirmed defect (`BUGS.md` BUG-001, now `FIXED_IN_MAIN`) where applying a
+manual (RUB) payment span at least two independently committing transactions -- the
+canonical entitlement/renewal (or WL-package-grant) mutation committed first, and only
+afterwards did `ManualPaymentStore` commit its own bookkeeping (`status='APPLIED'`
+plus the application/sync-job rows). A crash in between left the record durably
+`PENDING` even though the entitlement was already, irreversibly, granted; `cancel_
+record`/`edit_pending_record` only ever checked for `APPLIED`, so an operator could
+cancel or edit that `PENDING` record as though nothing had happened, producing a
+payment marked CANCELLED while the account's entitlement said otherwise. Confirmed
+still reproducible at HEAD before any fix: `record_before='PENDING'`,
+`cancel_record` succeeded to `CANCELLED`, subscription already `ACTIVE`.
+
+Added a new durable `APPLYING` status (additive migration
+`src/manual_payment_schema_v2.py`, `bug001_manual_payment_applying_state_v1`, widening
+the `status` CHECK constraint via the established rename/copy/verify table-rebuild
+discipline -- every existing row preserved unedited, the three dependent tables'
+foreign keys unaffected). `ManualPaymentStore.apply_record` now durably freezes
+`PENDING -> APPLYING` in its own committed transaction *before* calling into the
+renewal/grant engine; that freeze, not the later separately-committing entitlement
+mutation, is the actual point of no return. `cancel_record` and `edit_pending_record`
+both now refuse an `APPLYING` record exactly like an `APPLIED` one -- not because the
+mutation is known to have happened, but because after the freeze it is no longer known
+*not* to have happened (fail closed on genuine ambiguity). A crash at any point after
+`apply_record` is entered leaves the record `APPLYING`, never stuck `PENDING`; a
+retried `apply_record` (idempotent via the renewal/grant engines' own pre-existing
+deterministic per-record keys, unchanged) or a genuine validation failure landing in
+`MANUAL_REVIEW` (only reached when no mutation was committed, so it stays safely
+cancellable) both converge it correctly. A race where cancel legitimately commits
+before the freeze is now reported as a clean, correct outcome rather than a spurious
+internal error. No subtract-days/compensation/refund logic was added or implied; no
+existing row was reinterpreted or mutated.
+
+Documentation/tests only otherwise: `tests/test_manual_payment_ph509.py` updated (the
+pre-existing crash-recovery test now asserts the new `APPLYING` state and that cancel/
+edit are both refused), new `tests/test_bug001_manual_payment_applying_state.py`
+added (13 cases: normal apply, crash before/after the freeze, crash after entitlement
+commit with a real restart, a second real SQLite connection holding a write lock,
+apply-vs-cancel and apply-vs-edit races in both directions, repeated-retry
+exactly-once effect, pre-mutation validation failure remaining safely cancellable,
+and malformed/duplicate requests changing nothing). No production/SSH/network access;
+no other BUG or roadmap item touched.
+
 ### Fixed — WL package sales fail-closed readiness gate (BUG-002)
 
 Closed a confirmed defect (`BUGS.md` BUG-002, reclassified `PREMATURELY_REACHABLE_

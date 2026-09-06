@@ -16,8 +16,9 @@ build synthetic accounts/children and FakeMarzban. See [RISKS.md](RISKS.md) for 
 
 Severity: P1
 Confidence: CONFIRMED
-Status: OPEN
-Production reachability: YES
+Status: FIXED_IN_MAIN (2026-09-06; see "Fix evidence" below — narrow BUG-001-only session)
+Production reachability: YES (was; fix has not been production-deployed — no SSH/production
+access was used in the fixing session, see Fix evidence)
 Related roadmap: PH5-09, PH5-10, PH7-10, PH7-11, PH8-09
 
 ## Симптом
@@ -82,6 +83,87 @@ application and sync job all agree, including failure before the final bookkeepi
 Audit existing PENDING/CANCELLED records against deterministic entitlement mutation
 keys before repair. Compensation/refund is a separate owner-approved operation. Fix
 this fence before adding automatic manual-payment retries (PH8-09).
+
+## Fix evidence (2026-09-06, narrow BUG-001-only session)
+
+Everything above (symptom/evidence/reproduction/root cause/impact/failure boundary) is
+retained unedited as the original finding. This section only records what closed it.
+
+**Root cause confirmed unchanged at the fixing session's HEAD** (main plus the prior
+narrow BUG-002/BUG-004 fixing commits, neither of which touched `manual_payment.py`'s
+apply/cancel/edit lifecycle): the original `manual_crash_cancel` reproduction from this
+file was re-run before any fix, and still reproduced exactly as described --
+`record_before='PENDING'`, `cancel_record` succeeded to `CANCELLED`, while the
+subscription was already `ACTIVE` with `expiry=2592200`.
+
+**Fix:** a new durable `APPLYING` status, added to `mgboost_manual_payment_records`
+(additive migration `src/manual_payment_schema_v2.py`,
+`bug001_manual_payment_applying_state_v1`). `ManualPaymentStore.apply_record`
+(`src/manual_payment.py`) now durably freezes `PENDING -> APPLYING` in its own
+committed transaction *before* calling into the canonical renewal or package-grant
+engine -- the freeze, not the later, separately-committing entitlement mutation, is
+the actual point of no return. `cancel_record` and `edit_pending_record` both now
+refuse an `APPLYING` record exactly like an `APPLIED` one -- not because the
+entitlement mutation is known to have happened, but because after the freeze it is no
+longer known *not* to have happened (fail-closed on genuine ambiguity, per the bug's
+own "Suggested fix"). A crash at any point after `apply_record` is entered leaves the
+record `APPLYING` (never stuck `PENDING`); only a retried `apply_record` -- idempotent
+via the renewal/grant engines' own deterministic per-record keys, unchanged by this
+fix -- or a genuine validation failure landing in `MANUAL_REVIEW` (which is only ever
+reached when the renewal engine's own idempotency-key lookup proves no mutation was
+committed for this record, so it stays safely cancellable) can move it forward. A
+race where `cancel_record` legitimately commits *before* the freeze is a real, correct
+outcome (nothing had been attempted yet) and is now reported as a clean
+"cancelled records are never applicable" from the subsequent `apply_record` call,
+not a spurious internal error. No subtract-days/compensation logic was added; no
+existing row was reinterpreted.
+
+**Migration is additive and non-destructive:** SQLite cannot widen a `CHECK` constraint
+in place, so the table is rebuilt under one transaction (same rename/copy/verify
+discipline as the BUG-004 fix), preserving every existing row/column byte-for-byte
+(verified before/after by full-row content comparison, not just a count). None of the
+existing `PENDING`/`APPLIED`/`CANCELLED`/`MANUAL_REVIEW` rows are reinterpreted or
+touched; `APPLYING` never appears in historical data since it did not exist before.
+The three dependent tables' (`_edits`, `_applications`, `_sync_jobs`)
+`REFERENCES mgboost_manual_payment_records` foreign keys are preserved correctly by
+renaming the *new*-shaped table into the original name (after dropping the old one)
+rather than renaming the old table away, specifically because SQLite's `ALTER TABLE
+... RENAME` otherwise silently rewrites *other* tables' FK clauses to follow a
+renamed-away table -- confirmed both ways with a minimal reproduction before choosing
+this direction.
+
+**Verified with targeted tests only** (no full suite, no browser, no staging, no
+production/SSH/network): the original `manual_crash_cancel` reproduction was re-run
+against the fix and now shows `record_status_after_crash='APPLYING'`,
+`cancel_blocked=True`, and a clean retry converging to exactly one entitlement term.
+`tests/test_manual_payment_ph509.py` (33; the one pre-existing test that already
+constructed this exact PENDING-after-commit state was updated to assert `APPLYING`
+and that cancel/edit are both now refused, in addition to its existing retry-converges
+assertion). New `tests/test_bug001_manual_payment_applying_state.py` (13): normal
+apply exactly once; crash before the freeze leaves the record legitimately
+cancellable; crash after the freeze but before the entitlement mutation retries
+cleanly with no mutation left behind; crash after entitlement commit but before
+bookkeeping survives a real DB close/reopen with cancel/edit both refused and a clean
+convergent retry (the original scenario, restart included); a second real sqlite3
+connection holding a write lock blocks the freeze rather than racing or corrupting;
+apply-vs-cancel race in both directions (cancel-wins is a clean outcome, apply-wins
+makes cancel fail closed); apply-vs-edit race in both directions; five repeated
+retries produce exactly one entitlement mutation/application row; a genuine
+pre-mutation validation failure (`PlanMismatch`) lands in `MANUAL_REVIEW` and remains
+safely cancellable (proving nothing was left permanently "applied" when nothing
+happened); and malformed/unknown-id/duplicate-cancel requests change nothing.
+Directly related, re-run unmodified and pass: `tests/test_bug002_wl_package_sales_
+readiness_gate.py`, `tests/test_admin_operational_admin.py` (covers the HTTP
+apply/cancel/edit routes).
+
+**Not done in this session:** production, SSH, staging verifier, load/soak, full
+pytest suite, browser/Playwright. No refund/compensation/day-subtraction policy was
+implemented (none was needed -- this is a state-machine/crash-safety fix, not a
+financial correction). No other BUG (002/003/004(already fixed)/005) or roadmap item
+was touched; `src/legacy_commercial_transition.py` (a separate orchestrator writing
+the same table via its own, already-reviewed, `status='PENDING'`-gated transitions)
+was read and confirmed compatible but not modified -- `APPLYING` is simply one more
+non-`PENDING` state its existing guards already correctly refuse.
 
 # BUG-002 — Manual WL packages are sold but omitted by WL enforcement
 
