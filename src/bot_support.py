@@ -402,7 +402,11 @@ async def ask_openrouter_with_tools(
         )
         if proxy_url is not None:
             from aiohttp_socks import ProxyConnector
-            connector = ProxyConnector.from_url(proxy_url)
+            # python_socks (aiohttp-socks's own dependency) only accepts the
+            # plain socks5 scheme -- socks5h is aiogram's own convention
+            # (bot_monitor.py does the exact same replace before handing a
+            # proxy URL to AiohttpSession) and raises ValueError otherwise.
+            connector = ProxyConnector.from_url(proxy_url.replace("socks5h://", "socks5://"))
 
     async with aiohttp.ClientSession(connector=connector) as session:
         for _ in range(max_tool_rounds):
