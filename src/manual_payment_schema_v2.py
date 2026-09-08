@@ -159,6 +159,46 @@ _V1_RECORD_TRIGGERS = {
     "trg_mgboost_manual_payment_record_no_delete",
 }
 
+# PH5-13 (`promo_schema.py`) additively adds these five nullable columns via
+# `ALTER TABLE ... ADD COLUMN` *after* this migration in the bootstrap
+# sequence (`database.py::_create_tables`) -- so a fresh/local database still
+# reaches this migration in the plain v1 shape. Production, however, already
+# had PH5-13 applied *before* this fix was ever written, so its source table
+# already carries these columns. Both are legitimate, real shapes of an
+# already-checksum-verified PH5-09 v1 table -- never guessed, only the exact
+# nullable/typed columns `promo_schema.py` itself adds.
+_PROMO_COLUMN_DEFS = (
+    ("promo_id", "INTEGER"),
+    ("promo_version", "INTEGER"),
+    ("promo_redemption_id", "INTEGER"),
+    ("original_amount_minor", "INTEGER"),
+    ("discount_snapshot_json", "TEXT"),
+)
+_PROMO_COLUMN_NAMES = tuple(name for name, _ in _PROMO_COLUMN_DEFS)
+_PROMO_COLUMNS_SET = frozenset(_PROMO_COLUMN_NAMES)
+_RECORD_COLUMNS_WITH_PROMO = _RECORD_COLUMNS + "," + ",".join(_PROMO_COLUMN_NAMES)
+
+# SQLite requires every column-def before any table-level constraint (a
+# bare `CHECK(...)`/`FOREIGN KEY(...)` not attached to a single column) --
+# so the anchor must be the *last column*, not the first table-level CHECK
+# that follows it.
+_PROMO_COLUMNS_ANCHOR = "review_at INTEGER,"
+
+
+def _final_records_table_ddl(*, with_promo: bool) -> str:
+    """`_FINAL_RECORDS_TABLE` itself (and `SCHEMA_CHECKSUM` below) stay the
+    exact, already-tested plain-v1 shape -- this only ever derives a second,
+    additive variant for the already-promo-migrated production case. Never
+    mutates the base constant."""
+    if not with_promo:
+        return _FINAL_RECORDS_TABLE
+    extra = "".join(f"\n        {name} {sqltype}," for name, sqltype in _PROMO_COLUMN_DEFS)
+    assert _FINAL_RECORDS_TABLE.count(_PROMO_COLUMNS_ANCHOR) == 1
+    return _FINAL_RECORDS_TABLE.replace(
+        _PROMO_COLUMNS_ANCHOR, _PROMO_COLUMNS_ANCHOR + extra,
+    )
+
+
 SCHEMA_CHECKSUM = hashlib.sha256(
     (MIGRATION_ID + "\n" + _FINAL_RECORDS_TABLE + "\n" + "\n".join(_FINAL_RECORDS_OBJECTS)).encode("utf-8")
 ).hexdigest()
@@ -168,24 +208,39 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def _record_stats(connection: sqlite3.Connection, table: str) -> tuple[int, set]:
+def _record_stats(connection: sqlite3.Connection, table: str, columns: str = _RECORD_COLUMNS) -> tuple[int, set]:
     # Keyed by the immutable primary key `id` so this catches row loss or
     # duplication precisely; every column is compared, not an aggregate.
-    rows = connection.execute(f"SELECT {_RECORD_COLUMNS} FROM {table} ORDER BY id").fetchall()
+    rows = connection.execute(f"SELECT {columns} FROM {table} ORDER BY id").fetchall()
     return len(rows), {tuple(row) for row in rows}
 
 
-def _verify_v1_source(connection: sqlite3.Connection) -> None:
+def _verify_v1_source(connection: sqlite3.Connection) -> bool:
+    """Returns whether the already-deployed PH5-13 promo columns are present
+    on the source table (see `_PROMO_COLUMN_DEFS` above for why both shapes
+    are legitimate). Anything else -- including a partial/only-some-columns
+    promo overlay -- is fail-closed exactly as before."""
     if "mgboost_manual_payment_records" not in _table_names(connection):
         raise RuntimeError("PH5-09 v1 manual-payment-records table is missing")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(mgboost_manual_payment_records)")}
-    if columns != _V1_RECORD_COLUMNS:
+    if columns == _V1_RECORD_COLUMNS:
+        has_promo_columns = False
+    elif columns == _V1_RECORD_COLUMNS | _PROMO_COLUMNS_SET:
+        has_promo_columns = True
+    else:
         raise RuntimeError("PH5-09 v1 manual-payment-records columns are unknown or corrupt")
+    # Subset, not equality: `legacy_commercial_transition_schema.py` adds
+    # four more triggers on this same table (its own idempotent, separately
+    # checksum-tracked migration) that this file has no reason to enumerate
+    # by name -- `apply_manual_payment_schema_v2` below captures and
+    # verbatim-restores every trigger beyond these two required ones, so an
+    # extra trigger here is never silently dropped by the rebuild.
     triggers = {row[0] for row in connection.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='mgboost_manual_payment_records'"
     )}
-    if triggers != _V1_RECORD_TRIGGERS:
+    if not _V1_RECORD_TRIGGERS.issubset(triggers):
         raise RuntimeError("PH5-09 v1 manual-payment-records triggers are unknown or corrupt")
+    return has_promo_columns
 
 
 def _verify_final_schema(connection: sqlite3.Connection) -> None:
@@ -243,24 +298,47 @@ def apply_manual_payment_schema_v2(connection: sqlite3.Connection, *, now: int |
             connection.commit()
             return False
 
-        _verify_v1_source(connection)
-        before_count, before_rows = _record_stats(connection, "mgboost_manual_payment_records")
+        has_promo_columns = _verify_v1_source(connection)
+        copy_columns = _RECORD_COLUMNS_WITH_PROMO if has_promo_columns else _RECORD_COLUMNS
+        before_count, before_rows = _record_stats(connection, "mgboost_manual_payment_records", copy_columns)
+
+        # Capture every trigger beyond the two this migration itself owns
+        # (recreated below via `_FINAL_RECORDS_OBJECTS`, unchanged text) --
+        # e.g. `legacy_commercial_transition_schema.py`'s four orchestration
+        # triggers on this same table. `DROP TABLE` below would otherwise
+        # silently destroy them with no error anywhere: the owning module's
+        # own idempotency check only looks at its migration marker, never at
+        # whether its triggers still physically exist.
+        foreign_triggers = {
+            row[0]: row[1] for row in connection.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='trigger' "
+                "AND tbl_name='mgboost_manual_payment_records' AND name NOT IN (%s)"
+                % ",".join("?" for _ in _V1_RECORD_TRIGGERS),
+                tuple(_V1_RECORD_TRIGGERS),
+            )
+        }
 
         # Build the new-shaped table under a temporary name and copy every
         # row unchanged, then drop the old table and rename the *new* one
         # into the original name -- never the other way around, so the
         # three dependent tables' `REFERENCES mgboost_manual_payment_records`
         # clauses (which SQLite would otherwise silently rewrite to follow a
-        # renamed-away old table) are never touched at all.
-        connection.execute(_FINAL_RECORDS_TABLE.replace(
+        # renamed-away old table) are never touched at all. When the source
+        # already carries PH5-13's promo columns (production, where PH5-13
+        # shipped before this fix existed), the rebuilt table carries them
+        # too -- `promo_schema.py`'s own idempotency guard (its migration_id
+        # already recorded) means it will never try to re-`ADD COLUMN` them.
+        connection.execute(_final_records_table_ddl(with_promo=has_promo_columns).replace(
             "CREATE TABLE mgboost_manual_payment_records",
             "CREATE TABLE mgboost_manual_payment_records_bug001_new",
         ))
         connection.execute(
-            f"INSERT INTO mgboost_manual_payment_records_bug001_new ({_RECORD_COLUMNS}) "
-            f"SELECT {_RECORD_COLUMNS} FROM mgboost_manual_payment_records"
+            f"INSERT INTO mgboost_manual_payment_records_bug001_new ({copy_columns}) "
+            f"SELECT {copy_columns} FROM mgboost_manual_payment_records"
         )
-        copied_count, copied_rows = _record_stats(connection, "mgboost_manual_payment_records_bug001_new")
+        copied_count, copied_rows = _record_stats(
+            connection, "mgboost_manual_payment_records_bug001_new", copy_columns,
+        )
         if (copied_count, copied_rows) != (before_count, before_rows):
             raise RuntimeError("BUG-001 manual-payment migration row-count or content mismatch")
         connection.execute("DROP TABLE mgboost_manual_payment_records")
@@ -270,9 +348,18 @@ def apply_manual_payment_schema_v2(connection: sqlite3.Connection, *, now: int |
         )
         for statement in _FINAL_RECORDS_OBJECTS:
             connection.execute(statement)
-        after_count, after_rows = _record_stats(connection, "mgboost_manual_payment_records")
+        for name, sql in foreign_triggers.items():
+            connection.execute(sql)
+        after_count, after_rows = _record_stats(connection, "mgboost_manual_payment_records", copy_columns)
         if (after_count, after_rows) != (before_count, before_rows):
             raise RuntimeError("BUG-001 manual-payment migration post-rebuild verification mismatch")
+        restored_triggers = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='mgboost_manual_payment_records'"
+            )
+        }
+        if restored_triggers != _V1_RECORD_TRIGGERS | set(foreign_triggers):
+            raise RuntimeError("BUG-001 manual-payment migration lost or gained a foreign trigger")
 
         _verify_final_schema(connection)
         connection.execute(
