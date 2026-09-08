@@ -391,7 +391,20 @@ async def ask_openrouter_with_tools(
 
     current_messages = list(messages)
 
-    async with aiohttp.ClientSession() as session:
+    connector = None
+    if db is not None and db.get_setting("bot:proxy_enabled", "0") == "1":
+        from .bot_runner import build_proxy_url
+        proxy_url = build_proxy_url(
+            db.get_setting("bot:proxy_host"),
+            db.get_setting("bot:proxy_port", "1080"),
+            db.get_setting("bot:proxy_user", "socks"),
+            db.get_setting("bot:proxy_pass", ""),
+        )
+        if proxy_url is not None:
+            from aiohttp_socks import ProxyConnector
+            connector = ProxyConnector.from_url(proxy_url)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
         for _ in range(max_tool_rounds):
             try:
                 payload = {"model": model, "messages": current_messages}
