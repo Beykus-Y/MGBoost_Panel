@@ -785,7 +785,28 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                     metadata={"invoice_id": invoice_id, "total_amount": sp.total_amount,
                               "charge_id": sp.telegram_payment_charge_id, "canonical": True},
                 )
-                await message.answer("Оплата получена! Применяем подписку…")
+                if row.get("invoice_kind") == LEGACY_SWITCH_INVOICE_KIND:
+                    # A legacy switch's actual application can be days away
+                    # (activation_at anchors on remaining legacy time, per
+                    # DL-062/DL-063) -- never claim immediate application.
+                    switch = db._conn.execute(
+                        "SELECT activation_at FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?",
+                        (invoice_id,),
+                    ).fetchone()
+                    if switch and switch["activation_at"]:
+                        when = time.strftime('%d.%m.%Y %H:%M UTC', time.gmtime(int(switch["activation_at"])))
+                        await message.answer(
+                            f"Оплата получена! Переход на новый тариф запланирован на {when} — "
+                            "текущий тариф продолжит работать без перерыва до этого момента, "
+                            "оплаченные дни не теряются."
+                        )
+                    else:
+                        await message.answer(
+                            "Оплата получена! Переход на новый тариф оформляется, дата активации "
+                            "появится в ближайшее время — текущий тариф продолжит работать без перерыва."
+                        )
+                else:
+                    await message.answer("Оплата получена! Применяем подписку…")
                 if stars_trigger is not None:
                     stars_trigger.set()
             elif outcome == "manual_review":
@@ -1033,7 +1054,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             await call.message.answer("Активной заявки не найдено.")
             return
         try:
-            await _run_sync(db.legacy_stars_plan_switch.cancel_unpaid_locked, live["id"], int(time.time()))
+            await _run_sync(lambda: db.legacy_stars_plan_switch.cancel_unpaid_locked(live["id"], now=int(time.time())))
             await call.message.edit_text("Заявка отменена.")
         except Exception:
             await call.message.answer("Заявка уже оплачена — отменить нельзя, дождитесь применения.")

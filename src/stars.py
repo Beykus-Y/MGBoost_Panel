@@ -628,7 +628,7 @@ async def _apply_ready_legacy_switches(bot, db):
     now = int(time.time())
     for switch in db.legacy_stars_plan_switch.ready_due(now=now):
         try:
-            applied = await _run_sync(db.legacy_stars_plan_switch.apply_locked, switch["id"], now)
+            applied = await _run_sync(lambda: db.legacy_stars_plan_switch.apply_locked(switch["id"], now=now))
         except Exception as exc:
             logger.error("legacy stars switch apply failed for switch %s: %s", switch["id"], exc)
             fresh = db.legacy_stars_plan_switch.get(switch["id"])

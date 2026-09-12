@@ -80,6 +80,7 @@ from .legacy_commercial_transition_schema import apply_legacy_commercial_transit
 from .legacy_commercial_transition_schema_v2 import apply_legacy_commercial_transition_schema_v2
 from .legacy_commercial_transition import LegacyCommercialTransitionStore
 from .legacy_stars_plan_switch_schema import apply_legacy_stars_plan_switch_schema
+from .legacy_stars_plan_switch_schema_v2 import apply_legacy_stars_plan_switch_schema_v2
 from .legacy_stars_plan_switch import LegacyStarsPlanSwitchStore
 from .admin_grant import AdminGrantStore
 from .entitlement_engine import EntitlementEngine
@@ -535,6 +536,7 @@ class Database:
         apply_legacy_commercial_transition_schema(self._conn)
         apply_legacy_commercial_transition_schema_v2(self._conn)
         apply_legacy_stars_plan_switch_schema(self._conn)
+        apply_legacy_stars_plan_switch_schema_v2(self._conn)
         apply_promo_schema(self._conn)
         apply_promo_schema_v2(self._conn)
         apply_subscription_credential_schema(self._conn)
@@ -2420,17 +2422,52 @@ class Database:
         return ok
 
     def mark_invoice_refunded(self, invoice_id: int, reconciled: bool = False) -> bool:
-        """Record a confirmed Telegram refund; never changes VPN expiry."""
+        """Record a confirmed Telegram refund; never changes VPN expiry.
+
+        DL-063: the stars_invoices status flip and a bound LEGACY_PLAN_SWITCH
+        row's terminal-state transition are folded into this ONE transaction
+        (not a separate later call) -- there is no external/network call
+        between them (the real Telegram refund API call already happened,
+        successfully, in the caller before this method runs at all), so this
+        is money-already-refunded bookkeeping, exactly like capture_paid's
+        own already-moved-money bookkeeping. A crash before this commit
+        leaves BOTH the invoice and the switch untouched (safe to retry from
+        the top); a crash after this commit has already finalized both.
+        `_mark_refunded_inline` is itself a no-op for a non-LEGACY_PLAN_
+        SWITCH invoice (no bound switch row) and for an already-terminal
+        switch, so calling it unconditionally here is safe for every
+        invoice_kind, not just DL-063's.
+        """
         now = int(time.time())
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE stars_invoices SET status='refunded', refunded_at=?, "
-                "resolved_by_admin_at=?, refund_reconciled_at=? "
-                "WHERE id=? AND status IN ('refund_pending','refund_unknown')",
-                (now, now, now if reconciled else None, invoice_id),
-            )
-            self._conn.commit()
-            ok = cur.rowcount == 1
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    "UPDATE stars_invoices SET status='refunded', refunded_at=?, "
+                    "resolved_by_admin_at=?, refund_reconciled_at=? "
+                    "WHERE id=? AND status IN ('refund_pending','refund_unknown')",
+                    (now, now, now if reconciled else None, invoice_id),
+                )
+                ok = cur.rowcount == 1
+                if ok:
+                    self.legacy_stars_plan_switch._mark_refunded_inline(invoice_id=invoice_id, now=now)
+                else:
+                    # Idempotent retry (this call already succeeded once) or
+                    # an inherited anomaly from before this atomic fix
+                    # existed: the invoice may already say 'refunded' while
+                    # its bound switch was never finalized. Detect and close
+                    # that exact mismatch on this same entrypoint rather
+                    # than a separate reconciliation sweep.
+                    current = self._conn.execute(
+                        "SELECT status FROM stars_invoices WHERE id=?", (invoice_id,)
+                    ).fetchone()
+                    if current and current["status"] == "refunded":
+                        self.legacy_stars_plan_switch._mark_refunded_inline(invoice_id=invoice_id, now=now)
+                        ok = True
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         if ok:
             row = self.get_invoice(invoice_id)
             self.log_audit_event(

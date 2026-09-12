@@ -1050,6 +1050,20 @@ async def _find_confirmed_star_refund(bot, charge_id: str, payer_telegram_id: in
 
 
 def _reconcile_stars_refund(handler, row, payment_id: int, *, orphan: bool = False):
+    if not orphan and row["status"] == "refunded":
+        # DL-063: the invoice-side refund already fully completed (Telegram
+        # confirmed, local status='refunded' committed), but a bound legacy
+        # plan-switch row can still be stuck non-terminal -- either the
+        # process died between Database.mark_invoice_refunded's two writes
+        # before they were folded into one transaction, or this is data
+        # from before that fix existed. No Telegram call is needed or safe
+        # to repeat here (the money side is already done); this just drives
+        # the same real, idempotent entrypoint again to close that gap. A
+        # pair that's already fully finalized (including a non-DL-063
+        # invoice with no bound switch at all) is a safe no-op there.
+        ok = handler.server.db.mark_invoice_refunded(payment_id, reconciled=True)
+        _json_response(handler, 200, {"ok": bool(ok), "status": "refunded", "reconciled": True})
+        return
     if row["status"] not in ("refund_pending", "refund_unknown"):
         _json_response(handler, 409, {"error": f"Cannot reconcile from status {row['status']}"})
         return

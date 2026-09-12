@@ -318,6 +318,18 @@ class StarsPurchaseStore:
                         raise StarsPurchaseError("payer is not the canonical account owner")
                     if self._legacy_stars_plan_switch is None:
                         raise StarsPurchaseError("legacy stars plan switch store unavailable")
+                    # Fail closed BEFORE Telegram captures money: a switch
+                    # already cancelled/confirmed/etc. must never let this
+                    # invoice through pre_checkout again. capture_paid's own
+                    # late-arrival race handling (money already moved after
+                    # a cancel landed) is untouched by this check -- that
+                    # path is only reachable once Telegram has already sent
+                    # successful_payment, past this gate.
+                    switch = self._conn.execute(
+                        "SELECT state FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?", (row["id"],)
+                    ).fetchone()
+                    if not switch or switch["state"] != "PENDING_PAYMENT":
+                        raise StarsPurchaseError("legacy switch is no longer pending payment")
                     self._legacy_stars_plan_switch.assert_still_eligible_locked(
                         row["account_id"], row["plan_version_id"]
                     )

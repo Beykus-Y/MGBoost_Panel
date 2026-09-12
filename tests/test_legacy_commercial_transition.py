@@ -1055,3 +1055,64 @@ def test_manual_review_requires_explicit_audited_retry_and_never_regrants_grace(
         "SELECT COUNT(*) FROM mgboost_legacy_commercial_transition_events "
         "WHERE transition_id=? AND event_type='MANUAL_REVIEW_RETRY'", (transition["id"],),
     ).fetchone()[0] == 1
+
+
+def test_manual_rub_transition_baseline_is_actually_consumed_by_the_real_ledger():
+    """Regression for DL-063's ledger change: wl_usage_ledger.record_sample
+    was extended to also check the newer Stars-engine baseline table via a
+    UNION -- this proves the original manual-RUB baseline path (this
+    engine's own mgboost_wl_transition_baselines) still forgives the first
+    post-boundary observation and bills normally afterwards, exactly as
+    before. No prior test in this suite exercised record_sample against a
+    real transition baseline (only row *existence* was checked)."""
+    import tempfile, os
+    from importlib import reload
+    import src.config as cfg
+    import src.database as db_mod
+    tmp = tempfile.mkdtemp()
+    os.environ["DATA_DIR"] = tmp
+    os.environ["PRIMARY_MGBOOST_ADMIN_ACTOR_ID"] = "owner:primary-admin-stable-id"
+    os.environ["PRIMARY_MGBOOST_ADMIN_LOGIN"] = "authenticated-primary-login"
+    reload(cfg)
+    cfg.DATA_DIR = tmp
+    reload(db_mod)
+    db_mod.DB_PATH = os.path.join(tmp, "db.sqlite3")
+    db = db_mod.Database()
+    try:
+        account_id, cap = _legacy(db, expiry=3600, username="lct-ledger-consume", tg=996500)
+        child = _add_child(db, account_id, suffix="ledger")
+        payment = _payment(db, cap, account_id, plan="WL", tag="ledger-consume")
+        transition = db.legacy_commercial_transitions.create(cap, payment_record_id=payment["id"], reason="real paid transition", now=1000)
+        transition = db.legacy_commercial_transitions.confirm_payment(cap, transition["id"], now=1000)
+        db.legacy_commercial_transitions.claim_due(worker_id="ledger-worker", now=transition["activation_at"])
+        db.legacy_commercial_transitions.validate_due_source(transition["id"])
+        db.legacy_commercial_transitions.assess_capacity(transition["id"], now=transition["activation_at"])
+        applied = db.legacy_commercial_transitions.apply_ready(transition["id"], now=transition["activation_at"])
+        node_id = 4
+        baseline_before = db._conn.execute(
+            "SELECT state FROM mgboost_wl_transition_baselines WHERE transition_id=? AND node_id=?",
+            (transition["id"], node_id),
+        ).fetchone()
+        assert baseline_before["state"] == "PENDING"
+
+        first = db.wl_usage_ledger.record_sample(
+            account_id=account_id, child_intent_id=child["child_intent_id"], node_id=node_id,
+            cursor_after=3_000_000_000, collector_id="w1", collected_at=transition["activation_at"] + 60,
+        )
+        assert first["delta_bytes"] == 0
+        assert first["transition_baseline"] is True
+        baseline_after = db._conn.execute(
+            "SELECT state,consumed_at FROM mgboost_wl_transition_baselines WHERE transition_id=? AND node_id=?",
+            (transition["id"], node_id),
+        ).fetchone()
+        assert baseline_after["state"] == "CONSUMED"
+        assert baseline_after["consumed_at"] == transition["activation_at"] + 60
+
+        second = db.wl_usage_ledger.record_sample(
+            account_id=account_id, child_intent_id=child["child_intent_id"], node_id=node_id,
+            cursor_after=3_000_005_678, collector_id="w1", collected_at=transition["activation_at"] + 3600,
+        )
+        assert second.get("transition_baseline") is not True
+        assert second["delta_bytes"] == 5678
+    finally:
+        db._conn.close()

@@ -115,16 +115,43 @@ class LegacyStarsPlanSwitchStore:
         confirm_locked/apply_locked when they detect a conflict mid-flight
         and must record MANUAL_REVIEW atomically with everything else they
         already read/wrote this transaction, rather than nesting a second
-        BEGIN IMMEDIATE."""
+        BEGIN IMMEDIATE.
+
+        Also flips the bound stars_invoices row to status='manual_review'
+        (mirroring StarsPurchaseStore._mark_manual_locked's exact shape,
+        duplicated here rather than imported to avoid a cross-module
+        dependency for two lines of SQL) whenever it is still 'paid' -- a
+        switch stuck in MANUAL_REVIEW here always means money already moved
+        but the entitlement was never applied. Without this, the invoice
+        stays 'paid' forever, which src/routes/admin.py's refund gate does
+        not accept (only 'manual_review'/'applied'/'canonical_applied'/
+        'apply_retry_exhausted'/'apply_failed_user_missing' are refundable),
+        making the payment a dead end for the existing audited Stars refund
+        tool. If the invoice already reached 'canonical_applied' (a real
+        APPLIED switch racing a manual_review call from a stale/duplicate
+        caller -- should not happen in practice since apply_locked only
+        calls this before its own success path, but guarded here too), this
+        intentionally leaves invoice status alone: an already-applied
+        entitlement must never look refund-eligible-as-if-unapplied via this
+        side channel; the existing canonical_applied refund path (money-only,
+        no automatic entitlement rollback) still applies unchanged.
+        """
         row = self._conn.execute('SELECT * FROM mgboost_legacy_stars_plan_switches WHERE id=?', (int(switch_id),)).fetchone()
         if not row or row['state'] == 'MANUAL_REVIEW':
             return
+        timestamp = int(now)
+        clipped_reason = str(reason or 'manual review')[:300]
         self._conn.execute(
             "UPDATE mgboost_legacy_stars_plan_switches SET state='MANUAL_REVIEW',review_reason=?,revision=revision+1,updated_at=? WHERE id=?",
-            (str(reason or 'manual review')[:300], int(now), row['id']),
+            (clipped_reason, timestamp, row['id']),
+        )
+        self._conn.execute(
+            "UPDATE stars_invoices SET status='manual_review',manual_review_reason=?,manual_review_at=? "
+            "WHERE id=? AND status='paid'",
+            (clipped_reason, timestamp, row['invoice_id']),
         )
         fresh = self._conn.execute('SELECT * FROM mgboost_legacy_stars_plan_switches WHERE id=?', (row['id'],)).fetchone()
-        self._event(switch_id, 'MANUAL_REVIEW', 'SYSTEM', str(reason or 'manual review')[:300], fresh['revision'], int(now))
+        self._event(switch_id, 'MANUAL_REVIEW', 'SYSTEM', clipped_reason, fresh['revision'], timestamp)
 
     # -- nested helpers: caller already holds self._lock + BEGIN IMMEDIATE --
 
@@ -266,11 +293,49 @@ class LegacyStarsPlanSwitchStore:
                 base_boundary = max(int(row['original_source_expiry'] or 0), payment_confirmed_at)
                 activation_at = ceil_to_utc_hour(base_boundary)
                 target_expiry = activation_at + int(row['duration_days']) * 86400
+
+                # LEGACY_COMMERCIAL_ALIGNMENT_GRACE (DL-062/DL-063), mirrored
+                # verbatim from legacy_commercial_transition.py's own
+                # confirm_payment: unconditionally CAS the live subscription's
+                # current_expiry forward to the aligned activation_at boundary
+                # right now, not at apply time. Without this, a source that
+                # already expired (or expires) at/before confirmation leaves a
+                # real access gap of up to 3599s (or more) until apply_locked
+                # runs at activation_at. Runs exactly once per switch: this
+                # whole branch is only reachable from state=='PENDING_PAYMENT',
+                # and the schema's state-machine trigger forbids ever
+                # re-entering PENDING_PAYMENT once past it, so a manual_review
+                # retry can never repeat this step (see retry_manual_review).
+                grace_updated = self._conn.execute(
+                    "UPDATE mgboost_subscriptions SET current_expiry=?,status='ACTIVE',updated_at=?,row_version=row_version+1 "
+                    "WHERE id=? AND row_version=? AND current_plan_version_id=? AND current_expiry IS ? AND status IS ?",
+                    (activation_at, timestamp, source['id'], source['row_version'],
+                     row['source_plan_version_id'], row['original_source_expiry'], row['source_subscription_status']),
+                )
+                if grace_updated.rowcount != 1:
+                    raise LegacyStarsPlanSwitchConflict('alignment grace CAS failed')
+                post_grace_row_version = int(source['row_version']) + 1
+                self._conn.execute(
+                    "INSERT INTO mgboost_entitlement_mutations "
+                    "(account_id,subscription_id,operation,payment_channel,mutation_source,actor_type,actor_ref,reason,before_json,after_json,created_at) "
+                    "VALUES (?,?,'LEGACY_COMMERCIAL_ALIGNMENT_GRACE','TELEGRAM_STARS','DIRECT_PURCHASE','TELEGRAM',?,?,?,?,?)",
+                    (row['account_id'], source['id'], str(invoice['payer_telegram_id']),
+                     'self-service Stars legacy plan switch UTC-hour alignment',
+                     json.dumps({'status': row['source_subscription_status'], 'current_expiry': row['original_source_expiry']}, sort_keys=True),
+                     json.dumps({'status': 'ACTIVE', 'current_expiry': activation_at}, sort_keys=True), timestamp),
+                )
+
+                # source_post_confirmation_row_version records the row_version
+                # AFTER the grace CAS above, not before -- apply_locked's own
+                # re-validation (below) must match the grace-extended live
+                # row, exactly like legacy_commercial_transition.py's
+                # apply_ready compares against aligned_source_expiry (not
+                # original_source_expiry) for this same reason.
                 updated = self._conn.execute(
                     "UPDATE mgboost_legacy_stars_plan_switches SET state='SCHEDULED',confirmed_at=?,"
                     "aligned_source_expiry=?,activation_at=?,target_expiry=?,source_post_confirmation_row_version=?,"
                     "device_count_at_confirm=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND state='PENDING_PAYMENT'",
-                    (payment_confirmed_at, activation_at, activation_at, target_expiry, source['row_version'],
+                    (payment_confirmed_at, activation_at, activation_at, target_expiry, post_grace_row_version,
                      active_count, timestamp, switch_id, row['revision']),
                 )
                 if updated.rowcount != 1:
@@ -278,6 +343,21 @@ class LegacyStarsPlanSwitchStore:
                 fresh = self._get_inline(switch_id)
                 self._event(switch_id, 'CONFIRMED', 'TELEGRAM', 'payment confirmed, activation scheduled', fresh['revision'], timestamp)
                 self._conn.commit()
+                # LEGACY_COMMERCIAL_ALIGNMENT_GRACE just extended the live
+                # subscription's current_expiry, but nothing has told the
+                # account's actual children yet -- mirrored verbatim from
+                # legacy_commercial_transition.py::confirm_payment's own
+                # post-commit block: ParentSyncStore exposes no caller-owned
+                # transaction boundary, so this is called immediately AFTER
+                # the money-confirming commit (never inside it -- no
+                # network/remote I/O belongs in the entitlement transaction),
+                # and the standalone sync worker/reconciliation sweep
+                # repeats this idempotently, closing any crash between these
+                # two commits.
+                from .parent_sync import ParentSyncStore
+                parent_sync = ParentSyncStore(self._conn, self._lock)
+                parent_sync.refresh_desired_state(row['account_id'], now=timestamp)
+                parent_sync.enqueue_current_children(row['account_id'], now=timestamp)
                 return fresh
             except Exception:
                 self._conn.rollback()
@@ -326,10 +406,17 @@ class LegacyStarsPlanSwitchStore:
                 latest = self._conn.execute(
                     'SELECT id FROM mgboost_subscriptions WHERE account_id=? ORDER BY id DESC LIMIT 1', (row['account_id'],)
                 ).fetchone()
+                # Matches against the GRACE-EXTENDED live row (aligned_
+                # source_expiry, status=='ACTIVE'), not the pre-grace
+                # original_source_expiry/source_subscription_status snapshot
+                # -- confirm_locked's LEGACY_COMMERCIAL_ALIGNMENT_GRACE step
+                # already moved the live subscription forward, exactly like
+                # legacy_commercial_transition.py's own apply_ready checks
+                # aligned_source_expiry, not original_source_expiry, here.
                 if (not sub or not latest or latest['id'] != row['source_subscription_id']
                         or sub['row_version'] != row['source_post_confirmation_row_version']
                         or sub['current_plan_version_id'] != row['source_plan_version_id']
-                        or sub['current_expiry'] != row['original_source_expiry'] or sub['status'] != row['source_subscription_status']):
+                        or sub['current_expiry'] != row['aligned_source_expiry'] or sub['status'] != 'ACTIVE'):
                     self._manual_review_inline(switch_id, reason='source_diverged_after_scheduling', now=timestamp)
                     self._conn.commit()
                     raise LegacyStarsPlanSwitchConflict('source entitlement diverged after scheduling')
@@ -497,14 +584,92 @@ class LegacyStarsPlanSwitchStore:
                 row = self._conn.execute('SELECT * FROM mgboost_legacy_stars_plan_switches WHERE id=?', (int(switch_id),)).fetchone()
                 if not row or row['state'] != 'MANUAL_REVIEW':
                     raise LegacyStarsPlanSwitchConflict('switch is not in manual review')
+                # A switch that hit MANUAL_REVIEW before ever completing
+                # confirmation (e.g. source_diverged_before_confirmation,
+                # device_limit_exceeded_at_confirm) has activation_at/
+                # confirmed_at still NULL. ready_due() only ever selects
+                # SCHEDULED rows with activation_at<=now -- NULL never
+                # satisfies that, so blindly restoring to SCHEDULED here
+                # would create a row no worker can ever pick up again.
+                # Restore to PENDING_PAYMENT instead so the next confirm
+                # pass (pending_legacy_switch_invoices/confirm_locked) can
+                # actually re-attempt confirmation. Only a switch that
+                # already has a real activation_at (manual_review happened
+                # AFTER confirmation, e.g. apply_locked's lineage/CAS-drift
+                # checks) goes back to SCHEDULED.
+                next_state = 'SCHEDULED' if row['confirmed_at'] is not None and row['activation_at'] is not None else 'PENDING_PAYMENT'
                 self._conn.execute(
-                    "UPDATE mgboost_legacy_stars_plan_switches SET state='SCHEDULED',review_reason=NULL,revision=revision+1,updated_at=? WHERE id=?",
-                    (timestamp, row['id']),
+                    "UPDATE mgboost_legacy_stars_plan_switches SET state=?,review_reason=NULL,revision=revision+1,updated_at=? WHERE id=?",
+                    (next_state, timestamp, row['id']),
+                )
+                # Additional bug found while wiring finding 7 together with
+                # finding 3: _manual_review_inline (finding 3's fix) flips
+                # the bound invoice to status='manual_review' whenever money
+                # already moved. Without restoring it here, the retried
+                # switch is unreachable again: pending_legacy_switch_
+                # invoices() only selects invoice status='paid' (so a
+                # PENDING_PAYMENT retry would never be picked back up for
+                # confirmation), and apply_locked itself requires invoice
+                # status IN ('paid','canonical_applied') (so a SCHEDULED
+                # retry would immediately bounce back to MANUAL_REVIEW on
+                # its very next apply attempt). Restore 'paid' only when the
+                # invoice is still exactly 'manual_review' -- never touch
+                # any other status (e.g. an already-refunded invoice, or one
+                # this store never flipped in the first place).
+                self._conn.execute(
+                    "UPDATE stars_invoices SET status='paid',manual_review_reason=NULL,manual_review_at=NULL "
+                    "WHERE id=? AND status='manual_review'",
+                    (row['invoice_id'],),
                 )
                 fresh = self._get_inline(switch_id)
                 self._event(switch_id, 'MANUAL_REVIEW_RETRY', actor, reason, fresh['revision'], timestamp)
                 self._conn.commit()
                 return fresh
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def _mark_refunded_inline(self, *, invoice_id: int, now: int) -> None:
+        """Runs inside the CALLER's already-open transaction (see
+        Database.mark_invoice_refunded, which folds this into the SAME
+        BEGIN IMMEDIATE as the stars_invoices.status='refunded' CAS -- the
+        two writes are money-already-refunded bookkeeping with no external
+        call in between, exactly like capture_paid's own already-moved-money
+        bookkeeping, so there is no real crash window between them to
+        reconcile after the fact). Money-only, exactly like every other
+        invoice kind's existing refund path: never touches subscriptions/
+        entitlements. An already-APPLIED switch's entitlement is left
+        completely untouched here (fail-closed) -- only a switch that never
+        reached APPLIED (money moved but nothing was ever granted) is moved
+        to the terminal REFUNDED state, which falls outside the live-switch
+        UNIQUE index so a future attempt is possible. If invoice_id has no
+        bound switch at all (an ordinary CANONICAL_PLAN/SIGNUP refund), this
+        is a no-op. Idempotent no-op if the switch is already terminal."""
+        timestamp = int(now)
+        row = self._conn.execute(
+            'SELECT * FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?', (int(invoice_id),)
+        ).fetchone()
+        if not row or row['state'] in ('APPLIED', 'CANCELLED', 'REFUNDED'):
+            return
+        self._conn.execute(
+            "UPDATE mgboost_legacy_stars_plan_switches SET state='REFUNDED',revision=revision+1,updated_at=? WHERE id=?",
+            (timestamp, row['id']),
+        )
+        fresh = self._get_inline(row['id'])
+        self._event(row['id'], 'REFUNDED', 'SYSTEM', 'Stars payment refunded before application', fresh['revision'], timestamp)
+
+    def mark_refunded(self, *, invoice_id: int, now: int) -> None:
+        """Top-level, self-transacting wrapper around ``_mark_refunded_
+        inline`` for any standalone/reconciliation caller that does not
+        already hold an open transaction on this connection. The real admin
+        refund path (Database.mark_invoice_refunded) does NOT call this --
+        it calls ``_mark_refunded_inline`` directly, inside its own
+        transaction, so the invoice and switch flips are atomic."""
+        with self._lock:
+            try:
+                self._conn.execute('BEGIN IMMEDIATE')
+                self._mark_refunded_inline(invoice_id=invoice_id, now=now)
+                self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
@@ -520,7 +685,7 @@ class LegacyStarsPlanSwitchStore:
 
     def for_account(self, account_id: int) -> dict | None:
         row = self._conn.execute(
-            "SELECT * FROM mgboost_legacy_stars_plan_switches WHERE account_id=? AND state NOT IN ('APPLIED','CANCELLED') "
+            "SELECT * FROM mgboost_legacy_stars_plan_switches WHERE account_id=? AND state NOT IN ('APPLIED','CANCELLED','REFUNDED') "
             "ORDER BY id DESC LIMIT 1", (int(account_id),),
         ).fetchone()
         return dict(row) if row else None

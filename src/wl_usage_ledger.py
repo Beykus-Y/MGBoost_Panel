@@ -360,15 +360,45 @@ class WLUsageLedgerStore:
                 # cursor advance.  Do not emit an event/sample: that would
                 # make the intentionally forgiven crossing interval appear in
                 # quota accounting.  The durable state is the replay guard.
+                # DL-063: two independent, authorized TRANSITION_BASELINE
+                # sources now exist -- the manual-RUB engine's
+                # mgboost_wl_transition_baselines (keyed to
+                # mgboost_legacy_commercial_transitions) and the self-service
+                # Stars engine's mgboost_legacy_stars_plan_switch_wl_baselines
+                # (keyed to mgboost_legacy_stars_plan_switches). Both are
+                # deliberately kept as separate additive tables (different FK
+                # targets), so consumption here must check both, using the
+                # identical forgiveness semantics, and pick whichever is
+                # earliest-eligible if (in a theoretical future) more than one
+                # could ever apply to the same child/node -- in practice only
+                # one of the two transition kinds can ever exist for a given
+                # account at a time (both engines' own UNIQUE-live-per-account
+                # constraints), so this is a belt-and-braces ordering, not a
+                # real concurrent-source scenario today.
                 baseline = self._conn.execute(
-                    "SELECT b.id FROM mgboost_wl_transition_baselines b "
-                    "JOIN mgboost_legacy_commercial_transitions t ON t.id=b.transition_id "
-                    "WHERE b.account_id=? AND b.child_intent_id=? AND b.node_id=? "
-                    "AND b.state='PENDING' AND COALESCE(t.activation_at,b.created_at)<=? "
-                    "ORDER BY t.activation_at,b.id LIMIT 1",
-                    (int(account_id), int(child_intent_id), int(node_id), int(collected_at)),
+                    "SELECT baseline_id, source FROM ("
+                    "  SELECT b.id AS baseline_id, 'RUB' AS source, "
+                    "         COALESCE(t.activation_at,b.created_at) AS eff_at "
+                    "  FROM mgboost_wl_transition_baselines b "
+                    "  JOIN mgboost_legacy_commercial_transitions t ON t.id=b.transition_id "
+                    "  WHERE b.account_id=? AND b.child_intent_id=? AND b.node_id=? "
+                    "  AND b.state='PENDING' AND COALESCE(t.activation_at,b.created_at)<=? "
+                    "  UNION ALL "
+                    "  SELECT b.id AS baseline_id, 'STARS' AS source, "
+                    "         COALESCE(sw.activation_at,b.created_at) AS eff_at "
+                    "  FROM mgboost_legacy_stars_plan_switch_wl_baselines b "
+                    "  JOIN mgboost_legacy_stars_plan_switches sw ON sw.id=b.switch_id "
+                    "  WHERE b.account_id=? AND b.child_intent_id=? AND b.node_id=? "
+                    "  AND b.state='PENDING' AND COALESCE(sw.activation_at,b.created_at)<=?"
+                    ") ORDER BY eff_at, baseline_id LIMIT 1",
+                    (int(account_id), int(child_intent_id), int(node_id), int(collected_at),
+                     int(account_id), int(child_intent_id), int(node_id), int(collected_at)),
                 ).fetchone()
                 if baseline is not None:
+                    baseline_table = (
+                        "mgboost_wl_transition_baselines" if baseline["source"] == "RUB"
+                        else "mgboost_legacy_stars_plan_switch_wl_baselines"
+                    )
                     if cursor_row is None:
                         self._conn.execute(
                             "UPDATE mgboost_wl_usage_cursors SET last_observed_cumulative_bytes=?,"
@@ -387,9 +417,11 @@ class WLUsageLedgerStore:
                         )
                         if updated.rowcount != 1:
                             raise WLUsageLedgerError("usage cursor changed concurrently")
+                    # baseline_table is one of exactly two hardcoded literals
+                    # set above, never user input -- safe to interpolate.
                     consumed = self._conn.execute(
-                        "UPDATE mgboost_wl_transition_baselines SET state='CONSUMED',consumed_at=? "
-                        "WHERE id=? AND state='PENDING'", (int(collected_at), baseline["id"]),
+                        f"UPDATE {baseline_table} SET state='CONSUMED',consumed_at=? "
+                        "WHERE id=? AND state='PENDING'", (int(collected_at), baseline["baseline_id"]),
                     )
                     if consumed.rowcount != 1:
                         raise WLUsageLedgerError("transition baseline changed concurrently")
