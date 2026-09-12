@@ -4938,6 +4938,66 @@ Status semantics: `CLOSED` — решение принято; `SUPERSEDED` — �
   отдельной ветке; production rollout запрещён до independent review.
 - **Связано:** PH3-05/08/09, PH5-02/04/05/06/09, PH6-02, PH7-10, DL-044/061.
 
+## DL-063 — Self-service LEGACY_PAID_COMPAT → commercial переход через Telegram Stars
+
+- **Дата:** 2026-09-12.
+- **Решение (owner):** расширяет DL-062 третьим авторизованным каналом
+  оплаты для того же перехода (`LEGACY_PAID_COMPAT_V1_*` → один из
+  `BASIC`, `BASIC_PLUS`, `BASIC_PRO`, `WL`, `EXTENDED`, `FAMILY`) —
+  `TELEGRAM_STARS`, инициируемый самим клиентом (self-service) через бота,
+  в дополнение к существующим `MANUAL_RUB`/`EXTERNAL_PAYMENT`
+  (админ-инициируемым). Реализуется отдельным параллельным
+  state-machine-модулем (`src/legacy_stars_plan_switch.py` +
+  `src/legacy_stars_plan_switch_schema.py`), а не обобщением
+  `legacy_commercial_transition.py` — существующий ручной RUB-движок не
+  модифицируется.
+- **Цена:** берётся только из immutable Stars-каталога (`stars_invoices`
+  snapshot-колонки) для точно выбранного `target_plan_code` + `duration_
+  days`; никаких произвольных сумм/планов из bot callback_data — callback_
+  data несёт только идентификаторы, сумма и план валидируются заново на
+  `pre_checkout_query` и на `capture_paid` против каталога.
+- **Прочие инварианты DL-062 не меняются:** ровно один
+  `LEGACY_COMMERCIAL_ALIGNMENT_GRACE`, `payment_confirmed_at` = durable
+  `stars_invoices.paid_at` (не `now()` воркера в момент обработки),
+  `activation_at=ceil_to_utc_hour(max(original_source_expiry,
+  payment_confirmed_at))`, freeze payment после confirmation, CAS по
+  `row_version`, TRANSITION_BASELINE для перехода в LIMITED (WL/EXTENDED/
+  FAMILY) с authoritative child lineage check перед LIMITED apply.
+  Device selection остаётся неавтоматическим: если активных устройств
+  больше `device_limit` целевого тарифа, self-service блокируется
+  (сообщение с переходом в поддержку), UI выбора устройств не строится.
+- **Новое (для Stars-канала, аналога в DL-062 ещё не было):**
+  - Staged rollout: `legacy_stars_switch:enabled` — три состояния
+    `OFF → CANARY(один явно перечисленный account_id) → ON`. Переход
+    `CANARY → ON` разрешён только после того, как для этого одного
+    аккаунта весь путь `payment_evidence → SCHEDULED → activation_at →
+    APPLIED → SYNCED` пройден без единого `MANUAL_REVIEW`.
+  - Флаг гейтит только новый checkout (`create_legacy_switch_invoice`);
+    воркер (`confirm`/`apply_ready`) продолжает докатывать уже оплаченные
+    переходы до `APPLIED`/`MANUAL_REVIEW` независимо от состояния флага —
+    аварийный `OFF` не замораживает уже списанные деньги.
+  - Recovery для зависшего в `MANUAL_REVIEW` Stars-перехода — через уже
+    существующий kind-agnostic admin-refund путь (`src/routes/admin.py`,
+    `_issue_stars_refund`/`handle_stars_payment_refund`); отдельный
+    refund-движок не строится.
+  - Неоплаченный `PENDING_PAYMENT` (invoice не оплачен/протух/отменён
+    пользователем) обязан детерминированно освобождать unique-слот
+    аккаунта — отменa разрешена только до появления payment evidence.
+- **Хранение:** отдельные аддитивные таблицы
+  (`mgboost_legacy_stars_plan_switches`,
+  `mgboost_legacy_stars_plan_switch_events`,
+  `mgboost_legacy_stars_plan_switch_applications`,
+  `mgboost_legacy_stars_plan_switch_wl_baselines`); существующие
+  checksum-закреплённые таблицы `mgboost_wl_transition_baselines` и
+  `mgboost_stars_purchase_applications` не переиспользуются (FK/CHECK не
+  подходят под новый источник записей/операцию без изменения их
+  контракта). `mgboost_stars_purchase_sync_jobs` переиспользуется as-is —
+  структурно kind-agnostic по существующему коду и документированной
+  цепочке `payment_evidence → purchase_application → sync_job`.
+- **Кто:** owner.
+- **Статус:** решение принято, реализация не начата (`PLANNED`).
+- **Связано:** DL-062, PH5-06, PH5-13.
+
 # Contradictions and migration hazards
 
 1. Current production Stars 199/349 совпадает по цене с будущим WL, но schema не содержит plan/WL/device semantics; старые invoices нельзя молча переинтерпретировать.

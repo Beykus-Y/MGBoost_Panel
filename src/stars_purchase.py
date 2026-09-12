@@ -45,6 +45,14 @@ class ProductSnapshotMismatch(StarsPurchaseError):
     pass
 
 
+# DL-063: self-service LEGACY_PAID_COMPAT_V1_* -> commercial plan switch,
+# paid via Stars. A structurally distinct invoice kind from CANONICAL_PLAN --
+# it deliberately never goes through _assert_purchase_plan_locked (that
+# assertion stays exactly as-is for every ordinary renewal path); eligibility
+# and device-limit checks instead live in LegacyStarsPlanSwitchStore.
+LEGACY_SWITCH_INVOICE_KIND = "LEGACY_PLAN_SWITCH"
+
+
 def _canonical(value: dict) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -62,6 +70,7 @@ class StarsPurchaseStore:
         self._subscription_renewal = subscription_renewal
         self._signup_factory = None
         self._database = None
+        self._legacy_stars_plan_switch = None
 
     def bind_database(self, db) -> None:
         self._database = db
@@ -72,6 +81,11 @@ class StarsPurchaseStore:
         CANONICAL_SIGNUP invoices -- i.e. strictly after a confirmed
         payment."""
         self._signup_factory = factory
+
+    def bind_legacy_stars_plan_switch(self, store) -> None:
+        """Wired to ``LegacyStarsPlanSwitchStore`` at Database construction
+        (DL-063)."""
+        self._legacy_stars_plan_switch = store
 
     def catalog(self) -> list[dict]:
         return self._plan_catalog.active_catalog("TELEGRAM_STARS")
@@ -169,6 +183,51 @@ class StarsPurchaseStore:
                 raise
 
 
+    def create_legacy_switch_invoice(self, *, telegram_id: int, target_plan_code: str,
+                                     duration_days: int, ttl_seconds: int,
+                                     now: int | None = None) -> dict:
+        """DL-063: self-service checkout for a LEGACY_PAID_COMPAT_V1_* ->
+        commercial plan switch, paid via Stars. Deliberately does NOT call
+        ``_assert_purchase_plan_locked`` -- that assertion is unchanged for
+        every ordinary renewal path. Eligibility (source plan, device limit)
+        is delegated to ``LegacyStarsPlanSwitchStore.create_locked`` inside
+        this SAME transaction, so invoice<->switch binding is atomic: any
+        ineligibility rolls back the whole insert, leaving no orphaned
+        invoice or switch row."""
+        if self._legacy_stars_plan_switch is None:
+            raise StarsPurchaseError("legacy stars plan switch store unavailable")
+        timestamp = int(time.time()) if now is None else int(now)
+        assert_plan_sellable(target_plan_code)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
+                if account is None:
+                    raise StarsPurchaseError("no canonical account for this Telegram user")
+                plan, duration, catalog, price = self._lookup_active_product_locked(target_plan_code, duration_days)
+                cursor = self._conn.execute(
+                    "INSERT INTO stars_invoices (created_by_telegram_id,marzban_username,tariff_id,tariff_name,"
+                    "duration_days,stars_price,status,expires_at,created_at,invoice_kind,account_id,"
+                    "plan_version_id,duration_id,catalog_version_id,price_id,plan_code_snapshot,"
+                    "plan_version_snapshot,catalog_version_snapshot,price_amount_snapshot) "
+                    "VALUES (?,?,?,?,?,?,'created',?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (int(telegram_id), account["public_id"], None, plan["display_name"], int(duration_days),
+                     int(price["amount"]), timestamp + int(ttl_seconds), timestamp, LEGACY_SWITCH_INVOICE_KIND,
+                     account["id"], plan["id"], duration["id"], catalog["id"], price["id"], plan["plan_code"],
+                     plan["version"], catalog["catalog_version"], price["amount"]),
+                )
+                invoice_id = cursor.lastrowid
+                self._legacy_stars_plan_switch.create_locked(
+                    account_id=account["id"], invoice_id=invoice_id, target_plan_version_id=plan["id"],
+                    duration_days=int(duration_days), now=timestamp,
+                )
+                self._conn.commit()
+                row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (invoice_id,)).fetchone()
+                return dict(row)
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def _promo(self):
         promo = self._database.promo if self._database is not None else None
         if promo is None:
@@ -242,7 +301,7 @@ class StarsPurchaseStore:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (int(invoice_id),)).fetchone()
-                if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND}:
+                if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND}:
                     raise StarsPurchaseError("not a canonical Stars invoice")
                 if row["status"] != "created" or timestamp >= row["expires_at"]:
                     raise StarsPurchaseError("invoice is not payable")
@@ -253,6 +312,15 @@ class StarsPurchaseStore:
                     if int(row["created_by_telegram_id"]) != int(telegram_id):
                         raise StarsPurchaseError("payer is not the signup invoice creator")
                     assert_plan_sellable(row["plan_code_snapshot"])
+                elif row["invoice_kind"] == LEGACY_SWITCH_INVOICE_KIND:
+                    account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
+                    if not account or account["id"] != row["account_id"]:
+                        raise StarsPurchaseError("payer is not the canonical account owner")
+                    if self._legacy_stars_plan_switch is None:
+                        raise StarsPurchaseError("legacy stars plan switch store unavailable")
+                    self._legacy_stars_plan_switch.assert_still_eligible_locked(
+                        row["account_id"], row["plan_version_id"]
+                    )
                 else:
                     account = self._accounts.get_active_account_by_telegram_id(int(telegram_id))
                     if not account or account["id"] != row["account_id"]:
@@ -274,7 +342,7 @@ class StarsPurchaseStore:
                 raise
 
     def _validate_snapshot_locked(self, row: dict) -> None:
-        if row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND}:
+        if row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND}:
             raise ProductSnapshotMismatch("not canonical")
         product = self._conn.execute(
             "SELECT pv.plan_code,pv.version,pd.duration_days,cv.catalog_version,cv.channel,pp.amount "
@@ -346,7 +414,7 @@ class StarsPurchaseStore:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (int(invoice_id),)).fetchone()
-                if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND}:
+                if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND}:
                     self._conn.rollback()
                     return "manual_review"
                 if row["status"] != "created":
@@ -359,6 +427,32 @@ class StarsPurchaseStore:
                     else int(row["price_amount_snapshot"]))
                 if currency != "XTR" or int(amount) != expected_amount:
                     reason = "amount_or_currency_mismatch"
+                elif row["invoice_kind"] == LEGACY_SWITCH_INVOICE_KIND:
+                    # Real external race: the user may have tapped "cancel"
+                    # in the bot after pre_checkout was already confirmed by
+                    # Telegram but before this callback landed. Re-reading
+                    # the bound switch's state HERE, inside the SAME
+                    # transaction that is about to flip the invoice to
+                    # 'paid', is what actually prevents a CANCELLED switch
+                    # from ending up with a paid invoice underneath it --
+                    # two independent per-row CAS operations would not (see
+                    # DL-063 review notes). Money is never silently dropped:
+                    # paid_at is still recorded below either way.
+                    switch = self._conn.execute(
+                        "SELECT state FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?", (row["id"],)
+                    ).fetchone()
+                    if not switch or switch["state"] != "PENDING_PAYMENT":
+                        reason = "legacy_switch_cancelled_before_capture"
+                    else:
+                        try:
+                            self._validate_snapshot_locked(dict(row))
+                            if self._legacy_stars_plan_switch is None:
+                                raise StarsPurchaseError("legacy stars plan switch store unavailable")
+                            self._legacy_stars_plan_switch.assert_still_eligible_locked(
+                                row["account_id"], row["plan_version_id"]
+                            )
+                        except Exception:
+                            reason = "product_or_account_state_mismatch"
                 elif row["invoice_kind"] == SIGNUP_INVOICE_KIND:
                     # Confirmed payment for a brand-new customer. The
                     # account was resolved-or-created above (idempotent,
@@ -437,9 +531,55 @@ class StarsPurchaseStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def pending_legacy_switch_invoices(self) -> list[dict]:
+        """DL-063: paid LEGACY_PLAN_SWITCH invoices whose bound switch is
+        still PENDING_PAYMENT -- the worker's confirm phase. Deliberately
+        separate from ``pending_invoices()``: this kind's ``apply_paid_
+        invoice`` call only confirms/schedules, it never flips the invoice
+        to ``canonical_applied`` immediately (that happens later, at
+        ``activation_at``, via ``LegacyStarsPlanSwitchStore.apply_locked``)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT inv.* FROM stars_invoices inv JOIN mgboost_legacy_stars_plan_switches sw "
+                "ON sw.invoice_id=inv.id WHERE inv.invoice_kind=? AND inv.status='paid' AND sw.state='PENDING_PAYMENT' "
+                "ORDER BY inv.id", (LEGACY_SWITCH_INVOICE_KIND,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def apply_paid_invoice(self, invoice_id: int, *, now: int | None = None) -> dict:
         """Apply one paid invoice through PH5-02 with invoice-scoped idempotency."""
         timestamp = int(time.time()) if now is None else int(now)
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (int(invoice_id),)).fetchone()
+            if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND}:
+                raise StarsPurchaseError("canonical invoice not found")
+            row = dict(row)
+        if row["invoice_kind"] == LEGACY_SWITCH_INVOICE_KIND:
+            # Two-phase apply, unlike CANONICAL_PLAN/CANONICAL_SIGNUP: this
+            # call only confirms and schedules activation_at.  The actual
+            # subscription mutation happens later, in
+            # LegacyStarsPlanSwitchStore.apply_locked, once activation_at is
+            # reached -- "no lost paid days" (DL-062/DL-063) requires
+            # waiting, not applying immediately.
+            if self._legacy_stars_plan_switch is None:
+                raise StarsPurchaseError("legacy stars plan switch store unavailable")
+            switch = self._conn.execute(
+                "SELECT id,state FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?", (row["id"],)
+            ).fetchone()
+            if not switch:
+                raise StarsPurchaseError("paid legacy switch invoice has no bound switch")
+            was_pending = switch["state"] == "PENDING_PAYMENT"
+            confirmed = self._legacy_stars_plan_switch.confirm_locked(switch["id"], now=timestamp)
+            return {
+                # already_applied means "this call was a no-op replay", not
+                # "state has advanced past PENDING_PAYMENT" -- a switch that
+                # was PENDING_PAYMENT walking into this very call and coming
+                # out SCHEDULED/MANUAL_REVIEW is a FRESH confirmation.
+                "already_applied": not was_pending,
+                "new_expiry": confirmed.get("target_expiry"),
+                "mutation_id": None,
+                "switch": confirmed,
+            }
         with self._lock:
             row = self._conn.execute("SELECT * FROM stars_invoices WHERE id=?", (int(invoice_id),)).fetchone()
             if not row or row["invoice_kind"] not in {"CANONICAL_PLAN", SIGNUP_INVOICE_KIND}:

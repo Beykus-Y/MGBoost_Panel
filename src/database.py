@@ -79,6 +79,8 @@ from .manual_payment import ManualPaymentStore
 from .legacy_commercial_transition_schema import apply_legacy_commercial_transition_schema
 from .legacy_commercial_transition_schema_v2 import apply_legacy_commercial_transition_schema_v2
 from .legacy_commercial_transition import LegacyCommercialTransitionStore
+from .legacy_stars_plan_switch_schema import apply_legacy_stars_plan_switch_schema
+from .legacy_stars_plan_switch import LegacyStarsPlanSwitchStore
 from .admin_grant import AdminGrantStore
 from .entitlement_engine import EntitlementEngine
 from .subscription_renewal import SubscriptionRenewalStore
@@ -220,6 +222,10 @@ class Database:
         self.stars_purchases.bind_signup_factory(
             self.commercial_signup.ensure_signup_account
         )
+        self.legacy_stars_plan_switch = LegacyStarsPlanSwitchStore(
+            self._conn, self._lock, self.primary_admin_authority
+        )
+        self.stars_purchases.bind_legacy_stars_plan_switch(self.legacy_stars_plan_switch)
         self.manual_payments = ManualPaymentStore(
             self._conn, self._lock, self.accounts, self.plan_catalog,
             self.subscription_renewal, self.provenance, self.wl_packages,
@@ -528,6 +534,7 @@ class Database:
         apply_manual_payment_schema_v2(self._conn)
         apply_legacy_commercial_transition_schema(self._conn)
         apply_legacy_commercial_transition_schema_v2(self._conn)
+        apply_legacy_stars_plan_switch_schema(self._conn)
         apply_promo_schema(self._conn)
         apply_promo_schema_v2(self._conn)
         apply_subscription_credential_schema(self._conn)

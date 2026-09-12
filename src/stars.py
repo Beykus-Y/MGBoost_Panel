@@ -581,9 +581,75 @@ async def _sync_canonical_purchase_children(db, marzban):
             ))
 
 
+async def notify_admin_legacy_switch_review(bot, db, switch: dict):
+    """DL-063 analogue of notify_admin_stuck_payment for a switch that
+    landed in MANUAL_REVIEW -- the underlying stars_invoices row stays
+    'paid'/'canonical_applied', so the reason lives on the switch row
+    itself, not on invoice.status."""
+    if bot is None or db is None or switch is None:
+        return
+    admin_tg_id = db.get_setting("bot:admin_tg_id")
+    if not admin_tg_id:
+        return
+    try:
+        await bot.send_message(
+            int(admin_tg_id),
+            "⭐️ Legacy Stars plan switch требует проверки\n"
+            f"switch #{switch.get('id')} account_id={switch.get('account_id')} "
+            f"invoice_id={switch.get('invoice_id')}\n"
+            f"Причина: {switch.get('review_reason') or 'не указана'}",
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить admin о legacy stars switch review: {type(e).__name__}")
+
+
+async def process_legacy_switch_invoice_row(bot, db, row: dict):
+    """DL-063 confirm phase: turn a paid LEGACY_PLAN_SWITCH invoice's bound
+    switch from PENDING_PAYMENT into SCHEDULED (activation_at computed from
+    the durable stars_invoices.paid_at, never from `now`). Never applies the
+    subscription mutation itself -- that only happens later, in
+    _apply_ready_legacy_switches, once activation_at is reached."""
+    try:
+        result = await _run_sync(db.stars_purchases.apply_paid_invoice, row["id"])
+    except Exception as exc:
+        logger.error("legacy stars switch confirm failed for invoice %s: %s", row["id"], exc)
+        return
+    switch = result.get("switch")
+    if switch and switch.get("state") == "MANUAL_REVIEW":
+        await notify_admin_legacy_switch_review(bot, db, switch)
+
+
+async def _apply_ready_legacy_switches(bot, db):
+    """DL-063 apply phase: for every switch whose activation_at has been
+    reached, atomically move the subscription to the target plan. A worker
+    crash between confirm and this call, or between two apply_locked
+    attempts, is closed by apply_locked's own idempotency_key_hash replay
+    boundary -- this loop can safely re-run ready_due() every tick."""
+    now = int(time.time())
+    for switch in db.legacy_stars_plan_switch.ready_due(now=now):
+        try:
+            applied = await _run_sync(db.legacy_stars_plan_switch.apply_locked, switch["id"], now)
+        except Exception as exc:
+            logger.error("legacy stars switch apply failed for switch %s: %s", switch["id"], exc)
+            fresh = db.legacy_stars_plan_switch.get(switch["id"])
+            if fresh and fresh.get("state") == "MANUAL_REVIEW":
+                await notify_admin_legacy_switch_review(bot, db, fresh)
+            continue
+        invoice = db.get_invoice(applied["invoice_id"]) if applied.get("invoice_id") else None
+        if invoice is not None:
+            await notify_user_extended(bot, invoice)
+
+
 async def _tick(bot, db, marzban, admin_token):
     for row in db.stars_purchases.pending_invoices():
         await process_canonical_invoice_row(bot, db, row)
+    for row in db.stars_purchases.pending_legacy_switch_invoices():
+        await process_legacy_switch_invoice_row(bot, db, row)
+    await _apply_ready_legacy_switches(bot, db)
+    try:
+        db.legacy_stars_plan_switch.sweep_expired_unpaid(now=int(time.time()))
+    except Exception as e:
+        logger.error(f"legacy stars plan switch sweeper failed: {type(e).__name__}")
     await _process_signup_template_jobs(db, marzban, bot)
     await _process_admin_grant_template_jobs(db, marzban, bot)
     # PH5-13 garbage collection: release expired promo purchase reservations

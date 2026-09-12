@@ -15,6 +15,50 @@
 
 ## Unreleased
 
+### Added — Self-service LEGACY_PAID_COMPAT -> commercial plan switch via Telegram Stars (DL-063)
+
+A client on an archived `LEGACY_PAID_COMPAT_V1_*` tariff can now switch to any
+current commercial plan (BASIC/BASIC_PLUS/BASIC_PRO/WL/EXTENDED/FAMILY) and
+pay via Telegram Stars directly in the bot, choosing the target plan
+themselves — previously this always required contacting support (no
+self-service plan-change path existed at all). DL-063 extends DL-062's
+existing `LEGACY_PAID_COMPAT -> commercial` transition decision with a third
+authorized payment channel (`TELEGRAM_STARS`, self-service) alongside the
+existing admin-initiated `MANUAL_RUB`/`EXTERNAL_PAYMENT` channels; every
+other DL-062 invariant (timing formula, device-limit handling, WL
+TRANSITION_BASELINE, payment freeze after confirmation) is unchanged.
+
+New parallel state machine (`src/legacy_stars_plan_switch.py` +
+`src/legacy_stars_plan_switch_schema.py`, four additive tables — nothing in
+the existing manual-RUB transition or Stars purchase schema is altered):
+`PENDING_PAYMENT -> SCHEDULED -> APPLYING -> APPLIED`, plus `MANUAL_REVIEW`/
+`CANCELLED`. Activation is computed exactly per DL-062:
+`activation_at = ceil_to_utc_hour(max(original_source_expiry,
+stars_invoices.paid_at))` — always from the durable payment-capture
+timestamp, never from the time the worker happens to process it, so no paid
+day of the old plan is lost and a worker delay cannot shift the boundary. A
+LEGACY -> WL/EXTENDED/FAMILY switch runs the same authoritative
+surviving-child-lineage check and TRANSITION_BASELINE crossing-interval
+forgiveness as the existing manual transition, so old legacy traffic is
+never double-counted against the new commercial WL quota.
+
+If the account has more active devices than the target plan's device limit,
+self-service is blocked (message routes to support) rather than offering a
+device-selection UI — matching DL-062's existing "system never auto-selects
+a device" rule. An unpaid switch request can be cancelled by the user (or is
+swept automatically once its invoice expires unpaid) up until real payment
+evidence exists; after that, cancellation is impossible and a late-arriving
+Telegram payment for an already-cancelled request is captured as payment
+evidence and routed to manual review rather than silently dropped or
+silently applied.
+
+Rollout is staged behind a new `legacy_stars_switch:enabled` setting
+(`OFF` / `CANARY:<account_id>` / `ON`) — independent of the general
+`stars:enabled` kill switch, and scoped to new checkout only: disabling it
+never stops an already-paid switch from reaching `APPLIED` or
+`MANUAL_REVIEW`. Recovery for a payment stuck in `MANUAL_REVIEW` uses the
+existing kind-agnostic Stars refund tooling; no new refund engine was built.
+
 ### Fixed — Crash-safe manual-payment apply/cancel/edit boundary (BUG-001)
 
 Fixed a confirmed defect (`BUGS.md` BUG-001, now `FIXED_IN_MAIN`) where applying a

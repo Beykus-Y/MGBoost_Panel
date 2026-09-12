@@ -581,9 +581,10 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
 
     from .stars import _check_stars_eligibility
     from .commercial_signup import SIGNUP_INVOICE_KIND
+    from .stars_purchase import LEGACY_SWITCH_INVOICE_KIND
     from .entitlement_read_model import build_subscription_card
 
-    _CANONICAL_INVOICE_KINDS = ("CANONICAL_PLAN", SIGNUP_INVOICE_KIND)
+    _CANONICAL_INVOICE_KINDS = ("CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND)
 
     # Owner rule (bot UX redesign): a legacy-linked customer without a
     # canonical account must never silently receive a SECOND paid
@@ -923,6 +924,12 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             return _buy_catalog_view(tariffs)
         items = [t for t in tariffs if t["plan_code"] == current["plan_code"]]
         if not items:
+            if _is_legacy_paid_compat(current["plan_code"]):
+                # DL-063: this specific archived-tariff population gets a
+                # self-service switch wizard instead of the generic support
+                # text below -- everything else with zero sellable items
+                # (should it ever occur) keeps today's exact behavior.
+                return _legacy_switch_entry_view(tariffs, account)
             return ("Смена тарифа оформляется через поддержку. "
                     "Продление через Stars сейчас недоступно."), None
         quota_note = wl_quota_line(items[0])
@@ -947,6 +954,206 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="buy_back_plan")],
         ])
         return text, markup
+
+    # --- DL-063: self-service LEGACY_PAID_COMPAT_V1_* -> commercial ---------
+    # switch, paid via Stars. Separate callback namespace (lsw_*) so a stale
+    # keyboard from this wizard can never cross-wire into the ordinary buy
+    # funnel (buy_*) or vice versa.
+
+    def _is_legacy_paid_compat(plan_code) -> bool:
+        return str(plan_code or "").startswith("LEGACY_PAID_COMPAT_V1_")
+
+    def _legacy_switch_enabled_for(account_id: int) -> bool:
+        value = db.get_setting("legacy_stars_switch:enabled")
+        if value == "ON":
+            return True
+        if value and value.startswith("CANARY:"):
+            try:
+                return int(value.split(":", 1)[1]) == int(account_id)
+            except ValueError:
+                return False
+        return False
+
+    def _device_limit_block_view(active_count: int, target_device_limit: int, target_display_name: str):
+        text = (
+            f"У вас сейчас {active_count} активных устройств, а на тарифе «{target_display_name}» "
+            f"доступно до {target_device_limit}. Самостоятельный переход недоступен — "
+            "напишите нам, поможем перенести подписку и устройства без потери оплаченных дней."
+        )
+        return text, _support_button_markup()
+
+    def _legacy_switch_entry_view(tariffs, account):
+        live = db.legacy_stars_plan_switch.for_account(account["id"])
+        if live is not None:
+            state_text = {
+                "PENDING_PAYMENT": "ожидает оплаты",
+                "SCHEDULED": "оплачен, переход состоится в назначенное время",
+                "APPLYING": "переход применяется",
+                "MANUAL_REVIEW": "на проверке у оператора",
+            }.get(live["state"], live["state"])
+            rows = []
+            if live["state"] == "PENDING_PAYMENT":
+                rows.append([InlineKeyboardButton(text="❌ Отменить заявку", callback_data="lsw_cancel")])
+            return (f"У вас уже есть заявка на смену тарифа: {state_text}.",
+                    InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+        if not _legacy_switch_enabled_for(account["id"]):
+            return _change_plan_view()
+        seen, plans = set(), []
+        for t in tariffs:
+            if t["plan_code"] not in seen:
+                seen.add(t["plan_code"])
+                plans.append(_plan_summary(tariffs, t["plan_code"]))
+        rows = [[InlineKeyboardButton(
+            text=(f"{p['display_name']} — до {p['device_limit']} устройств "
+                  f"— от {min(i['amount'] for i in p['items'])}⭐"),
+            callback_data=f"lsw_plan:{p['plan_code']}",
+        )] for p in plans]
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="lsw_cancel_entry")])
+        text = (
+            "Ваш текущий тариф больше не продаётся, но вы можете сами перейти "
+            "на любой из актуальных тарифов — без потери уже оплаченных дней.\n\n"
+            "Выберите новый тариф:"
+        )
+        return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @dp.callback_query(F.data == "lsw_cancel_entry")
+    async def cb_legacy_switch_cancel_entry(call: CallbackQuery):
+        await call.answer()
+        try:
+            await call.message.edit_text("Хорошо, ничего не меняем.")
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data == "lsw_cancel")
+    async def cb_legacy_switch_cancel(call: CallbackQuery):
+        await call.answer()
+        account = db.accounts.get_active_account_by_telegram_id(call.from_user.id)
+        live = db.legacy_stars_plan_switch.for_account(account["id"]) if account else None
+        if not live:
+            await call.message.answer("Активной заявки не найдено.")
+            return
+        try:
+            await _run_sync(db.legacy_stars_plan_switch.cancel_unpaid_locked, live["id"], int(time.time()))
+            await call.message.edit_text("Заявка отменена.")
+        except Exception:
+            await call.message.answer("Заявка уже оплачена — отменить нельзя, дождитесь применения.")
+
+    @dp.callback_query(F.data.startswith("lsw_plan:"))
+    async def cb_legacy_switch_plan(call: CallbackQuery):
+        await call.answer()
+        plan_code = call.data.split(":", 1)[1]
+        tariffs = _sellable_tariffs()
+        if not tariffs:
+            await call.message.answer("Переход временно недоступен, обратитесь к оператору.")
+            return
+        summary = _plan_summary(tariffs, plan_code)
+        if summary is None:
+            await call.message.answer("Этот тариф сейчас недоступен.")
+            return
+        rows = [[InlineKeyboardButton(
+            text=f"{item['duration_days']} дн. — {item['amount']} ⭐️",
+            callback_data=f"lsw_dur:{plan_code}:{item['duration_days']}",
+        )] for item in summary["items"]]
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="lsw_cancel_entry")])
+        quota_note = wl_quota_line(summary["items"][0])
+        await call.message.edit_text(
+            f"Тариф «{summary['display_name']}» — до {summary['device_limit']} устройств.\n"
+            + (quota_note + "\n" if quota_note else "")
+            + "Выберите срок:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    async def _show_legacy_switch_confirmation(call: CallbackQuery, plan_code: str, duration_days: int):
+        tariffs = _sellable_tariffs()
+        if not tariffs:
+            await call.message.answer("Переход временно недоступен, обратитесь к оператору.")
+            return
+        summary = _plan_summary(tariffs, plan_code)
+        item = next(
+            (i for i in (summary or {}).get("items", []) if i["duration_days"] == duration_days), None,
+        )
+        if item is None:
+            await call.message.answer("Этот тариф сейчас недоступен.")
+            return
+        await call.message.edit_text(
+            f"Вы оформляете переход:\n\n"
+            f"Тариф: {item['display_name']}\n"
+            f"Срок: {item['duration_days']} дн.\n"
+            f"Устройств: до {item['device_limit']}\n"
+            + wl_quota_line(item)
+            + f"Стоимость: {item['amount']} ⭐️\n\n"
+            "Переход состоится без потери уже оплаченных дней текущего тарифа: "
+            "новый срок начнётся сразу после окончания оплаченного периода.\n"
+            "Оплата через Telegram Stars.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=f"Оплатить {item['amount']} ⭐️",
+                    callback_data=f"lsw_pay:{plan_code}:{duration_days}",
+                ),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="lsw_cancel_entry"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data.startswith("lsw_dur:"))
+    async def cb_legacy_switch_duration(call: CallbackQuery):
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+        account = db.accounts.get_active_account_by_telegram_id(call.from_user.id)
+        if account is None:
+            await call.message.answer("Аккаунт не найден.")
+            return
+        tariffs = _sellable_tariffs()
+        summary = _plan_summary(tariffs or [], plan_code)
+        if summary is None:
+            await call.message.answer("Этот тариф сейчас недоступен.")
+            return
+        active_count = db.legacy_stars_plan_switch.active_device_count(account["id"])
+        if active_count > summary["device_limit"]:
+            text, markup = _device_limit_block_view(active_count, summary["device_limit"], summary["display_name"])
+            await call.message.edit_text(text, reply_markup=markup)
+            return
+        await _show_legacy_switch_confirmation(call, plan_code, duration_days)
+
+    @dp.callback_query(F.data.startswith("lsw_pay:"))
+    async def cb_legacy_switch_pay(call: CallbackQuery):
+        await call.answer()
+        try:
+            _, plan_code, raw_duration = call.data.split(":", 2)
+            duration_days = int(raw_duration)
+        except (IndexError, ValueError):
+            await call.message.answer("Неверный тариф.")
+            return
+        account = db.accounts.get_active_account_by_telegram_id(call.from_user.id)
+        if account is None or not _legacy_switch_enabled_for(account["id"]):
+            await call.message.answer("Переход временно недоступен, обратитесь к оператору.")
+            return
+        try:
+            invoice = await _run_sync(lambda: db.stars_purchases.create_legacy_switch_invoice(
+                telegram_id=call.from_user.id, target_plan_code=plan_code, duration_days=duration_days,
+                ttl_seconds=3600,
+            ))
+        except Exception as exc:
+            from .legacy_stars_plan_switch import DeviceLimitExceeded
+            if isinstance(exc, DeviceLimitExceeded):
+                tariffs = _sellable_tariffs()
+                summary = _plan_summary(tariffs or [], plan_code)
+                display_name = summary["display_name"] if summary else plan_code
+                text, markup = _device_limit_block_view(exc.active_count, exc.target_device_limit, display_name)
+                await call.message.edit_text(text, reply_markup=markup)
+                return
+            logger.info("Legacy Stars switch invoice rejected: %s", type(exc).__name__)
+            await call.message.answer("Этот переход сейчас нельзя оформить автоматически. Обратитесь к оператору.")
+            return
+        try:
+            await call.message.edit_text("Счёт готов — оплатите его ниже. ⬇️")
+        except Exception:
+            pass
+        await _send_stars_invoice(call.message.bot, call.from_user.id, invoice)
 
     async def _send_buy_entry(target, telegram_id: int, *, edit: bool = False):
         """Entry point shared by the reply button, the card's «➕ Продлить»
