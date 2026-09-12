@@ -372,8 +372,14 @@ def test_paid_renewal_converges_all_active_children_via_durable_sync_job(db):
     # never rolls back or double-grants the purchased term.
     asyncio.run(_sync_canonical_purchase_children(db, FailingService()))
     assert db.stars_purchases.pending_sync_jobs()[0]["invoice_id"] == invoice["id"]
+    # A caught dispatch exception now lands the op in RETRY with an
+    # exponential-backoff next_attempt_at (src/parent_sync.py
+    # retry_sync_exception), not IN_FLIGHT with a reclaimable lease --
+    # resetting next_attempt_at is this test's equivalent of the old
+    # lease_expires_at=0 trick, forcing the retry eligible immediately
+    # instead of waiting out the real backoff.
     db._conn.execute(
-        "UPDATE mgboost_parent_sync_operations SET lease_expires_at=0 WHERE account_id=? AND state='IN_FLIGHT'",
+        "UPDATE mgboost_parent_sync_operations SET next_attempt_at=0 WHERE account_id=? AND state='RETRY'",
         (account_id,),
     )
     db._conn.commit()

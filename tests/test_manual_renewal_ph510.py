@@ -449,10 +449,17 @@ def test_partial_remote_failure_stays_recoverable_and_never_doubles_days(db):
         return BrokerOperations(topo["remote"]).dispatch("child.user.state.sync", payload)
 
     flaky_sync.failed_once = False
-    # A broker outage escapes the cycle exactly like the real drivers see it:
-    # the child op stays IN_FLIGHT under an expiring lease, fully recoverable.
-    with pytest.raises(ConnectionError):
-        _cycle(db, topo, worker="flaky-worker", sync_fn=flaky_sync, now=7000)
+    # process_sync (src/parent_sync.py) catches a sync_fn exception itself
+    # and durably routes the op through retry_sync_exception into RETRY with
+    # an exponential backoff -- it never re-raises out of the cycle. The
+    # outage is still fully recoverable, just observed via aggregate_state
+    # rather than via an exception escaping this call.
+    result = _cycle(db, topo, worker="flaky-worker", sync_fn=flaky_sync, now=7000)
+    assert result["errored"] == 0
+    # 2 of 3 children applied cleanly, 1 is RETRY -- a genuine mixed state,
+    # not a permanent failure (aggregate_state's ERROR/MANUAL_REVIEW branch
+    # only fires when a child op reaches terminal ERROR).
+    assert result["aggregate_state"] == "PARTIAL"
     job = db._conn.execute(
         "SELECT state,attempts FROM mgboost_manual_payment_sync_jobs "
         "WHERE payment_record_id=?", (topo["initial_record"]["id"],),

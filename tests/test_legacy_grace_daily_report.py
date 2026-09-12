@@ -45,10 +45,10 @@ def _capability(db):
     return db.primary_admin_authority.authorize_session(session)
 
 
-def _bootstrap(db, cap, username, *, now=1000):
+def _bootstrap(db, cap, username, *, now=1000, legacy_expiry=100_000):
     return bootstrap_grace_subject(
         db, capability=cap, legacy_username=username, legacy_status="ACTIVE",
-        legacy_expiry=None, observed_device_count=1, observed_hwid_count=1,
+        legacy_expiry=legacy_expiry, observed_device_count=1, observed_hwid_count=1,
         decision_ref="mass-grace-campaign-2026-08-26",
         payment_decision_ref="owner-attested-legacy-external-payment-2026",
         payment_attestation_note="Historical direct payment, no invented amount/date.",

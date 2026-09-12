@@ -87,12 +87,12 @@ def _capability(db):
 
 def _direct_account(
     db, capability, *, username, tg=None, ownership_evidence="ABSENT",
-    decision_ref="dl-057-test",
+    decision_ref="dl-057-test", legacy_expiry=10_000,
 ):
     account = db.direct_enrollment.enroll_direct_account(
         capability=capability, legacy_username=username, decision_ref=decision_ref,
         ownership_evidence=ownership_evidence, telegram_id=tg,
-        alias_provenance="EVIDENCE_PROVEN", legacy_status="ACTIVE", legacy_expiry=None,
+        alias_provenance="EVIDENCE_PROVEN", legacy_status="ACTIVE", legacy_expiry=legacy_expiry,
         observed_device_count=0, observed_hwid_count=0, evidence={"source": "test"},
         idempotency_key=f"enroll-{username}-op", now=100,
     )
