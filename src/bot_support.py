@@ -1015,7 +1015,23 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             rows = []
             if live["state"] == "PENDING_PAYMENT":
                 rows.append([InlineKeyboardButton(text="❌ Отменить заявку", callback_data="lsw_cancel")])
-            return (f"У вас уже есть заявка на смену тарифа: {state_text}.",
+            elif live["state"] == "MANUAL_REVIEW":
+                rows.append([InlineKeyboardButton(text="🆘 Написать в поддержку", callback_data="call_human")])
+            details = [
+                f"Заявка на переход: {state_text}.",
+                "",
+                f"Новый тариф: {live['target_display_name']}",
+                f"Срок: {live['duration_days']} дн.",
+                f"Стоимость: {live['stars_price']} ⭐️",
+            ]
+            if live["activation_at"] is not None:
+                activation = time.strftime(
+                    "%d.%m.%Y %H:%M UTC", time.gmtime(int(live["activation_at"]))
+                )
+                details.append(f"Дата перехода: {activation}")
+            elif live["state"] == "PENDING_PAYMENT":
+                details.append("Дата перехода появится после оплаты.")
+            return ("\n".join(details),
                     InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
         if not _legacy_switch_enabled_for(account["id"]):
             return _change_plan_view()

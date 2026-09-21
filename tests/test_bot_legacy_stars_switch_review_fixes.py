@@ -250,6 +250,76 @@ def test_successful_payment_for_legacy_switch_shows_scheduled_not_immediate(db):
         assert "ближайшее время" in text
 
 
+def test_live_switch_screen_shows_purchase_details_and_review_support(db):
+    from aiogram import Dispatcher
+    from src.bot_support import setup_support_handlers
+
+    account_id, tg = _legacy_source(db, expiry=100000)
+    db.set_setting("stars:enabled", "1")
+    db.set_setting("legacy_stars_switch:enabled", "ON")
+    invoice = db.stars_purchases.create_legacy_switch_invoice(
+        telegram_id=tg, target_plan_code="BASIC", duration_days=30,
+        ttl_seconds=3600, now=1000,
+    )
+    assert db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="lsw-review-screen", provider_charge_id=None,
+        payer_telegram_id=tg, currency="XTR", amount=invoice["stars_price"], now=1010,
+    ) == "paid"
+    switch = _switch_row(db, account_id)
+    db.legacy_stars_plan_switch.manual_review(
+        switch["id"], reason="operator review required", now=1020,
+    )
+
+    dp = Dispatcher()
+    setup_support_handlers(dp, db, marzban=None)
+    handler = _get_handler(dp.message, "msg_buy_vpn")
+
+    class Msg(FakeMsg):
+        def __init__(self):
+            super().__init__()
+            self.from_user = FakeUser(tg)
+            self.text = "🛒 Купить / Продлить"
+
+    class State:
+        pass
+
+    msg = Msg()
+    asyncio.run(handler(msg, State()))
+    text, markup = msg.answers[-1]
+    assert "Новый тариф: Базовый" in text
+    assert "Срок: 30 дн." in text
+    assert f"Стоимость: {invoice['stars_price']} ⭐️" in text
+    assert "на проверке у оператора" in text
+    assert any(
+        button.callback_data == "call_human"
+        for row in markup.inline_keyboard for button in row
+    )
+
+
+def test_applied_legacy_switch_notification_names_new_tariff(db):
+    from src.stars import notify_user_legacy_switch_applied
+
+    _account_id, tg = _legacy_source(db, expiry=100000)
+
+    class Bot:
+        def __init__(self):
+            self.calls = []
+
+        async def send_message(self, telegram_id, text, **kwargs):
+            self.calls.append((telegram_id, text, kwargs))
+
+    bot = Bot()
+    asyncio.run(notify_user_legacy_switch_applied(
+        bot,
+        {"payer_telegram_id": tg},
+        {"target_display_name": "Базовый", "duration_days": 30},
+    ))
+
+    assert bot.calls
+    assert "Переход на тариф «Базовый» выполнен" in bot.calls[0][1]
+    assert "Подписка продлена" not in bot.calls[0][1]
+
+
 def test_ordinary_canonical_purchase_ux_is_unchanged(db):
     """Regression: the kind-specific branch must not affect ordinary Stars
     purchases (CANONICAL_PLAN)."""

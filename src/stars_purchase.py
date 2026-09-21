@@ -450,10 +450,13 @@ class StarsPurchaseStore:
                     # two independent per-row CAS operations would not (see
                     # DL-063 review notes). Money is never silently dropped:
                     # paid_at is still recorded below either way.
+                    account = self._accounts.get_active_account_by_telegram_id(int(payer_telegram_id))
                     switch = self._conn.execute(
                         "SELECT state FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?", (row["id"],)
                     ).fetchone()
-                    if not switch or switch["state"] != "PENDING_PAYMENT":
+                    if not account or account["id"] != row["account_id"]:
+                        reason = "payer_account_mismatch"
+                    elif not switch or switch["state"] != "PENDING_PAYMENT":
                         reason = "legacy_switch_cancelled_before_capture"
                     else:
                         try:

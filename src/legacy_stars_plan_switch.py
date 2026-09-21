@@ -680,13 +680,23 @@ class LegacyStarsPlanSwitchStore:
         return self._device_count_locked(account_id)
 
     def get(self, switch_id: int) -> dict | None:
-        row = self._conn.execute('SELECT * FROM mgboost_legacy_stars_plan_switches WHERE id=?', (int(switch_id),)).fetchone()
+        row = self._conn.execute(
+            "SELECT sw.*,pv.display_name AS target_display_name,inv.stars_price "
+            "FROM mgboost_legacy_stars_plan_switches sw "
+            "JOIN mgboost_plan_versions pv ON pv.id=sw.target_plan_version_id "
+            "JOIN stars_invoices inv ON inv.id=sw.invoice_id WHERE sw.id=?",
+            (int(switch_id),),
+        ).fetchone()
         return dict(row) if row else None
 
     def for_account(self, account_id: int) -> dict | None:
         row = self._conn.execute(
-            "SELECT * FROM mgboost_legacy_stars_plan_switches WHERE account_id=? AND state NOT IN ('APPLIED','CANCELLED','REFUNDED') "
-            "ORDER BY id DESC LIMIT 1", (int(account_id),),
+            "SELECT sw.*,pv.display_name AS target_display_name,inv.stars_price "
+            "FROM mgboost_legacy_stars_plan_switches sw "
+            "JOIN mgboost_plan_versions pv ON pv.id=sw.target_plan_version_id "
+            "JOIN stars_invoices inv ON inv.id=sw.invoice_id "
+            "WHERE sw.account_id=? AND sw.state NOT IN ('APPLIED','CANCELLED','REFUNDED') "
+            "ORDER BY sw.id DESC LIMIT 1", (int(account_id),),
         ).fetchone()
         return dict(row) if row else None
 

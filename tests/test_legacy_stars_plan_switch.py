@@ -109,6 +109,27 @@ def test_happy_path_far_expiry_activates_after_remaining_days_not_soon(db):
     assert switch["activation_at"] == ceil_to_utc_hour(1000 + twenty_days)
 
 
+def test_capture_from_unexpected_payer_is_held_for_manual_review(db):
+    account_id, owner_tg = _legacy_source(db, expiry=100000)
+    invoice = db.stars_purchases.create_legacy_switch_invoice(
+        telegram_id=owner_tg, target_plan_code="BASIC", duration_days=30,
+        ttl_seconds=3600, now=1000,
+    )
+
+    outcome = db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="lsw-wrong-payer", provider_charge_id=None,
+        payer_telegram_id=owner_tg + 1, currency="XTR",
+        amount=invoice["stars_price"], now=1010,
+    )
+
+    assert outcome == "manual_review"
+    captured = db.get_invoice(invoice["id"])
+    assert captured["status"] == "manual_review"
+    assert captured["manual_review_reason"] == "payer_account_mismatch"
+    assert captured["paid_at"] == 1010
+    assert _switch_row(db, account_id)["state"] == "PENDING_PAYMENT"
+
+
 def test_worker_delay_does_not_shift_activation_when_source_already_expired(db):
     """The bug this test locks down: activation_at must be derived from the
     durable stars_invoices.paid_at, never from confirm_locked's own `now`.

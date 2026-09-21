@@ -107,6 +107,31 @@ async def notify_user_extended(bot, row: dict):
         logger.warning(f"Не удалось уведомить пользователя о продлении: {type(e).__name__}")
 
 
+async def notify_user_legacy_switch_applied(bot, invoice: dict, switch: dict):
+    """Confirm the tariff change explicitly; a generic renewal message is
+    misleading here because the product itself has changed."""
+    payer = invoice.get("payer_telegram_id")
+    if bot is None or not payer:
+        return
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        card_markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📱 Моя подписка", callback_data="sub_open"),
+        ]])
+    except ImportError:  # pragma: no cover
+        card_markup = None
+    try:
+        await bot.send_message(
+            int(payer),
+            f"✅ Переход на тариф «{switch.get('target_display_name')}» выполнен.\n"
+            f"Новый срок: {switch.get('duration_days')} дн.\n\n"
+            "Тариф, срок действия и статус — по кнопке ниже.",
+            reply_markup=card_markup,
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить пользователя о смене тарифа: {type(e).__name__}")
+
+
 async def _notify_admin_signup_issue(bot, db, text: str):
     """Generic admin alert for signup-side manual-review states, mirroring
     notify_admin_stuck_payment's failure-honesty (a failed notification must
@@ -637,7 +662,8 @@ async def _apply_ready_legacy_switches(bot, db):
             continue
         invoice = db.get_invoice(applied["invoice_id"]) if applied.get("invoice_id") else None
         if invoice is not None:
-            await notify_user_extended(bot, invoice)
+            details = db.legacy_stars_plan_switch.get(switch["id"])
+            await notify_user_legacy_switch_applied(bot, invoice, details or applied)
 
 
 async def _tick(bot, db, marzban, admin_token):
