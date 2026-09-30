@@ -120,7 +120,7 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
             actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="requeue">Повторить</button>`);
           }
         }
-        if(_STARS_REFUNDABLE.has(p.status)){
+        if(_STARS_REFUNDABLE.has(p.status)||(p.status==='paid'&&p.invoice_kind==='LEGACY_PLAN_SWITCH')){
           actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="refund">Возврат</button>`);
         }
         if(p.status==='refund_pending'||p.status==='refund_unknown'){

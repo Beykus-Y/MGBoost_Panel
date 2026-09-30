@@ -970,7 +970,15 @@ def handle_stars_payment_refund(handler, payment_id):
     capability = require_primary_capability(handler, db)
     if capability is None:
         return
-    if row["status"] not in (
+    paid_legacy_switch = (
+        row["status"] == "paid" and row.get("invoice_kind") == "LEGACY_PLAN_SWITCH"
+        and db._conn.execute(
+            "SELECT 1 FROM mgboost_legacy_stars_plan_switches "
+            "WHERE invoice_id=? AND state IN ('PENDING_PAYMENT','SCHEDULED')",
+            (invoice_id,),
+        ).fetchone() is not None
+    )
+    if not paid_legacy_switch and row["status"] not in (
         "applied", "manual_review", "apply_retry_exhausted", "apply_failed_user_missing",
         "canonical_applied",
     ):

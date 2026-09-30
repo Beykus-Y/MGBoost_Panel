@@ -156,6 +156,21 @@ async def _wait_stop(stop_event: threading.Event):
         await asyncio.sleep(0.1)
 
 
+async def _device_release_loop(db, stop_event: threading.Event):
+    from .bot_devices import sweep_pending
+    from .routes.admin_devices import _revoke_fn
+
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(sweep_pending, db, revoke_fn=_revoke_fn)
+        except Exception as exc:
+            logger.warning("device release sweep failed: %s", type(exc).__name__)
+        for _ in range(30):
+            if stop_event.is_set():
+                break
+            await asyncio.sleep(1)
+
+
 async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, marzban,
                   stop_event: threading.Event, bot_ref: list | None = None):
     try:
@@ -195,6 +210,7 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
     stars_task = asyncio.create_task(
         apply_pending_payments_loop(bot, db, marzban, stop_event, trigger_event=stars_trigger)
     )
+    device_release_task = asyncio.create_task(_device_release_loop(db, stop_event))
     stop_watcher = asyncio.create_task(_wait_stop(stop_event))
     # With background handler tasks aiogram advances getUpdates offset before
     # a payment has been durably stored. Sequential handling lets the special
@@ -221,11 +237,11 @@ async def run_all(bot_token: str, channel_id: str, proxy_url: str | None, db, ma
                 "Telegram polling stopped because a successful payment could not be persisted"
             )
     finally:
-        for task in (monitor_task, stars_task, stop_watcher, polling_task):
+        for task in (monitor_task, stars_task, device_release_task, stop_watcher, polling_task):
             if not task.done():
                 task.cancel()
         await asyncio.gather(
-            monitor_task, stars_task, stop_watcher, polling_task,
+            monitor_task, stars_task, device_release_task, stop_watcher, polling_task,
             return_exceptions=True,
         )
         try:

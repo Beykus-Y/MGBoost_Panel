@@ -583,6 +583,7 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     from .commercial_signup import SIGNUP_INVOICE_KIND
     from .stars_purchase import LEGACY_SWITCH_INVOICE_KIND
     from .entitlement_read_model import build_subscription_card
+    from .bot_devices import list_devices, release_device
 
     _CANONICAL_INVOICE_KINDS = ("CANONICAL_PLAN", SIGNUP_INVOICE_KIND, LEGACY_SWITCH_INVOICE_KIND)
 
@@ -1878,10 +1879,36 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
             _reissue_in_progress.discard(account_id)
 
     # --- 💻 Устройства (Э5) -----------------------------------------------------
-    # Canonical: счётчик через DeviceSlotStore (реальная новая модель).
-    # Web-LK кнопку canonical НЕ обещаем: LK работает на legacy-модели
-    # устройств, управление canonical-слотами им не доказано — поэтому
-    # только поддержка. Legacy: счётчик legacy-модели + одноразовая ссылка.
+
+    def _canonical_device_view(account_id: int, capacity: dict):
+        devices = list_devices(db, account_id)
+        mode = capacity.get("limit_mode")
+        active = capacity.get("active_count") or 0
+        if mode == "UNLIMITED":
+            header = f"Активных устройств: {active}."
+        elif mode == "NONE":
+            header = "Подписка ещё не активна."
+        else:
+            header = f"Активные устройства: {active} из {capacity.get('effective_limit')}."
+        lines = [header]
+        buttons = []
+        for item in devices:
+            number = item["slot_number"]
+            model = item["model"] or "Название не определено"
+            client = item["client_name"] or "Клиент не определён"
+            if item["client_version"]:
+                client += f" {item['client_version']}"
+            lines.append(f"\n#{number}: {model}\nКлиент: {client}")
+            if item["child_intent_id"] is not None:
+                buttons.append([InlineKeyboardButton(
+                    text=f"Отключить и освободить слот #{number}",
+                    callback_data=f"dev_release:{number}:{item['generation_id']}",
+                )])
+        if not devices:
+            lines.append("\nПодключённых устройств пока нет.")
+        lines.append("\nПосле отключения это устройство потеряет доступ. "
+                     "Свободный слот можно занять другим устройством.")
+        return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
     async def _devices_entry(target, telegram_id: int, state=None):
         tg_user = db.get_tg_user(telegram_id)
@@ -1896,17 +1923,8 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
                     reply_markup=_support_button_markup(),
                 )
                 return
-            mode = capacity.get("limit_mode")
-            active = capacity.get("active_count") or 0
-            if mode == "UNLIMITED":
-                text = f"Количество устройств не ограничено. Активных устройств: {active}."
-            elif mode == "NONE":
-                text = "Подписка ещё не активна — устройства появятся после покупки подписки."
-            else:
-                text = f"Активные устройства: {active} из {capacity.get('effective_limit')}."
-            text += ("\n\nПереименовать или отключить устройство пока можно "
-                     "через поддержку: напишите нам — сделаем быстро.")
-            await target.answer(text, reply_markup=_support_button_markup())
+            text, markup = _canonical_device_view(int(account["id"]), capacity)
+            await target.answer(text, reply_markup=markup)
             return
         if tg_user is None:
             if state is not None:
@@ -1944,6 +1962,33 @@ def setup_support_handlers(dp, db, marzban, node_states: dict | None = None, nod
     @dp.message(StateFilter(SupportStates.in_dialog), F.text.in_({"💻 Устройства", "🔧 Управление устройствами"}))
     async def msg_manage_devices(message: Message, state: FSMContext):
         await _devices_entry(message, message.from_user.id, state)
+
+    @dp.callback_query(F.data.regexp(r"^dev_release:[1-9][0-9]*:[1-9][0-9]*$"))
+    async def cb_device_release(call: CallbackQuery):
+        await call.answer()
+        account = db.accounts.get_active_account_by_telegram_id(call.from_user.id)
+        if account is None:
+            await call.message.answer("Аккаунт не найден. Откройте список устройств заново.")
+            return
+        _, slot_text, generation_text = call.data.split(":")
+        from .routes.admin_devices import _revoke_fn
+        try:
+            outcome = await _run_sync(
+                lambda: release_device(
+                    db, account_id=int(account["id"]), slot_number=int(slot_text),
+                    generation_id=int(generation_text), revoke_fn=_revoke_fn,
+                )
+            )
+        except Exception as exc:
+            logger.warning("device release failed: %s", type(exc).__name__)
+            await call.message.answer("Не удалось отключить устройство. Обратитесь в поддержку.")
+            return
+        if outcome == "done":
+            await call.message.answer("Устройство отключено, слот свободен.")
+        elif outcome == "pending":
+            await call.message.answer("Отключение выполняется. Обновите список устройств через несколько минут.")
+        else:
+            await call.message.answer("Устройство изменилось. Откройте список устройств заново.")
 
     # --- 🎟 Промокод (Э4) -------------------------------------------------------
 

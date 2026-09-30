@@ -262,7 +262,7 @@ class LegacyStarsPlanSwitchStore:
                     self._conn.commit()
                     return dict(row)
                 invoice = self._conn.execute('SELECT * FROM stars_invoices WHERE id=?', (row['invoice_id'],)).fetchone()
-                if not invoice or invoice['paid_at'] is None:
+                if not invoice or invoice['status'] != 'paid' or invoice['paid_at'] is None:
                     raise LegacyStarsPlanSwitchConflict('bound invoice is not paid yet')
                 source = self._conn.execute(
                     "SELECT id,current_plan_version_id,current_expiry,status,row_version FROM mgboost_subscriptions "
@@ -401,6 +401,10 @@ class LegacyStarsPlanSwitchStore:
 
                 if row['state'] != 'SCHEDULED' or row['activation_at'] > timestamp:
                     raise LegacyStarsPlanSwitchConflict('switch is not ready for apply')
+
+                invoice = self._conn.execute('SELECT * FROM stars_invoices WHERE id=?', (row['invoice_id'],)).fetchone()
+                if not invoice or invoice['status'] != 'paid':
+                    raise LegacyStarsPlanSwitchConflict('bound invoice is no longer payable for apply')
 
                 sub = self._conn.execute('SELECT * FROM mgboost_subscriptions WHERE id=?', (row['source_subscription_id'],)).fetchone()
                 latest = self._conn.execute(

@@ -2367,19 +2367,24 @@ class Database:
 
         Money-only: refunding a canonical invoice never touches the account/
         subscription/credential/child/template it already provisioned (that
-        is a separate, not-yet-built product-reversal feature). Deliberately
-        NOT extended to 'paid' -- refunding before the canonical apply has
-        run would race the PH5-05/PH5-11 apply pipeline in a way that is not
-        yet proven safe.
+        is a separate, not-yet-built product-reversal feature).
+        A paid legacy plan switch is the sole pre-application exception. Its
+        bound switch must still be pending or scheduled; confirmation and
+        application both recheck the invoice status under the same write lock.
+        Other paid invoice kinds remain ineligible.
         """
         now = int(time.time())
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE stars_invoices SET refund_previous_status=status, "
                 "status='refund_pending', refund_requested_at=?, refund_last_error=NULL "
-                "WHERE id=? AND status IN "
+                "WHERE id=? AND (status IN "
                 "('applied','manual_review','apply_retry_exhausted','apply_failed_user_missing',"
-                "'canonical_applied')",
+                "'canonical_applied') OR (status='paid' "
+                "AND invoice_kind='LEGACY_PLAN_SWITCH' AND EXISTS ("
+                "SELECT 1 FROM mgboost_legacy_stars_plan_switches sw "
+                "WHERE sw.invoice_id=stars_invoices.id "
+                "AND sw.state IN ('PENDING_PAYMENT','SCHEDULED'))))",
                 (now, invoice_id),
             )
             self._conn.commit()

@@ -460,6 +460,74 @@ class FakeRefundBot:
         return self.result
 
 
+@pytest.mark.parametrize("confirm_first", [False, True])
+def test_paid_legacy_switch_refunds_before_application(db, confirm_first):
+    from src.routes.admin import handle_stars_payment_refund
+    from src.legacy_stars_plan_switch import LegacyStarsPlanSwitchConflict
+
+    account_id, tg = _legacy_source(db, expiry=100000)
+    invoice = db.stars_purchases.create_legacy_switch_invoice(
+        telegram_id=tg, target_plan_code="BASIC", duration_days=30,
+        ttl_seconds=3600, now=1000,
+    )
+    assert db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="lsw-paid-refund-charge", provider_charge_id=None,
+        payer_telegram_id=tg, currency="XTR", amount=invoice["stars_price"], now=1050,
+    ) == "paid"
+    if confirm_first:
+        db.stars_purchases.apply_paid_invoice(invoice["id"], now=1050)
+        assert _switch_row(db, account_id)["state"] == "SCHEDULED"
+    else:
+        assert _switch_row(db, account_id)["state"] == "PENDING_PAYMENT"
+
+    bot = FakeRefundBot()
+    runner = LoopRunner(bot)
+    try:
+        handle_stars_payment_refund(_refund_handler(db, bot_runner=runner), str(invoice["id"]))
+    finally:
+        runner.close()
+    assert bot.calls == [(tg, "lsw-paid-refund-charge")]
+    assert db.get_invoice(invoice["id"])["status"] == "refunded"
+    assert _switch_row(db, account_id)["state"] == "REFUNDED"
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM mgboost_legacy_stars_plan_switch_applications WHERE invoice_id=?",
+        (invoice["id"],),
+    ).fetchone()[0] == 0
+    if confirm_first:
+        with pytest.raises(LegacyStarsPlanSwitchConflict):
+            db.legacy_stars_plan_switch.apply_locked(
+                _switch_row(db, account_id)["id"], now=101000,
+            )
+
+
+@pytest.mark.parametrize("confirm_first", [False, True])
+def test_refund_claim_blocks_legacy_switch_worker(db, confirm_first):
+    from src.legacy_stars_plan_switch import LegacyStarsPlanSwitchConflict
+
+    account_id, tg = _legacy_source(db, expiry=100000)
+    invoice = db.stars_purchases.create_legacy_switch_invoice(
+        telegram_id=tg, target_plan_code="BASIC", duration_days=30,
+        ttl_seconds=3600, now=1000,
+    )
+    db.stars_purchases.capture_paid(
+        invoice["id"], charge_id="lsw-refund-race-charge", provider_charge_id=None,
+        payer_telegram_id=tg, currency="XTR", amount=invoice["stars_price"], now=1050,
+    )
+    if confirm_first:
+        db.stars_purchases.apply_paid_invoice(invoice["id"], now=1050)
+    assert db.begin_invoice_refund(invoice["id"]) is True
+    assert db.get_invoice(invoice["id"])["status"] == "refund_pending"
+    switch = _switch_row(db, account_id)
+    with pytest.raises(LegacyStarsPlanSwitchConflict):
+        if confirm_first:
+            db.legacy_stars_plan_switch.apply_locked(switch["id"], now=switch["activation_at"])
+        else:
+            db.legacy_stars_plan_switch.confirm_locked(switch["id"], now=1051)
+    assert _switch_row(db, account_id)["state"] == switch["state"]
+    assert db.mark_invoice_refund_known_failed(invoice["id"], "explicit Telegram failure")
+    assert db.get_invoice(invoice["id"])["status"] == "paid"
+
+
 def test_manual_review_legacy_switch_is_refundable_through_real_admin_route(db):
     """Finding 3: before the fix, a switch stuck in MANUAL_REVIEW left its
     invoice at status='paid', which admin.py's refund gate does not accept
