@@ -23,6 +23,7 @@ from src.wl_parent_pool import (
 )
 from src.wl_usage_ledger import run_collection_cycle
 from src.wl_topology import WL_NODES
+from src.account_traffic_read_model import account_traffic_detail
 
 from tests.test_marzban_broker import FakeMarzban
 from tests.test_wl_usage_ledger import FakeServiceMarzban, _clean_topology_ok
@@ -120,6 +121,67 @@ def _family(db, *, mapping_key="family-pool-test", alias_username="family_parent
 
 
 NODE_A, NODE_B = sorted(node["id"] for node in WL_NODES)
+
+
+def test_admin_traffic_keeps_wl_by_slot_and_remote_failures_visible(db):
+    account, alias_id, _purchase_result, remote = _family(db, mapping_key="traffic-breakdown")
+    account_id = account["id"]
+    period_id = db._conn.execute(
+        "SELECT id FROM mgboost_wl_periods WHERE account_id=? AND sequence_no=1",
+        (account_id,),
+    ).fetchone()["id"]
+    first = _add_child(db, account_id, remote, "family_parent", alias_id, hwid_suffix="traffic-a", now=1_000)
+    second = _add_child(db, account_id, remote, "family_parent", alias_id, hwid_suffix="traffic-b", now=1_000)
+    for child, node, amount in ((first, NODE_A, 3_000_000_000),
+                                (first, NODE_B, 2_000_000_000),
+                                (second, NODE_A, 7_000_000_000)):
+        db.wl_usage_ledger.record_sample(
+            account_id=account_id, child_intent_id=child, node_id=node,
+            cursor_after=amount, collector_id="traffic-test", collected_at=1_010,
+            wl_period_id=period_id,
+        )
+    # A released generation stays in the current period's slot history.
+    db._conn.execute(
+        "UPDATE mgboost_device_slot_generations SET status='RELEASED',ended_at=1015,end_reason='TEST' "
+        "WHERE id=(SELECT slot_generation_id FROM mgboost_child_user_intents WHERE id=?)",
+        (first,),
+    )
+
+    class Usage:
+        def get_user_usage(self, username, _token, *, start, end):
+            assert start and end
+            if username == "family_parent":
+                raise OSError("Marzban unavailable")
+            return {"usages": [{"node_id": NODE_A, "node_name": "WL", "used_traffic": 9_000_000_000}]}
+
+    result = account_traffic_detail(db, account_id, Usage(), "jwt", now=1_020)
+    assert result["wl"]["consumed_bytes"] == 12_000_000_000
+    assert [row["wl_bytes"] for row in result["slots"]] == [5_000_000_000, 7_000_000_000]
+    assert [row["traffic_bytes"] for row in result["slots"]] == [9_000_000_000, 9_000_000_000]
+    assert result["slots"][0]["historical_children"] == 1
+    assert result["total"] is None  # legacy source failed; do not claim 18 GB is the account total
+    assert result["partial_total"] == 18_000_000_000
+    assert result["failed_sources"] == 1
+
+
+def test_admin_traffic_uses_subscription_term_for_non_wl_plan(db):
+    account, _alias_id = _direct_account_with_alias(
+        db, now=0, mapping_key="traffic-basic", alias_username="basic_traffic",
+    )
+    _purchase(db, account["id"], plan_code="BASIC", duration_days=30,
+              key="traffic-basic", now=0)
+
+    class Usage:
+        def get_user_usage(self, username, _token, *, start, end):
+            assert username == "basic_traffic"
+            assert start.startswith("1970-01-01")
+            return {"usages": [{"node_id": 1, "node_name": "Main", "used_traffic": 1_500_000_000}]}
+
+    result = account_traffic_detail(db, account["id"], Usage(), "jwt", now=100)
+    assert result["period"]["kind"] == "TERM"
+    assert result["total"] == 1_500_000_000
+    assert result["wl"] is None
+
 
 
 # --- compute_parent_wl_pool: pure sum over an already-known period id ----

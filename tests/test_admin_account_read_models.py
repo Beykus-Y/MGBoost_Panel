@@ -237,6 +237,16 @@ def test_read_routes_require_auth_and_return_account_models(db, monkeypatch):
     admin_accounts.handle_admin_account_detail(missing, "999999")
     assert missing.status == 404
 
+    traffic_denied = _handler(db, authenticated=False)
+    admin_accounts.handle_admin_account_traffic(traffic_denied, str(account["account_id"]))
+    assert traffic_denied.status == 401
+
+    traffic = _handler(db)
+    admin_accounts.handle_admin_account_traffic(traffic, str(account["account_id"]))
+    assert traffic.status == 200
+    assert traffic.json()["period"] is None
+    assert traffic.json()["reason"] == "NO_CURRENT_PERIOD"
+
 
 def test_note_display_fallback_and_multiple_aliases_are_deterministic(db):
     created = _reviewed_internal(

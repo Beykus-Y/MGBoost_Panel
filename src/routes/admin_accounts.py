@@ -5,6 +5,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlsplit
 
 from ..config import DEVICE_SLOT_HMAC_KEY
+from ..account_traffic_read_model import account_traffic_detail
 from ..admin_read_models import (
     account_detail,
     account_summaries,
@@ -75,6 +76,18 @@ def handle_admin_account_detail(handler, account_id):
         return
     detail["presentation_metadata_available"] = available
     json_response(handler, 200, detail)
+
+
+def handle_admin_account_traffic(handler, account_id):
+    if not require_admin_auth(handler):
+        return
+    result = account_traffic_detail(
+        handler.server.db, int(account_id), _marzban, handler._admin_session.marzban_token,
+    )
+    if result is None:
+        error_response(handler, 404, "Account not found")
+        return
+    json_response(handler, 200, result)
 
 
 def handle_admin_migration_grace(handler):

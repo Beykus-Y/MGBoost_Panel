@@ -74,6 +74,7 @@ from .routes.internal import (
 from .routes.admin_proxy import handle_admin_marzban_proxy
 from .routes.admin_accounts import (
     handle_admin_account_detail,
+    handle_admin_account_traffic,
     handle_admin_accounts_list,
     handle_admin_dashboard,
     handle_admin_migration_grace,
@@ -168,6 +169,8 @@ _ROUTES = [
     ("GET",    re.compile(r"^/admin/accounts$"),               lambda h: handle_admin_accounts_list(h)),
     ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})$"),
      lambda h, account_id: handle_admin_account_detail(h, account_id)),
+    ("GET",    re.compile(r"^/admin/accounts/(?P<account_id>\d{1,18})/traffic$"),
+     lambda h, account_id: handle_admin_account_traffic(h, account_id)),
     ("GET",    re.compile(r"^/admin/migration-grace$"),        lambda h: handle_admin_migration_grace(h)),
     ("GET",    re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
     ("POST",   re.compile(r"^/admin/marzban/(?P<proxy_path>.+)$"), lambda h, proxy_path: handle_admin_marzban_proxy(h, proxy_path) if require_admin_auth(h) else None),
