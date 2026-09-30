@@ -247,6 +247,24 @@ def test_read_routes_require_auth_and_return_account_models(db, monkeypatch):
     assert traffic.json()["period"] is None
     assert traffic.json()["reason"] == "NO_CURRENT_PERIOD"
 
+    last_30 = _handler(db)
+    last_30.path = f"/admin/accounts/{account['account_id']}/traffic?scope=30d"
+    class Usage:
+        def get_user_usage(self, username, _token, *, start, end):
+            assert username == "route-user"
+            assert start and end
+            return {"usages": [{"node_id": 1, "node_name": "Main", "used_traffic": 123}]}
+    monkeypatch.setattr(admin_accounts, "_marzban", Usage())
+    admin_accounts.handle_admin_account_traffic(last_30, str(account["account_id"]))
+    assert last_30.status == 200
+    assert last_30.json()["period"]["kind"] == "LAST_30_DAYS"
+    assert last_30.json()["total"] == 123
+
+    invalid = _handler(db)
+    invalid.path = f"/admin/accounts/{account['account_id']}/traffic?scope=invalid"
+    admin_accounts.handle_admin_account_traffic(invalid, str(account["account_id"]))
+    assert invalid.status == 400
+
 
 def test_note_display_fallback_and_multiple_aliases_are_deterministic(db):
     created = _reviewed_internal(

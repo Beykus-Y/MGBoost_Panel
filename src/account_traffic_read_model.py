@@ -1,4 +1,4 @@
-"""Read-only account traffic detail for the current canonical billing window."""
+"""Read-only account traffic detail for a selected time window."""
 
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ import time
 
 from .wl_parent_pool import compute_parent_wl_pool
 from .wl_topology import WL_NODE_IDS
+
+
+TRAFFIC_SCOPES = frozenset({"current", "30d", "all"})
 
 
 def _period(connection, account_id: int, now: int) -> dict | None:
@@ -46,15 +49,25 @@ def _usage(marzban, token: str, username: str, start: str, end: str) -> dict:
         return {"available": False, "bytes": None, "nodes": []}
 
 
-def account_traffic_detail(db, account_id: int, marzban, token: str, *, now: int | None = None) -> dict | None:
+def account_traffic_detail(
+    db, account_id: int, marzban, token: str, *, scope: str = "current", now: int | None = None,
+) -> dict | None:
     """Keep unavailable remote totals distinct from genuine zero usage."""
+    if scope not in TRAFFIC_SCOPES:
+        raise ValueError("invalid traffic scope")
     timestamp = int(time.time()) if now is None else int(now)
     if db.accounts.get_account(account_id) is None:
         return None
     connection = db._conn
-    period = _period(connection, account_id, timestamp)
+    if scope == "current":
+        period = _period(connection, account_id, timestamp)
+    elif scope == "30d":
+        period = {"kind": "LAST_30_DAYS", "starts_at": timestamp - 30 * 86400,
+                  "ends_at": timestamp}
+    else:
+        period = {"kind": "ALL_TIME", "starts_at": 0, "ends_at": timestamp}
     if period is None:
-        return {"period": None, "reason": "NO_CURRENT_PERIOD", "slots": [], "legacy": [],
+        return {"scope": scope, "period": None, "reason": "NO_CURRENT_PERIOD", "slots": [], "legacy": [],
                 "total": None, "wl": None, "measured_at": timestamp}
 
     slots = [dict(row) for row in connection.execute(
@@ -93,6 +106,24 @@ def account_traffic_detail(db, account_id: int, marzban, token: str, *, now: int
             "SELECT MAX(last_collected_at) FROM mgboost_wl_usage_samples "
             "WHERE account_id=? AND wl_period_id=?", (account_id, period["id"]),
         ).fetchone()[0]
+    elif scope != "current":
+        nodes = sorted(WL_NODE_IDS)
+        placeholders = ",".join("?" for _ in nodes)
+        rows = connection.execute(
+            "SELECT c.slot_id,e.node_id,SUM(e.delta_bytes) AS bytes,"
+            "MAX(e.collected_at) AS last_collected_at "
+            "FROM mgboost_wl_usage_sample_events e JOIN mgboost_child_user_intents c "
+            "ON c.id=e.child_intent_id AND c.account_id=e.account_id "
+            f"WHERE e.account_id=? AND e.node_id IN ({placeholders}) "
+            "AND e.collected_at>=? AND e.collected_at<=? "
+            "GROUP BY c.slot_id,e.node_id",
+            (account_id, *nodes, period["starts_at"], timestamp),
+        ).fetchall()
+        for row in rows:
+            wl_slots.setdefault(row["slot_id"], []).append({"node_id": row["node_id"], "bytes": row["bytes"]})
+        wl = {"consumed_bytes": sum(row["bytes"] for row in rows),
+              "last_collected_at": max((row["last_collected_at"] for row in rows), default=None),
+              "base_quota_bytes": None, "remaining_bytes": None}
 
     start = datetime.fromtimestamp(period["starts_at"], timezone.utc).isoformat()
     end = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
@@ -123,7 +154,7 @@ def account_traffic_detail(db, account_id: int, marzban, token: str, *, now: int
                "nodes": usage[username]["nodes"]} for username in aliases]
     all_results = [usage[username] for username in usernames]
     complete = all(row["available"] for row in all_results)
-    return {"period": period, "reason": None, "slots": slot_rows, "legacy": legacy,
+    return {"scope": scope, "period": period, "reason": None, "slots": slot_rows, "legacy": legacy,
             "total": sum(row["bytes"] or 0 for row in all_results) if complete else None,
             "partial_total": sum(row["bytes"] or 0 for row in all_results),
             "failed_sources": sum(not row["available"] for row in all_results),

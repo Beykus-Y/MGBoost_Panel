@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlsplit
 
 from ..config import DEVICE_SLOT_HMAC_KEY
-from ..account_traffic_read_model import account_traffic_detail
+from ..account_traffic_read_model import TRAFFIC_SCOPES, account_traffic_detail
 from ..admin_read_models import (
     account_detail,
     account_summaries,
@@ -81,8 +81,15 @@ def handle_admin_account_detail(handler, account_id):
 def handle_admin_account_traffic(handler, account_id):
     if not require_admin_auth(handler):
         return
+    scopes = parse_qs(
+        urlsplit(getattr(handler, "path", "")).query, keep_blank_values=True,
+    ).get("scope", ["current"])
+    if len(scopes) != 1 or scopes[0] not in TRAFFIC_SCOPES:
+        error_response(handler, 400, "Invalid traffic scope")
+        return
     result = account_traffic_detail(
         handler.server.db, int(account_id), _marzban, handler._admin_session.marzban_token,
+        scope=scopes[0],
     )
     if result is None:
         error_response(handler, 404, "Account not found")

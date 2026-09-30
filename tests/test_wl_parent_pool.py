@@ -163,6 +163,16 @@ def test_admin_traffic_keeps_wl_by_slot_and_remote_failures_visible(db):
     assert result["partial_total"] == 18_000_000_000
     assert result["failed_sources"] == 1
 
+    recent = account_traffic_detail(db, account_id, Usage(), "jwt", scope="30d", now=1_020)
+    assert recent["period"]["kind"] == "LAST_30_DAYS"
+    assert recent["wl"]["consumed_bytes"] == 12_000_000_000
+    assert sum(slot["wl_bytes"] for slot in recent["slots"]) == recent["wl"]["consumed_bytes"]
+    assert recent["wl"]["remaining_bytes"] is None
+
+    history = account_traffic_detail(db, account_id, Usage(), "jwt", scope="all", now=1_020)
+    assert history["period"]["kind"] == "ALL_TIME"
+    assert history["wl"]["consumed_bytes"] == 12_000_000_000
+
 
 def test_admin_traffic_uses_subscription_term_for_non_wl_plan(db):
     account, _alias_id = _direct_account_with_alias(

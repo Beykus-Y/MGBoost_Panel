@@ -2718,7 +2718,9 @@ HEAD: local/origin/production all `78588bc`.
 
 **Обновление 2026-09-30:** в карточке аккаунта добавлена read-only вкладка
 «Трафик»: расход WL текущего периода по слоту и WL-узлу, общий пул, лимит,
-остаток и время последней записи журнала. Административные grants/deductions
+остаток и время последней записи журнала. Также доступны последние 30 дней и
+вся доступная история без требования текущего расчётного периода; в этих
+срезах лимит/остаток периода не показываются. Административные grants/deductions
 и их authority всё ещё зависят от PH6-08, поэтому задача остаётся `[~]`.
 
 **Independent audit 2026-09-06:** `PARTIAL`. STALE [ ]: base/consumed/package/current-period display exists; grants/deductions/effective authority depend on PH6-08. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
@@ -2746,7 +2748,9 @@ HEAD: local/origin/production all `78588bc`.
 **Обновление 2026-09-30:** вкладка «Трафик» показывает общий трафик Marzban
 по каждому слоту за текущий расчётный период, включая прежние поколения,
 и отдельно WL по слотам. Legacy-пользователи вне слотов выделены в отдельный
-блок. При сбое источника полный итог не вычисляется. Остальные пункты PH7-05
+блок. Доступны также последние 30 дней и вся доступная история, даже если
+расчётный период не определён. При сбое источника полный итог не вычисляется.
+Остальные пункты PH7-05
 сохраняют статус `[~]`.
 
 **Independent audit 2026-09-06:** `PARTIAL`. Revoke/free/rebind/pause and recent telemetry/recovery exist; add/remove/baseline and live node proof remain. Old empty telemetry claim superseded. Evidence: see the per-ID matrix near the end; historical paragraphs below are retained, not renewed production claims.
