@@ -796,6 +796,22 @@ def handle_stars_payment_recheck(handler, payment_id):
     if not row:
         _json_response(handler, 404, {"error": "Payment not found"})
         return
+    if row.get("invoice_kind") == "LEGACY_PLAN_SWITCH":
+        switch = db._conn.execute(
+            "SELECT sw.*,pv.device_limit AS target_device_limit,pv.display_name AS target_display_name "
+            "FROM mgboost_legacy_stars_plan_switches sw "
+            "JOIN mgboost_plan_versions pv ON pv.id=sw.target_plan_version_id WHERE sw.invoice_id=?",
+            (invoice_id,),
+        ).fetchone()
+        if not switch:
+            _json_response(handler, 409, {"error": "Legacy plan switch record is missing"})
+            return
+        active = db.legacy_stars_plan_switch.active_device_count(switch["account_id"])
+        _json_response(handler, 200, {
+            "invoice": row, "switch": dict(switch), "active_devices": active,
+            "target_device_limit": switch["target_device_limit"],
+        })
+        return
     admin_token, client = _get_stars_admin_token(handler)
     if not admin_token:
         _json_response(handler, 503, {"error": "Marzban admin credentials are not configured"})
@@ -818,6 +834,34 @@ def handle_stars_payment_confirm_applied(handler, payment_id):
     row = db.get_invoice(invoice_id)
     if not row:
         _json_response(handler, 404, {"error": "Payment not found"})
+        return
+    if row.get("invoice_kind") == "LEGACY_PLAN_SWITCH":
+        switch_row = db._conn.execute(
+            "SELECT id,state FROM mgboost_legacy_stars_plan_switches WHERE invoice_id=?", (invoice_id,)
+        ).fetchone()
+        if not switch_row:
+            _json_response(handler, 409, {"error": "Legacy plan switch record is missing"})
+            return
+        capability = require_primary_capability(handler, db)
+        if capability is None:
+            return
+        data = read_json_body(handler)
+        if data is None:
+            return
+        reason = _reason_or_error(handler, data)
+        if reason is None:
+            return
+        try:
+            retried = db.legacy_stars_plan_switch.retry_manual_review(
+                capability, switch_row["id"], reason=reason,
+            )
+        except (ValueError, RuntimeError) as exc:
+            _json_response(handler, 409, {"error": str(exc)})
+            return
+        _json_response(handler, 200, {
+            "ok": True, "switch_state": retried["state"],
+            "message": "Повтор проверки запущен; переключение тарифа будет обработано автоматически.",
+        })
         return
     if row["status"] not in ("manual_review", "apply_retry_exhausted"):
         _json_response(handler, 409, {"error": f"Cannot confirm-applied from status {row['status']}"})

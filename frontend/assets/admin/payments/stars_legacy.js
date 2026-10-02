@@ -114,8 +114,8 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
       renderHtml(tbody,html`${rows.map(p=>{
         const actions=[];
         if(_STARS_ACTIONABLE.has(p.status)){
-          actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="recheck">Проверить</button>`);
-          actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="confirm-applied">Подтвердить</button>`);
+          actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="recheck" data-invoice-kind="${p.invoice_kind||''}">Проверить</button>`);
+          actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="confirm-applied" data-invoice-kind="${p.invoice_kind||''}">${p.invoice_kind==='LEGACY_PLAN_SWITCH'?'Повторить применение':'Подтвердить'}</button>`);
           if(p.base_expire_observed!==null&&p.target_expire!==null){
             actions.push(html`<button data-action="stars-payment-action" data-payment-id="${p.id}" data-payment-action="requeue">Повторить</button>`);
           }
@@ -143,9 +143,15 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
   }
 
   async function starsPaymentAction(id,action){
-    if(action==='confirm-applied'&&!confirm('Подтвердить: зафиксировать текущее значение expire в Marzban как результат этого платежа?'))return;
+    const isLegacySwitch=document.querySelector(`#stars-payments-tbody [data-payment-id="${id}"]`)?.dataset.invoiceKind==='LEGACY_PLAN_SWITCH';
+    if(action==='confirm-applied'&&isLegacySwitch&&!confirm('Повторно запустить применение оплаченного тарифа после устранения причины ручной проверки?'))return;
+    if(action==='confirm-applied'&&!isLegacySwitch&&!confirm('Подтвердить: зафиксировать текущее значение expire в Marzban как результат этого платежа?'))return;
     let body;
-    if(action==='refund'||action==='reconcile-refund'){
+    if(action==='confirm-applied'&&isLegacySwitch){
+      const reason=promptReason('Причина повтора (3–300 символов, попадёт в audit)');
+      if(reason===null)return;
+      body=JSON.stringify({reason});
+    }else if(action==='refund'||action==='reconcile-refund'){
       if(action==='refund'&&!confirm('Выполнить возврат Stars за этот платёж?'))return;
       const reason=promptReason(action==='refund'?'Причина возврата (3–300 символов, попадёт в audit)':'Причина сверки возврата (3–300 символов)');
       if(reason===null)return;
