@@ -160,6 +160,10 @@ export function createStarsLegacyUi({html,renderHtml,promptReason,proxyApi}){
     const r=await proxyApi(`/admin/stars-payments/${id}/${action}`,{method:'POST',body});
     const data=await r.json().catch(()=>({}));
     if(!r.ok){alert(data.error||'Ошибка');return;}
+    if(action==='recheck'&&isLegacySwitch){
+      const sw=data.switch||{};
+      alert(`Состояние переключения: ${sw.state||'неизвестно'}\nАктивных устройств: ${data.active_devices??'—'} из ${data.target_device_limit??'—'}\nПричина: ${sw.review_reason||'нет'}`);
+    }
     if(data.message){alert(data.message);}
     const currentFilter=document.getElementById('stars-payments-filter').value;
     loadStarsPayments(currentFilter);
